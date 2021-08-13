@@ -1,31 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Felix Rauch <noreply@felixrau.ch>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/Result.h>
+#include <AK/Vector.h>
 #include <LibGUI/Frame.h>
 
 namespace PixelPaint {
@@ -41,12 +24,26 @@ public:
     void set_primary_color(Color);
     void set_secondary_color(Color);
 
-private:
-    explicit PaletteWidget(ImageEditor&);
+    void display_color_list(Vector<Color> const&);
 
-    ImageEditor& m_editor;
+    Vector<Color> colors();
+
+    static Result<Vector<Color>, String> load_palette_fd_and_close(int);
+    static Result<Vector<Color>, String> load_palette_path(String const&);
+    static Result<void, String> save_palette_fd_and_close(Vector<Color>, int);
+    static Vector<Color> fallback_colors();
+
+    void set_image_editor(ImageEditor&);
+
+private:
+    static Result<Vector<Color>, String> load_palette_file(Core::File&);
+
+    explicit PaletteWidget();
+
+    ImageEditor* m_editor { nullptr };
     RefPtr<GUI::Frame> m_primary_color_widget;
     RefPtr<GUI::Frame> m_secondary_color_widget;
+    RefPtr<GUI::Widget> m_color_container;
 };
 
 }

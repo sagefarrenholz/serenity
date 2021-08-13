@@ -3,12 +3,6 @@ test("length is 1", () => {
 });
 
 describe("errors", () => {
-    test("requires at least one argument", () => {
-        expect(() => {
-            [].reduce();
-        }).toThrowWithMessage(TypeError, "Array.prototype.reduce() requires at least one argument");
-    });
-
     test("callback must be a function", () => {
         expect(() => {
             [].reduce(undefined);
@@ -31,6 +25,11 @@ describe("errors", () => {
 describe("normal behavior", () => {
     test("basic functionality", () => {
         [1, 2].reduce(function () {
+            expect(this).toBe(globalThis);
+        });
+
+        [1, 2].reduce(function () {
+            "use strict";
             expect(this).toBeUndefined();
         });
 
@@ -79,21 +78,21 @@ describe("normal behavior", () => {
         }, 100);
         expect(result).toBe(121);
 
-        var indexes = [];
+        var indices = [];
         result = ["foo", 1, true].reduce((a, v, i) => {
-            indexes.push(i);
+            indices.push(i);
         });
         expect(result).toBeUndefined();
-        expect(indexes.length).toBe(2);
-        expect(indexes[0]).toBe(1);
-        expect(indexes[1]).toBe(2);
+        expect(indices.length).toBe(2);
+        expect(indices[0]).toBe(1);
+        expect(indices[1]).toBe(2);
 
-        indexes = [];
+        indices = [];
         result = ["foo", 1, true].reduce((a, v, i) => {
-            indexes.push(i);
+            indices.push(i);
         }, "foo");
         expect(result).toBeUndefined();
-        expect(indexes).toEqual([0, 1, 2]);
+        expect(indices).toEqual([0, 1, 2]);
 
         var mutable = { prop: 0 };
         result = ["foo", 1, true].reduce((a, v) => {

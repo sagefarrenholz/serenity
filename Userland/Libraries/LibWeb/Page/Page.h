@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -53,13 +33,13 @@ public:
     PageClient& client() { return m_client; }
     const PageClient& client() const { return m_client; }
 
-    Web::Frame& main_frame() { return *m_main_frame; }
-    const Web::Frame& main_frame() const { return *m_main_frame; }
+    Web::BrowsingContext& top_level_browsing_context() { return *m_top_level_browsing_context; }
+    const Web::BrowsingContext& top_level_browsing_context() const { return *m_top_level_browsing_context; }
 
-    Web::Frame& focused_frame();
-    const Web::Frame& focused_frame() const { return const_cast<Page*>(this)->focused_frame(); }
+    Web::BrowsingContext& focused_context();
+    const Web::BrowsingContext& focused_context() const { return const_cast<Page*>(this)->focused_context(); }
 
-    void set_focused_frame(Badge<EventHandler>, Frame&);
+    void set_focused_browsing_context(Badge<EventHandler>, BrowsingContext&);
 
     void load(const URL&);
     void load(const LoadRequest&);
@@ -74,19 +54,21 @@ public:
     bool handle_keydown(KeyCode, unsigned modifiers, u32 code_point);
 
     Gfx::Palette palette() const;
+    Gfx::IntRect screen_rect() const;
 
 private:
     PageClient& m_client;
 
-    RefPtr<Frame> m_main_frame;
-    WeakPtr<Frame> m_focused_frame;
+    RefPtr<BrowsingContext> m_top_level_browsing_context;
+    WeakPtr<BrowsingContext> m_focused_context;
 };
 
 class PageClient {
 public:
     virtual bool is_multi_process() const = 0;
     virtual Gfx::Palette palette() const = 0;
-    virtual void page_did_set_document_in_main_frame(DOM::Document*) { }
+    virtual Gfx::IntRect screen_rect() const = 0;
+    virtual void page_did_set_document_in_top_level_browsing_context(DOM::Document*) { }
     virtual void page_did_change_title(const String&) { }
     virtual void page_did_start_loading(const URL&) { }
     virtual void page_did_finish_loading(const URL&) { }
@@ -109,6 +91,11 @@ public:
     virtual void page_did_request_alert(const String&) { }
     virtual bool page_did_request_confirm(const String&) { return false; }
     virtual String page_did_request_prompt(const String&, const String&) { return {}; }
+    virtual String page_did_request_cookie(const URL&, Cookie::Source) { return {}; }
+    virtual void page_did_set_cookie(const URL&, const Cookie::ParsedCookie&, Cookie::Source) { }
+
+protected:
+    virtual ~PageClient() = default;
 };
 
 }

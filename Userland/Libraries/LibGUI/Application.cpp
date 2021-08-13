@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/NeverDestroyed.h>
@@ -31,7 +11,7 @@
 #include <LibGUI/Clipboard.h>
 #include <LibGUI/Desktop.h>
 #include <LibGUI/Label.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Window.h>
 #include <LibGUI/WindowServerConnection.h>
@@ -44,12 +24,19 @@ class Application::TooltipWindow final : public Window {
     C_OBJECT(TooltipWindow);
 
 public:
-    void set_tooltip(String tooltip)
+    void set_tooltip(const String& tooltip)
     {
-        // FIXME: Add some kind of GUI::Label auto-sizing feature.
-        int text_width = m_label->font().width(tooltip);
-        set_rect(rect().x(), rect().y(), text_width + 10, m_label->font().glyph_height() + 8);
-        m_label->set_text(move(tooltip));
+        m_label->set_text(Gfx::parse_ampersand_string(tooltip));
+        int tooltip_width = m_label->min_width() + 10;
+        int line_count = m_label->text().count("\n");
+        int glyph_height = m_label->font().glyph_height();
+        int tooltip_height = glyph_height * (1 + line_count) + ((glyph_height + 1) / 2) * line_count + 8;
+
+        Gfx::IntRect desktop_rect = Desktop::the().rect();
+        if (tooltip_width > desktop_rect.width())
+            tooltip_width = desktop_rect.width();
+
+        set_rect(rect().x(), rect().y(), tooltip_width, tooltip_height);
     }
 
 private:
@@ -63,6 +50,7 @@ private:
         m_label->set_frame_thickness(1);
         m_label->set_frame_shape(Gfx::FrameShape::Container);
         m_label->set_frame_shadow(Gfx::FrameShadow::Plain);
+        m_label->set_autosize(true);
     }
 
     RefPtr<Label> m_label;
@@ -80,11 +68,11 @@ Application* Application::the()
     return *s_the;
 }
 
-Application::Application(int argc, char** argv)
+Application::Application(int argc, char** argv, Core::EventLoop::MakeInspectable make_inspectable)
 {
     VERIFY(!*s_the);
     *s_the = *this;
-    m_event_loop = make<Core::EventLoop>();
+    m_event_loop = make<Core::EventLoop>(make_inspectable);
     WindowServerConnection::the();
     Clipboard::initialize({});
     if (argc > 0)
@@ -92,6 +80,9 @@ Application::Application(int argc, char** argv)
 
     if (getenv("GUI_FOCUS_DEBUG"))
         m_focus_debugging_enabled = true;
+
+    if (getenv("GUI_HOVER_DEBUG"))
+        m_hover_debugging_enabled = true;
 
     if (getenv("GUI_DND_DEBUG"))
         m_dnd_debugging_enabled = true;
@@ -102,7 +93,7 @@ Application::Application(int argc, char** argv)
     }
 
     m_tooltip_show_timer = Core::Timer::create_single_shot(700, [this] {
-        tooltip_show_timer_did_fire();
+        request_tooltip_show();
     });
 
     m_tooltip_hide_timer = Core::Timer::create_single_shot(50, [this] {
@@ -125,23 +116,16 @@ void Application::quit(int exit_code)
     m_event_loop->quit(exit_code);
 }
 
-void Application::set_menubar(RefPtr<MenuBar> menubar)
-{
-    if (m_menubar)
-        m_menubar->notify_removed_from_application({});
-    m_menubar = move(menubar);
-    if (m_menubar)
-        m_menubar->notify_added_to_application({});
-}
-
 void Application::register_global_shortcut_action(Badge<Action>, Action& action)
 {
     m_global_shortcut_actions.set(action.shortcut(), &action);
+    m_global_shortcut_actions.set(action.alternate_shortcut(), &action);
 }
 
 void Application::unregister_global_shortcut_action(Badge<Action>, Action& action)
 {
     m_global_shortcut_actions.remove(action.shortcut());
+    m_global_shortcut_actions.remove(action.alternate_shortcut());
 }
 
 Action* Application::action_for_key_event(const KeyEvent& event)
@@ -162,13 +146,27 @@ void Application::show_tooltip(String tooltip, const Widget* tooltip_source_widg
     m_tooltip_window->set_tooltip(move(tooltip));
 
     if (m_tooltip_window->is_visible()) {
-        tooltip_show_timer_did_fire();
+        request_tooltip_show();
         m_tooltip_show_timer->stop();
         m_tooltip_hide_timer->stop();
     } else {
         m_tooltip_show_timer->restart();
         m_tooltip_hide_timer->stop();
     }
+}
+
+void Application::show_tooltip_immediately(String tooltip, const Widget* tooltip_source_widget)
+{
+    m_tooltip_source_widget = tooltip_source_widget;
+    if (!m_tooltip_window) {
+        m_tooltip_window = TooltipWindow::construct();
+        m_tooltip_window->set_double_buffering_enabled(false);
+    }
+    m_tooltip_window->set_tooltip(move(tooltip));
+
+    request_tooltip_show();
+    m_tooltip_show_timer->stop();
+    m_tooltip_hide_timer->stop();
 }
 
 void Application::hide_tooltip()
@@ -210,15 +208,15 @@ Gfx::Palette Application::palette() const
     return Palette(*m_palette);
 }
 
-void Application::tooltip_show_timer_did_fire()
+void Application::request_tooltip_show()
 {
     VERIFY(m_tooltip_window);
     Gfx::IntRect desktop_rect = Desktop::the().rect();
 
     const int margin = 30;
-    Gfx::IntPoint adjusted_pos = WindowServerConnection::the().send_sync<Messages::WindowServer::GetGlobalCursorPosition>()->position();
+    Gfx::IntPoint adjusted_pos = WindowServerConnection::the().get_global_cursor_position();
 
-    adjusted_pos.move_by(0, 18);
+    adjusted_pos.translate_by(0, 18);
 
     if (adjusted_pos.x() + m_tooltip_window->width() >= desktop_rect.width() - margin) {
         adjusted_pos = adjusted_pos.translated(-m_tooltip_window->width(), 0);
@@ -226,6 +224,8 @@ void Application::tooltip_show_timer_did_fire()
     if (adjusted_pos.y() + m_tooltip_window->height() >= desktop_rect.height() - margin) {
         adjusted_pos = adjusted_pos.translated(0, -(m_tooltip_window->height() * 2));
     }
+    if (adjusted_pos.x() < 0)
+        adjusted_pos.set_x(0);
 
     m_tooltip_window->move_to(adjusted_pos);
     m_tooltip_window->show();
@@ -241,12 +241,14 @@ void Application::tooltip_hide_timer_did_fire()
 void Application::window_did_become_active(Badge<Window>, Window& window)
 {
     m_active_window = window.make_weak_ptr<Window>();
+    window.update();
 }
 
 void Application::window_did_become_inactive(Badge<Window>, Window& window)
 {
     if (m_active_window.ptr() != &window)
         return;
+    window.update();
     m_active_window = nullptr;
 }
 
@@ -286,6 +288,22 @@ void Application::set_drag_hovered_widget_impl(Widget* widget, const Gfx::IntPoi
 void Application::notify_drag_cancelled(Badge<WindowServerConnection>)
 {
     set_drag_hovered_widget_impl(nullptr);
+}
+
+void Application::event(Core::Event& event)
+{
+    if (event.type() == GUI::Event::ActionEnter || event.type() == GUI::Event::ActionLeave) {
+        auto& action_event = static_cast<ActionEvent&>(event);
+        auto& action = action_event.action();
+        if (action_event.type() == GUI::Event::ActionEnter) {
+            if (on_action_enter)
+                on_action_enter(action);
+        } else {
+            if (on_action_leave)
+                on_action_leave(action);
+        }
+    }
+    Object::event(event);
 }
 
 }

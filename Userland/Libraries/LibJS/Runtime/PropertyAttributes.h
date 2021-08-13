@@ -1,27 +1,8 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -33,71 +14,72 @@ namespace JS {
 
 struct Attribute {
     enum {
-        Configurable = 1 << 0,
+        Writable = 1 << 0,
         Enumerable = 1 << 1,
-        Writable = 1 << 2,
-        HasGetter = 1 << 3,
-        HasSetter = 1 << 4,
-        HasConfigurable = 1 << 5,
-        HasEnumerable = 1 << 6,
-        HasWritable = 1 << 7,
+        Configurable = 1 << 2,
     };
 };
 
+// 6.1.7.1 Property Attributes, https://tc39.es/ecma262/#sec-property-attributes
 class PropertyAttributes {
 public:
     PropertyAttributes(u8 bits = 0)
+        : m_bits(bits)
     {
-        m_bits = bits;
-        if (bits & Attribute::Configurable)
-            m_bits |= Attribute::HasConfigurable;
-        if (bits & Attribute::Enumerable)
-            m_bits |= Attribute::HasEnumerable;
-        if (bits & Attribute::Writable)
-            m_bits |= Attribute::HasWritable;
     }
 
-    bool is_empty() const { return !m_bits; }
+    [[nodiscard]] bool is_writable() const { return m_bits & Attribute::Writable; }
+    [[nodiscard]] bool is_enumerable() const { return m_bits & Attribute::Enumerable; }
+    [[nodiscard]] bool is_configurable() const { return m_bits & Attribute::Configurable; }
 
-    bool has_configurable() const { return m_bits & Attribute::HasConfigurable; }
-    bool has_enumerable() const { return m_bits & Attribute::HasEnumerable; }
-    bool has_writable() const { return m_bits & Attribute::HasWritable; }
-    bool has_getter() const { return m_bits & Attribute::HasGetter; }
-    bool has_setter() const { return m_bits & Attribute::HasSetter; }
+    void set_writable(bool writable = true)
+    {
+        if (writable)
+            m_bits |= Attribute::Writable;
+        else
+            m_bits &= ~Attribute::Writable;
+    }
 
-    bool is_configurable() const { return m_bits & Attribute::Configurable; }
-    bool is_enumerable() const { return m_bits & Attribute::Enumerable; }
-    bool is_writable() const { return m_bits & Attribute::Writable; }
+    void set_enumerable(bool enumerable = true)
+    {
+        if (enumerable)
+            m_bits |= Attribute::Enumerable;
+        else
+            m_bits &= ~Attribute::Enumerable;
+    }
 
-    void set_has_configurable() { m_bits |= Attribute::HasConfigurable; }
-    void set_has_enumerable() { m_bits |= Attribute::HasEnumerable; }
-    void set_has_writable() { m_bits |= Attribute::HasWritable; }
-    void set_configurable() { m_bits |= Attribute::Configurable; }
-    void set_enumerable() { m_bits |= Attribute::Enumerable; }
-    void set_writable() { m_bits |= Attribute::Writable; }
-    void set_has_getter() { m_bits |= Attribute::HasGetter; }
-    void set_has_setter() { m_bits |= Attribute::HasSetter; }
+    void set_configurable(bool configurable = true)
+    {
+        if (configurable)
+            m_bits |= Attribute::Configurable;
+        else
+            m_bits &= ~Attribute::Configurable;
+    }
 
     bool operator==(const PropertyAttributes& other) const { return m_bits == other.m_bits; }
     bool operator!=(const PropertyAttributes& other) const { return m_bits != other.m_bits; }
 
-    u8 bits() const { return m_bits; }
+    [[nodiscard]] u8 bits() const { return m_bits; }
 
 private:
     u8 m_bits;
 };
 
-const PropertyAttributes default_attributes = Attribute::Configurable | Attribute::Writable | Attribute::Enumerable;
+PropertyAttributes const default_attributes = Attribute::Configurable | Attribute::Writable | Attribute::Enumerable;
 
 }
 
 namespace AK {
 
 template<>
-struct Formatter<JS::PropertyAttributes> : Formatter<u8> {
-    void format(FormatBuilder& builder, const JS::PropertyAttributes& attributes)
+struct Formatter<JS::PropertyAttributes> : Formatter<StringView> {
+    void format(FormatBuilder& builder, JS::PropertyAttributes const& property_attributes)
     {
-        Formatter<u8>::format(builder, attributes.bits());
+        Vector<String> parts;
+        parts.append(String::formatted("[[Writable]]: {}", property_attributes.is_writable()));
+        parts.append(String::formatted("[[Enumerable]]: {}", property_attributes.is_enumerable()));
+        parts.append(String::formatted("[[Configurable]]: {}", property_attributes.is_configurable()));
+        Formatter<StringView>::format(builder, String::formatted("PropertyAttributes {{ {} }}", String::join(", ", parts)));
     }
 };
 

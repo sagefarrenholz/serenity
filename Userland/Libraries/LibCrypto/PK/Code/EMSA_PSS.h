@@ -1,35 +1,14 @@
 /*
- * Copyright (c) 2020, Ali Mohammad Pur <ali.mpfard@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/Array.h>
 #include <AK/Random.h>
 #include <LibCrypto/PK/Code/Code.h>
-
-static constexpr u8 zeros[] { 0, 0, 0, 0, 0, 0, 0, 0 };
 
 namespace Crypto {
 namespace PK {
@@ -53,7 +32,7 @@ public:
         auto& hash_fn = this->hasher();
         hash_fn.update(in);
         auto message_hash = hash_fn.digest();
-        auto hash_length = hash_fn.DigestSize;
+        constexpr auto hash_length = HashFunction::DigestSize;
         auto em_length = (em_bits + 7) / 8;
         u8 salt[SaltLength];
 
@@ -64,15 +43,18 @@ public:
             return;
         }
 
-        m_buffer.overwrite(0, zeros, 8);
+        constexpr Array<u8, 8> zeros {};
+
+        m_buffer.overwrite(0, zeros.data(), 8);
         m_buffer.overwrite(8, message_hash.data, HashFunction::DigestSize);
         m_buffer.overwrite(8 + HashFunction::DigestSize, salt, SaltLength);
 
         hash_fn.update(m_buffer);
         auto hash = hash_fn.digest();
 
-        u8 DB_data[em_length - HashFunction::DigestSize - 1];
-        auto DB = Bytes { DB_data, em_length - HashFunction::DigestSize - 1 };
+        Vector<u8, 256> DB_data;
+        DB_data.resize(em_length - HashFunction::DigestSize - 1);
+        Bytes DB = DB_data;
         auto DB_offset = 0;
 
         for (size_t i = 0; i < em_length - SaltLength - HashFunction::DigestSize - 2; ++i)
@@ -84,8 +66,9 @@ public:
 
         auto mask_length = em_length - HashFunction::DigestSize - 1;
 
-        u8 DB_mask[mask_length];
-        auto DB_mask_buffer = Bytes { DB_mask, mask_length };
+        Vector<u8, 256> DB_mask;
+        DB_mask.resize(mask_length);
+        Bytes DB_mask_buffer { DB_mask };
         // FIXME: we should probably allow reading from u8*
         MGF1(ReadonlyBytes { hash.data, HashFunction::DigestSize }, mask_length, DB_mask_buffer);
 
@@ -122,11 +105,13 @@ public:
             if ((octet >> (8 - i)) & 0x01)
                 return VerificationConsistency::Inconsistent;
 
-        u8 DB_mask[mask_length];
-        auto DB_mask_buffer = Bytes { DB_mask, mask_length };
+        Vector<u8, 256> DB_mask;
+        DB_mask.resize(mask_length);
+        Bytes DB_mask_buffer { DB_mask };
         MGF1(H, mask_length, DB_mask_buffer);
 
-        u8 DB[mask_length];
+        Vector<u8, 256> DB;
+        DB.resize(mask_length);
 
         for (size_t i = 0; i < mask_length; ++i)
             DB[i] = masked_DB[i] ^ DB_mask[i];
@@ -142,8 +127,8 @@ public:
         if (DB[check_octets + 1] != 0x01)
             return VerificationConsistency::Inconsistent;
 
-        auto* salt = DB + mask_length - SaltLength;
-        u8 m_prime[8 + HashFunction::DigestSize + SaltLength] { 0, 0, 0, 0, 0, 0, 0, 0 };
+        auto* salt = DB.span().offset(mask_length - SaltLength);
+        u8 m_prime[8 + HashFunction::DigestSize + SaltLength] { 0 };
 
         auto m_prime_buffer = Bytes { m_prime, sizeof(m_prime) };
 
@@ -153,7 +138,7 @@ public:
         hash_fn.update(m_prime_buffer);
         auto H_prime = hash_fn.digest();
 
-        if (__builtin_memcmp(message_hash.data, H_prime.data, HashFunction::DigestSize))
+        if (__builtin_memcmp(message_hash.data, H_prime.data, HashFunction::DigestSize) != 0)
             return VerificationConsistency::Inconsistent;
 
         return VerificationConsistency::Consistent;

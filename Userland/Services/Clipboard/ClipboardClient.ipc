@@ -1,4 +1,6 @@
-endpoint ClipboardClient = 804
+#include <LibCore/AnonymousBuffer.h>
+
+endpoint ClipboardClient
 {
-    ClipboardDataChanged([UTF8] String mime_type) =|
+    clipboard_data_changed([UTF8] String mime_type) =|
 }

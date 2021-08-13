@@ -1,48 +1,102 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Format.h>
 #include <AK/StringView.h>
 #include <Kernel/ACPI/Parser.h>
 #include <Kernel/Arch/PC/BIOS.h>
+#include <Kernel/Arch/x86/InterruptDisabler.h>
+#include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Debug.h>
 #include <Kernel/IO.h>
-#include <Kernel/PCI/Access.h>
+#include <Kernel/Memory/TypedMapping.h>
+#include <Kernel/Sections.h>
 #include <Kernel/StdLib.h>
-#include <Kernel/VM/TypedMapping.h>
 
-namespace Kernel {
-namespace ACPI {
+namespace Kernel::ACPI {
 
 static Parser* s_acpi_parser;
 
 Parser* Parser::the()
 {
     return s_acpi_parser;
+}
+
+UNMAP_AFTER_INIT NonnullRefPtr<ACPISysFSComponent> ACPISysFSComponent::create(String name, PhysicalAddress paddr, size_t table_size)
+{
+    return adopt_ref(*new (nothrow) ACPISysFSComponent(name, paddr, table_size));
+}
+
+KResultOr<size_t> ACPISysFSComponent::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription*) const
+{
+    auto blob = try_to_generate_buffer();
+    if (!blob)
+        return KResult(EFAULT);
+
+    if ((size_t)offset >= blob->size())
+        return KSuccess;
+
+    ssize_t nread = min(static_cast<off_t>(blob->size() - offset), static_cast<off_t>(count));
+    if (!buffer.write(blob->data() + offset, nread))
+        return KResult(EFAULT);
+    return nread;
+}
+
+OwnPtr<KBuffer> ACPISysFSComponent::try_to_generate_buffer() const
+{
+    auto acpi_blob = Memory::map_typed<u8>((m_paddr), m_length);
+    return KBuffer::try_create_with_bytes(Span<u8> { acpi_blob.ptr(), m_length });
+}
+
+UNMAP_AFTER_INIT ACPISysFSComponent::ACPISysFSComponent(String name, PhysicalAddress paddr, size_t table_size)
+    : SysFSComponent(name)
+    , m_paddr(paddr)
+    , m_length(table_size)
+{
+}
+
+UNMAP_AFTER_INIT void ACPISysFSDirectory::initialize()
+{
+    auto acpi_directory = adopt_ref(*new (nothrow) ACPISysFSDirectory());
+    SysFSComponentRegistry::the().register_new_component(acpi_directory);
+}
+
+UNMAP_AFTER_INIT ACPISysFSDirectory::ACPISysFSDirectory()
+    : SysFSDirectory("acpi", SysFSComponentRegistry::the().root_directory())
+{
+    NonnullRefPtrVector<SysFSComponent> components;
+    size_t ssdt_count = 0;
+    ACPI::Parser::the()->enumerate_static_tables([&](const StringView& signature, PhysicalAddress p_table, size_t length) {
+        if (signature == "SSDT") {
+            components.append(ACPISysFSComponent::create(String::formatted("{:4s}{}", signature.characters_without_null_termination(), ssdt_count), p_table, length));
+            ssdt_count++;
+            return;
+        }
+        components.append(ACPISysFSComponent::create(signature, p_table, length));
+    });
+    m_components = components;
+
+    auto rsdp = Memory::map_typed<Structures::RSDPDescriptor20>(ACPI::Parser::the()->rsdp());
+    m_components.append(ACPISysFSComponent::create("RSDP", ACPI::Parser::the()->rsdp(), rsdp->base.revision == 0 ? sizeof(Structures::RSDPDescriptor) : rsdp->length));
+
+    auto main_system_description_table = Memory::map_typed<Structures::SDTHeader>(ACPI::Parser::the()->main_system_description_table());
+    if (ACPI::Parser::the()->is_xsdt_supported()) {
+        m_components.append(ACPISysFSComponent::create("XSDT", ACPI::Parser::the()->main_system_description_table(), main_system_description_table->length));
+    } else {
+        m_components.append(ACPISysFSComponent::create("RSDT", ACPI::Parser::the()->main_system_description_table(), main_system_description_table->length));
+    }
+}
+
+void Parser::enumerate_static_tables(Function<void(const StringView&, PhysicalAddress, size_t)> callback)
+{
+    for (auto& p_table : m_sdt_pointers) {
+        auto table = Memory::map_typed<Structures::SDTHeader>(p_table);
+        callback({ table->sig, 4 }, p_table, table->length);
+    }
 }
 
 void Parser::set_the(Parser& parser)
@@ -68,7 +122,7 @@ UNMAP_AFTER_INIT PhysicalAddress Parser::find_table(const StringView& signature)
 {
     dbgln_if(ACPI_DEBUG, "ACPI: Calling Find Table method!");
     for (auto p_sdt : m_sdt_pointers) {
-        auto sdt = map_typed<Structures::SDTHeader>(p_sdt);
+        auto sdt = Memory::map_typed<Structures::SDTHeader>(p_sdt);
         dbgln_if(ACPI_DEBUG, "ACPI: Examining Table @ {}", p_sdt);
         if (!strncmp(sdt->sig, signature.characters_without_null_termination(), 4)) {
             dbgln_if(ACPI_DEBUG, "ACPI: Found Table @ {}", p_sdt);
@@ -91,11 +145,12 @@ UNMAP_AFTER_INIT void Parser::init_fadt()
     m_fadt = find_table("FACP");
     VERIFY(!m_fadt.is_null());
 
-    auto sdt = map_typed<Structures::FADT>(m_fadt);
+    auto sdt = Memory::map_typed<const volatile Structures::FADT>(m_fadt);
 
     dbgln_if(ACPI_DEBUG, "ACPI: FADT @ V{}, {}", &sdt, m_fadt);
 
-    dmesgln("ACPI: Fixed ACPI data, Revision {}, length: {} bytes", sdt->h.revision, sdt->h.length);
+    auto* header = &sdt.ptr()->h;
+    dmesgln("ACPI: Fixed ACPI data, Revision {}, length: {} bytes", (size_t)header->revision, (size_t)header->length);
     dmesgln("ACPI: DSDT {}", PhysicalAddress(sdt->dsdt_ptr));
     m_x86_specific_flags.cmos_rtc_not_present = (sdt->ia_pc_boot_arch_flags & (u8)FADTFlags::IA_PC_Flags::CMOS_RTC_Not_Present);
 
@@ -133,7 +188,7 @@ UNMAP_AFTER_INIT void Parser::init_fadt()
 
 bool Parser::can_reboot()
 {
-    auto fadt = map_typed<Structures::FADT>(m_fadt);
+    auto fadt = Memory::map_typed<Structures::FADT>(m_fadt);
     if (fadt->h.revision < 2)
         return false;
     return m_hardware_flags.reset_register_supported;
@@ -169,16 +224,16 @@ void Parser::access_generic_address(const Structures::GenericAddressStructure& s
         dbgln("ACPI: Sending value {:x} to {}", value, PhysicalAddress(structure.address));
         switch ((GenericAddressStructure::AccessSize)structure.access_size) {
         case GenericAddressStructure::AccessSize::Byte:
-            *map_typed<u8>(PhysicalAddress(structure.address)) = value;
+            *Memory::map_typed<u8>(PhysicalAddress(structure.address)) = value;
             break;
         case GenericAddressStructure::AccessSize::Word:
-            *map_typed<u16>(PhysicalAddress(structure.address)) = value;
+            *Memory::map_typed<u16>(PhysicalAddress(structure.address)) = value;
             break;
         case GenericAddressStructure::AccessSize::DWord:
-            *map_typed<u32>(PhysicalAddress(structure.address)) = value;
+            *Memory::map_typed<u32>(PhysicalAddress(structure.address)) = value;
             break;
         case GenericAddressStructure::AccessSize::QWord: {
-            *map_typed<u64>(PhysicalAddress(structure.address)) = value;
+            *Memory::map_typed<u64>(PhysicalAddress(structure.address)) = value;
             break;
         }
         default:
@@ -187,7 +242,8 @@ void Parser::access_generic_address(const Structures::GenericAddressStructure& s
         return;
     }
     case GenericAddressStructure::AddressSpace::PCIConfigurationSpace: {
-        // According to the ACPI specification 6.2, page 168, PCI addresses must be confined to devices on Segment group 0, bus 0.
+        // According to https://uefi.org/specs/ACPI/6.4/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#address-space-format,
+        // PCI addresses must be confined to devices on Segment group 0, bus 0.
         auto pci_address = PCI::Address(0, 0, ((structure.address >> 24) & 0xFF), ((structure.address >> 16) & 0xFF));
         dbgln("ACPI: Sending value {:x} to {}", value, pci_address);
         u32 offset_in_pci_address = structure.address & 0xFFFF;
@@ -207,8 +263,9 @@ void Parser::access_generic_address(const Structures::GenericAddressStructure& s
 
 bool Parser::validate_reset_register()
 {
-    // According to the ACPI spec 6.2, page 152, The reset register can only be located in I/O bus, PCI bus or memory-mapped.
-    auto fadt = map_typed<Structures::FADT>(m_fadt);
+    // According to https://uefi.org/specs/ACPI/6.4/04_ACPI_Hardware_Specification/ACPI_Hardware_Specification.html#reset-register,
+    // the reset register can only be located in I/O bus, PCI bus or memory-mapped.
+    auto fadt = Memory::map_typed<Structures::FADT>(m_fadt);
     return (fadt->reset_reg.address_space == (u8)GenericAddressStructure::AddressSpace::PCIConfigurationSpace || fadt->reset_reg.address_space == (u8)GenericAddressStructure::AddressSpace::SystemMemory || fadt->reset_reg.address_space == (u8)GenericAddressStructure::AddressSpace::SystemIO);
 }
 
@@ -221,7 +278,7 @@ void Parser::try_acpi_reboot()
     }
     dbgln_if(ACPI_DEBUG, "ACPI: Rebooting, probing FADT ({})", m_fadt);
 
-    auto fadt = map_typed<Structures::FADT>(m_fadt);
+    auto fadt = Memory::map_typed<Structures::FADT>(m_fadt);
     VERIFY(validate_reset_register());
     access_generic_address(fadt->reset_reg, fadt->reset_value);
     Processor::halt();
@@ -235,31 +292,25 @@ void Parser::try_acpi_shutdown()
 size_t Parser::get_table_size(PhysicalAddress table_header)
 {
     InterruptDisabler disabler;
-#if ACPI_DEBUG
-    dbgln("ACPI: Checking SDT Length");
-#endif
-    return map_typed<Structures::SDTHeader>(table_header)->length;
+    dbgln_if(ACPI_DEBUG, "ACPI: Checking SDT Length");
+    return Memory::map_typed<Structures::SDTHeader>(table_header)->length;
 }
 
 u8 Parser::get_table_revision(PhysicalAddress table_header)
 {
     InterruptDisabler disabler;
-#if ACPI_DEBUG
-    dbgln("ACPI: Checking SDT Revision");
-#endif
-    return map_typed<Structures::SDTHeader>(table_header)->revision;
+    dbgln_if(ACPI_DEBUG, "ACPI: Checking SDT Revision");
+    return Memory::map_typed<Structures::SDTHeader>(table_header)->revision;
 }
 
 UNMAP_AFTER_INIT void Parser::initialize_main_system_description_table()
 {
-#if ACPI_DEBUG
-    dbgln("ACPI: Checking Main SDT Length to choose the correct mapping size");
-#endif
+    dbgln_if(ACPI_DEBUG, "ACPI: Checking Main SDT Length to choose the correct mapping size");
     VERIFY(!m_main_system_description_table.is_null());
     auto length = get_table_size(m_main_system_description_table);
     auto revision = get_table_revision(m_main_system_description_table);
 
-    auto sdt = map_typed<Structures::SDTHeader>(m_main_system_description_table, length);
+    auto sdt = Memory::map_typed<Structures::SDTHeader>(m_main_system_description_table, length);
 
     dmesgln("ACPI: Main Description Table valid? {}", validate_table(*sdt, length));
 
@@ -286,7 +337,7 @@ UNMAP_AFTER_INIT void Parser::initialize_main_system_description_table()
 
 UNMAP_AFTER_INIT void Parser::locate_main_system_description_table()
 {
-    auto rsdp = map_typed<Structures::RSDPDescriptor20>(m_rsdp);
+    auto rsdp = Memory::map_typed<Structures::RSDPDescriptor20>(m_rsdp);
     if (rsdp->base.revision == 0) {
         m_xsdt_supported = false;
     } else if (rsdp->base.revision >= 2) {
@@ -321,6 +372,7 @@ static bool validate_table(const Structures::SDTHeader& v_header, size_t length)
     return false;
 }
 
+// https://uefi.org/specs/ACPI/6.4/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#finding-the-rsdp-on-ia-pc-systems
 UNMAP_AFTER_INIT Optional<PhysicalAddress> StaticParsing::find_rsdp()
 {
     StringView signature("RSD PTR ");
@@ -335,7 +387,7 @@ UNMAP_AFTER_INIT PhysicalAddress StaticParsing::find_table(PhysicalAddress rsdp_
     // FIXME: There's no validation of ACPI tables here. Use the checksum to validate the tables.
     VERIFY(signature.length() == 4);
 
-    auto rsdp = map_typed<Structures::RSDPDescriptor20>(rsdp_address);
+    auto rsdp = Memory::map_typed<Structures::RSDPDescriptor20>(rsdp_address);
 
     if (rsdp->base.revision == 0)
         return search_table_in_rsdt(PhysicalAddress(rsdp->base.rsdt_ptr), signature);
@@ -353,11 +405,11 @@ UNMAP_AFTER_INIT static PhysicalAddress search_table_in_xsdt(PhysicalAddress xsd
     // FIXME: There's no validation of ACPI tables here. Use the checksum to validate the tables.
     VERIFY(signature.length() == 4);
 
-    auto xsdt = map_typed<Structures::XSDT>(xsdt_address);
+    auto xsdt = Memory::map_typed<Structures::XSDT>(xsdt_address);
 
     for (size_t i = 0; i < ((xsdt->h.length - sizeof(Structures::SDTHeader)) / sizeof(u64)); ++i) {
-        if (match_table_signature(PhysicalAddress((FlatPtr)xsdt->table_ptrs[i]), signature))
-            return PhysicalAddress((FlatPtr)xsdt->table_ptrs[i]);
+        if (match_table_signature(PhysicalAddress((PhysicalPtr)xsdt->table_ptrs[i]), signature))
+            return PhysicalAddress((PhysicalPtr)xsdt->table_ptrs[i]);
     }
     return {};
 }
@@ -367,7 +419,7 @@ static bool match_table_signature(PhysicalAddress table_header, const StringView
     // FIXME: There's no validation of ACPI tables here. Use the checksum to validate the tables.
     VERIFY(signature.length() == 4);
 
-    auto table = map_typed<Structures::RSDT>(table_header);
+    auto table = Memory::map_typed<Structures::RSDT>(table_header);
     return !strncmp(table->h.sig, signature.characters_without_null_termination(), 4);
 }
 
@@ -376,11 +428,11 @@ UNMAP_AFTER_INIT static PhysicalAddress search_table_in_rsdt(PhysicalAddress rsd
     // FIXME: There's no validation of ACPI tables here. Use the checksum to validate the tables.
     VERIFY(signature.length() == 4);
 
-    auto rsdt = map_typed<Structures::RSDT>(rsdt_address);
+    auto rsdt = Memory::map_typed<Structures::RSDT>(rsdt_address);
 
     for (u32 i = 0; i < ((rsdt->h.length - sizeof(Structures::SDTHeader)) / sizeof(u32)); i++) {
-        if (match_table_signature(PhysicalAddress((FlatPtr)rsdt->table_ptrs[i]), signature))
-            return PhysicalAddress((FlatPtr)rsdt->table_ptrs[i]);
+        if (match_table_signature(PhysicalAddress((PhysicalPtr)rsdt->table_ptrs[i]), signature))
+            return PhysicalAddress((PhysicalPtr)rsdt->table_ptrs[i]);
     }
     return {};
 }
@@ -405,5 +457,4 @@ void Parser::disable_aml_interpretation()
     VERIFY_NOT_REACHED();
 }
 
-}
 }

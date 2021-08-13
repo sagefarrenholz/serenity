@@ -1,37 +1,18 @@
 /*
  * Copyright (c) 2020, Emanuel Sprung <emanuel.sprung@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "RegexLexer.h"
 #include <AK/Assertions.h>
 #include <AK/Debug.h>
+#include <AK/Format.h>
 #include <stdio.h>
 
 namespace regex {
 
-const char* Token::name(const TokenType type)
+char const* Token::name(TokenType const type)
 {
     switch (type) {
 #define __ENUMERATE_REGEX_TOKEN(x) \
@@ -45,21 +26,21 @@ const char* Token::name(const TokenType type)
     }
 }
 
-const char* Token::name() const
+char const* Token::name() const
 {
     return name(m_type);
 }
 
-Lexer::Lexer(const StringView source)
+Lexer::Lexer(StringView const source)
     : m_source(source)
 {
 }
 
-ALWAYS_INLINE char Lexer::peek(size_t offset) const
+ALWAYS_INLINE int Lexer::peek(size_t offset) const
 {
     if ((m_position + offset) >= m_source.length())
         return EOF;
-    return m_source[m_position + offset];
+    return (unsigned char)m_source[m_position + offset];
 }
 
 void Lexer::back(size_t offset)
@@ -109,6 +90,7 @@ char Lexer::skip()
 {
     auto c = peek();
     consume();
+    VERIFY(c != EOF);
     return c;
 }
 
@@ -150,9 +132,7 @@ Token Lexer::next()
         case '\\':
             return 2;
         default:
-#if REGEX_DEBUG
-            fprintf(stderr, "[LEXER] Found invalid escape sequence: \\%c (the parser will have to deal with this!)\n", peek(1));
-#endif
+            dbgln_if(REGEX_DEBUG, "[LEXER] Found invalid escape sequence: \\{:c} (the parser will have to deal with this!)", peek(1));
             return 0;
         }
     };

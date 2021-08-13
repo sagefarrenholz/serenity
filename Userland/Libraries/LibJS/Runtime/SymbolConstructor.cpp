@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Runtime/Error.h>
@@ -31,7 +11,7 @@
 namespace JS {
 
 SymbolConstructor::SymbolConstructor(GlobalObject& global_object)
-    : NativeFunction(vm().names.Symbol, *global_object.function_prototype())
+    : NativeFunction(vm().names.Symbol.as_string(), *global_object.function_prototype())
 {
 }
 
@@ -39,47 +19,49 @@ void SymbolConstructor::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property(vm.names.prototype, global_object.symbol_prototype(), 0);
-    define_property(vm.names.length, Value(0), Attribute::Configurable);
 
-    define_native_function(vm.names.for_, for_, 1, Attribute::Writable | Attribute::Configurable);
-    define_native_function(vm.names.keyFor, key_for, 1, Attribute::Writable | Attribute::Configurable);
+    // 20.4.2.9 Symbol.prototype, https://tc39.es/ecma262/#sec-symbol.prototype
+    define_direct_property(vm.names.prototype, global_object.symbol_prototype(), 0);
+
+    u8 attr = Attribute::Writable | Attribute::Configurable;
+    define_native_function(vm.names.for_, for_, 1, attr);
+    define_native_function(vm.names.keyFor, key_for, 1, attr);
 
 #define __JS_ENUMERATE(SymbolName, snake_name) \
-    define_property(vm.names.SymbolName, vm.well_known_symbol_##snake_name(), 0);
+    define_direct_property(vm.names.SymbolName, vm.well_known_symbol_##snake_name(), 0);
     JS_ENUMERATE_WELL_KNOWN_SYMBOLS
 #undef __JS_ENUMERATE
+
+    define_direct_property(vm.names.length, Value(0), Attribute::Configurable);
 }
 
 SymbolConstructor::~SymbolConstructor()
 {
 }
 
+// 20.4.1.1 Symbol ( [ description ] ), https://tc39.es/ecma262/#sec-symbol-description
 Value SymbolConstructor::call()
 {
-    if (!vm().argument_count())
-        return js_symbol(heap(), "", false);
+    if (vm().argument(0).is_undefined())
+        return js_symbol(heap(), {}, false);
     return js_symbol(heap(), vm().argument(0).to_string(global_object()), false);
 }
 
-Value SymbolConstructor::construct(Function&)
+// 20.4.1.1 Symbol ( [ description ] ), https://tc39.es/ecma262/#sec-symbol-description
+Value SymbolConstructor::construct(FunctionObject&)
 {
     vm().throw_exception<TypeError>(global_object(), ErrorType::NotAConstructor, "Symbol");
     return {};
 }
 
+// 20.4.2.2 Symbol.for ( key ), https://tc39.es/ecma262/#sec-symbol.for
 JS_DEFINE_NATIVE_FUNCTION(SymbolConstructor::for_)
 {
-    String description;
-    if (!vm.argument_count()) {
-        description = "undefined";
-    } else {
-        description = vm.argument(0).to_string(global_object);
-    }
-
+    String description = vm.argument(0).to_string(global_object);
     return global_object.vm().get_global_symbol(description);
 }
 
+// 20.4.2.6 Symbol.keyFor ( sym ), https://tc39.es/ecma262/#sec-symbol.keyfor
 JS_DEFINE_NATIVE_FUNCTION(SymbolConstructor::key_for)
 {
     auto argument = vm.argument(0);

@@ -13,6 +13,10 @@ describe("correct behavior", () => {
             [12, "12"],
             [93465, "93465"],
             [358000, "358000"],
+            // Numbers above 2 ** 31 - 1 (Issue #3931)
+            [2147483648, "2147483648"], // 2 ** 31
+            [4294967295, "4294967295"], // 2 ** 32 - 1
+            [18014398509481984, "18014398509481984"], // 2 ** 54
         ].forEach(testCase => {
             expect(testCase[0].toString()).toBe(testCase[1]);
         });
@@ -68,10 +72,13 @@ describe("correct behavior", () => {
     });
 });
 
-test("errors", () => {
+describe("errors", () => {
     test("must be called with numeric |this|", () => {
         [true, [], {}, Symbol("foo"), "bar", 1n].forEach(value => {
-            expect(() => Number.prototype.toString.call(value)).toThrow(TypeError);
+            expect(() => Number.prototype.toString.call(value)).toThrowWithMessage(
+                TypeError,
+                "Not a Number object"
+            );
         });
     });
 

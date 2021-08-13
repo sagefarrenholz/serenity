@@ -1,34 +1,16 @@
 /*
  * Copyright (c) 2020, Sahan Fernando <sahan.h.fernando@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Assertions.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibCore/ArgsParser.h>
+#include <errno.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/time.h>
@@ -46,7 +28,7 @@ static String build_header_string(const Vector<const char*>& command, const stru
 {
     StringBuilder builder;
     builder.appendff("Every {}", interval.tv_sec);
-    builder.appendf(".%ds: \x1b[1m", interval.tv_usec / 100000);
+    builder.appendff(".{}s: \x1b[1m", interval.tv_usec / 100000);
     builder.join(' ', command);
     builder.append("\x1b[0m");
     return builder.build();
@@ -121,6 +103,7 @@ int main(int argc, char** argv)
 
     Vector<const char*> command;
     Core::ArgsParser args_parser;
+    args_parser.set_stop_on_first_non_option(true);
     args_parser.set_general_help("Execute a command repeatedly, and watch its output over time.");
     args_parser.add_option(opt_interval, "Amount of time between updates", "interval", 'n', "seconds");
     args_parser.add_option(flag_noheader, "Turn off the header describing the command and interval", "no-title", 't');
@@ -148,17 +131,18 @@ int main(int argc, char** argv)
             usecs_to_sleep = usecs_from(now, next_run_time);
         }
         // Clear the screen, then reset the cursor position to the top left.
-        fprintf(stderr, "\033[H\033[2J");
+        warn("\033[H\033[2J");
         // Print the header.
         if (!flag_noheader) {
-            fprintf(stderr, "%s\n\n", header.characters());
+            warnln("{}", header);
+            warnln();
         } else {
             fflush(stderr);
         }
         if (run_command(command) != 0) {
             exit_code = 1;
             if (flag_beep_on_fail) {
-                fprintf(stderr, "\a");
+                warnln("\a");
                 fflush(stderr);
             }
         }

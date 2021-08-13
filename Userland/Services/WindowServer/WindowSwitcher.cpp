@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGfx/Bitmap.h>
@@ -106,7 +86,7 @@ void WindowSwitcher::event(Core::Event& event)
 void WindowSwitcher::on_key_event(const KeyEvent& event)
 {
     if (event.type() == Event::KeyUp) {
-        if (event.key() == Key_Super) {
+        if (event.key() == (m_mode == Mode::ShowAllWindows ? Key_Super : Key_Alt)) {
             if (auto* window = selected_window()) {
                 window->set_minimized(false);
                 WindowManager::the().move_to_front_and_make_active(*window);
@@ -155,7 +135,12 @@ void WindowSwitcher::select_window_at_index(int index)
     m_selected_index = index;
     auto* highlight_window = m_windows.at(index).ptr();
     VERIFY(highlight_window);
-    WindowManager::the().set_highlight_window(highlight_window);
+    auto& wm = WindowManager::the();
+    if (m_mode == Mode::ShowAllWindows) {
+        if (auto& window_stack = highlight_window->window_stack(); &window_stack != &wm.current_window_stack())
+            wm.switch_to_window_stack(window_stack, nullptr, false);
+    }
+    wm.set_highlight_window(highlight_window);
     redraw();
 }
 
@@ -192,7 +177,7 @@ void WindowSwitcher::draw()
             rect_text_color = palette.threed_shadow1();
         } else {
             if (static_cast<int>(index) == m_hovered_index)
-                Gfx::StylePainter::paint_button(painter, item_rect, palette, Gfx::ButtonStyle::CoolBar, false, true);
+                Gfx::StylePainter::paint_button(painter, item_rect, palette, Gfx::ButtonStyle::Coolbar, false, true);
             text_color = palette.window_text();
             rect_text_color = palette.threed_shadow2();
         }
@@ -203,10 +188,10 @@ void WindowSwitcher::draw()
             Gfx::StylePainter::paint_frame(painter, thumbnail_rect.inflated(4, 4), palette, Gfx::FrameShape::Container, Gfx::FrameShadow::Sunken, 2);
         }
         Gfx::IntRect icon_rect = { thumbnail_rect.bottom_right().translated(-window.icon().width(), -window.icon().height()), { window.icon().width(), window.icon().height() } };
-        painter.fill_rect(icon_rect, palette.window());
         painter.blit(icon_rect.location(), window.icon(), window.icon().rect());
-        painter.draw_text(item_rect.translated(thumbnail_width() + 12, 0), window.title(), WindowManager::the().window_title_font(), Gfx::TextAlignment::CenterLeft, text_color);
-        painter.draw_text(item_rect, window.rect().to_string(), Gfx::TextAlignment::CenterRight, rect_text_color);
+        painter.draw_text(item_rect.translated(thumbnail_width() + 12, 0), window.computed_title(), WindowManager::the().window_title_font(), Gfx::TextAlignment::CenterLeft, text_color);
+        auto window_details = m_windows_on_multiple_stacks ? String::formatted("{} on {}:{}", window.rect().to_string(), window.window_stack().row() + 1, window.window_stack().column() + 1) : window.rect().to_string();
+        painter.draw_text(item_rect, window_details, Gfx::TextAlignment::CenterRight, rect_text_color);
     }
 }
 
@@ -219,29 +204,50 @@ void WindowSwitcher::refresh()
     if (!selected_window)
         selected_window = wm.highlight_window() ? wm.highlight_window() : wm.active_window();
     m_windows.clear();
+    m_windows_on_multiple_stacks = false;
     m_selected_index = 0;
     int window_count = 0;
     int longest_title_width = 0;
-    wm.for_each_window_of_type_from_front_to_back(
-        WindowType::Normal, [&](Window& window) {
-            if (window.is_frameless())
+
+    WindowStack* last_added_on_window_stack = nullptr;
+    auto add_window_stack_windows = [&](WindowStack& window_stack) {
+        window_stack.for_each_window_of_type_from_front_to_back(
+            WindowType::Normal, [&](Window& window) {
+                if (window.is_frameless())
+                    return IterationDecision::Continue;
+                ++window_count;
+                longest_title_width = max(longest_title_width, wm.font().width(window.computed_title()));
+                if (selected_window == &window)
+                    m_selected_index = m_windows.size();
+                m_windows.append(window);
+                auto& window_stack = window.window_stack();
+                if (!last_added_on_window_stack) {
+                    last_added_on_window_stack = &window_stack;
+                } else if (last_added_on_window_stack != &window_stack) {
+                    last_added_on_window_stack = &window_stack;
+                    m_windows_on_multiple_stacks = true;
+                }
                 return IterationDecision::Continue;
-            ++window_count;
-            longest_title_width = max(longest_title_width, wm.font().width(window.title()));
-            if (selected_window == &window)
-                m_selected_index = m_windows.size();
-            m_windows.append(window);
+            },
+            true);
+    };
+    if (m_mode == Mode::ShowAllWindows) {
+        wm.for_each_window_stack([&](auto& window_stack) {
+            add_window_stack_windows(window_stack);
             return IterationDecision::Continue;
-        },
-        true);
+        });
+    } else {
+        add_window_stack_windows(wm.current_window_stack());
+    }
+
     if (m_windows.is_empty()) {
         hide();
         return;
     }
-    int space_for_window_rect = 180;
-    m_rect.set_width(thumbnail_width() + longest_title_width + space_for_window_rect + padding() * 2 + item_padding() * 2);
+    int space_for_window_details = 200;
+    m_rect.set_width(thumbnail_width() + longest_title_width + space_for_window_details + padding() * 2 + item_padding() * 2);
     m_rect.set_height(window_count * item_height() + padding() * 2);
-    m_rect.center_within(Screen::the().rect());
+    m_rect.center_within(Screen::main().rect());
     if (!m_switcher_window)
         m_switcher_window = Window::construct(*this, WindowType::WindowSwitcher);
     m_switcher_window->set_rect(m_rect);

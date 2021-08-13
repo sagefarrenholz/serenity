@@ -1,43 +1,24 @@
 /*
  * Copyright (c) 2020, Hüseyin Aslıtürk <asliturk@hotmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "CharacterMapFileListModel.h"
 #include <AK/JsonObject.h>
 #include <AK/QuickSort.h>
-#include <LibCore/ArgsParser.h>
+#include <LibCore/ConfigFile.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
+#include <LibGUI/CheckBox.h>
 #include <LibGUI/ComboBox.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Menu.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/WindowServerConnection.h>
 #include <LibKeyboard/CharacterMap.h>
@@ -45,16 +26,21 @@
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio rpath accept cpath wpath recvfd sendfd unix fattr proc exec", nullptr) < 0) {
+    if (pledge("stdio rpath cpath wpath recvfd sendfd unix proc exec", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
-    // If there is no command line parameter go for GUI.
     auto app = GUI::Application::construct(argc, argv);
 
-    if (pledge("stdio rpath accept recvfd sendfd proc exec", nullptr) < 0) {
+    if (pledge("stdio rpath cpath wpath recvfd sendfd proc exec", nullptr) < 0) {
         perror("pledge");
+        return 1;
+    }
+
+    auto config = Core::ConfigFile::get_for_app("KeyboardSettings");
+    if (unveil(config->filename().characters(), "rwc") < 0) {
+        perror("unveil");
         return 1;
     }
 
@@ -81,7 +67,7 @@ int main(int argc, char** argv)
     auto app_icon = GUI::Icon::default_icon("app-keyboard-settings");
 
     auto proc_keymap = Core::File::construct("/proc/keymap");
-    if (!proc_keymap->open(Core::IODevice::OpenMode::ReadOnly))
+    if (!proc_keymap->open(Core::OpenMode::ReadOnly))
         VERIFY_NOT_REACHED();
 
     auto json = JsonValue::from_string(proc_keymap->read_all());
@@ -114,7 +100,9 @@ int main(int argc, char** argv)
 
     auto window = GUI::Window::construct();
     window->set_title("Keyboard Settings");
-    window->resize(300, 70);
+    window->resize(300, 78);
+    window->set_resizable(false);
+    window->set_minimizable(false);
     window->set_icon(app_icon.bitmap_for_size(16));
 
     auto& root_widget = window->set_main_widget<GUI::Widget>();
@@ -137,6 +125,9 @@ int main(int argc, char** argv)
     character_map_file_combo.set_model(*CharacterMapFileListModel::create(character_map_files));
     character_map_file_combo.set_selected_index(initial_keymap_index);
 
+    auto& num_lock_checkbox = root_widget.add<GUI::CheckBox>("Enable Num Lock on login");
+    num_lock_checkbox.set_checked(config->read_bool_entry("StartupEnable", "NumLock", true));
+
     root_widget.layout()->add_spacer();
 
     auto apply_settings = [&](bool quit) {
@@ -151,6 +142,10 @@ int main(int argc, char** argv)
             perror("posix_spawn");
             exit(1);
         }
+
+        config->write_bool_entry("StartupEnable", "NumLock", num_lock_checkbox.is_checked());
+        config->sync();
+
         if (quit)
             app->quit();
     };
@@ -158,14 +153,8 @@ int main(int argc, char** argv)
     auto& bottom_widget = root_widget.add<GUI::Widget>();
     bottom_widget.set_layout<GUI::HorizontalBoxLayout>();
     bottom_widget.layout()->add_spacer();
-    bottom_widget.set_fixed_height(22);
-
-    auto& apply_button = bottom_widget.add<GUI::Button>();
-    apply_button.set_text("Apply");
-    apply_button.set_fixed_width(60);
-    apply_button.on_click = [&](auto) {
-        apply_settings(false);
-    };
+    bottom_widget.set_fixed_height(30);
+    bottom_widget.set_content_margins({ 0, 4, 0, 4 });
 
     auto& ok_button = bottom_widget.add<GUI::Button>();
     ok_button.set_text("OK");
@@ -181,20 +170,25 @@ int main(int argc, char** argv)
         app->quit();
     };
 
+    auto& apply_button = bottom_widget.add<GUI::Button>();
+    apply_button.set_text("Apply");
+    apply_button.set_fixed_width(60);
+    apply_button.on_click = [&](auto) {
+        apply_settings(false);
+    };
+
     auto quit_action = GUI::CommonActions::make_quit_action(
         [&](auto&) {
             app->quit();
         });
 
-    auto menubar = GUI::MenuBar::construct();
+    auto menubar = GUI::Menubar::construct();
 
-    auto& app_menu = menubar->add_menu("Keyboard Settings");
-    app_menu.add_action(quit_action);
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(quit_action);
 
-    auto& help_menu = menubar->add_menu("Help");
+    auto& help_menu = window->add_menu("&Help");
     help_menu.add_action(GUI::CommonActions::make_about_action("Keyboard Settings", app_icon, window));
-
-    app->set_menubar(move(menubar));
 
     window->show();
 

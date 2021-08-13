@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -29,13 +9,34 @@
 #include <AK/Types.h>
 #include <Kernel/ACPI/Definitions.h>
 #include <Kernel/ACPI/Initialize.h>
-#include <Kernel/FileSystem/File.h>
+#include <Kernel/FileSystem/SysFSComponent.h>
+#include <Kernel/Memory/Region.h>
 #include <Kernel/PhysicalAddress.h>
-#include <Kernel/VM/Region.h>
 #include <Kernel/VirtualAddress.h>
 
-namespace Kernel {
-namespace ACPI {
+namespace Kernel::ACPI {
+
+class ACPISysFSDirectory : public SysFSDirectory {
+public:
+    static void initialize();
+
+private:
+    ACPISysFSDirectory();
+};
+
+class ACPISysFSComponent : public SysFSComponent {
+public:
+    static NonnullRefPtr<ACPISysFSComponent> create(String name, PhysicalAddress, size_t table_size);
+
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer&, FileDescription*) const override;
+
+protected:
+    OwnPtr<KBuffer> try_to_generate_buffer() const;
+    ACPISysFSComponent(String name, PhysicalAddress, size_t table_size);
+
+    PhysicalAddress m_paddr;
+    size_t m_length;
+};
 
 class Parser {
 public:
@@ -54,6 +55,12 @@ public:
     virtual void try_acpi_shutdown();
     virtual bool can_shutdown() { return false; }
 
+    PhysicalAddress rsdp() const { return m_rsdp; }
+    PhysicalAddress main_system_description_table() const { return m_main_system_description_table; }
+    bool is_xsdt_supported() const { return m_xsdt_supported; }
+
+    void enumerate_static_tables(Function<void(const StringView&, PhysicalAddress, size_t)>);
+
     virtual bool have_8042() const
     {
         return m_x86_specific_flags.keyboard_8042;
@@ -69,6 +76,7 @@ public:
 
 protected:
     explicit Parser(PhysicalAddress rsdp);
+    virtual ~Parser() = default;
 
 private:
     static void set_the(Parser&);
@@ -96,5 +104,4 @@ private:
     FADTFlags::x86_Specific_Flags m_x86_specific_flags;
 };
 
-}
 }

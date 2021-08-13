@@ -1,33 +1,11 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/HashMap.h>
-#include <AK/Optional.h>
 #include <Kernel/FileSystem/FileSystem.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/KBuffer.h>
@@ -36,19 +14,19 @@ namespace Kernel {
 
 class TmpFSInode;
 
-class TmpFS final : public FS {
+class TmpFS final : public FileSystem {
     friend class TmpFSInode;
 
 public:
     virtual ~TmpFS() override;
-    static NonnullRefPtr<TmpFS> create();
+    static RefPtr<TmpFS> create();
     virtual bool initialize() override;
 
-    virtual const char* class_name() const override { return "TmpFS"; }
+    virtual StringView class_name() const override { return "TmpFS"sv; }
 
     virtual bool supports_watchers() const override { return true; }
 
-    virtual NonnullRefPtr<Inode> root_inode() const override;
+    virtual Inode& root_inode() override;
 
 private:
     TmpFS();
@@ -74,40 +52,44 @@ public:
     const TmpFS& fs() const { return static_cast<const TmpFS&>(Inode::fs()); }
 
     // ^Inode
-    virtual ssize_t read_bytes(off_t, ssize_t, UserOrKernelBuffer& buffer, FileDescription*) const override;
+    virtual KResultOr<size_t> read_bytes(off_t, size_t, UserOrKernelBuffer& buffer, FileDescription*) const override;
     virtual InodeMetadata metadata() const override;
-    virtual KResult traverse_as_directory(Function<bool(const FS::DirectoryEntryView&)>) const override;
+    virtual KResult traverse_as_directory(Function<bool(FileSystem::DirectoryEntryView const&)>) const override;
     virtual RefPtr<Inode> lookup(StringView name) override;
     virtual void flush_metadata() override;
-    virtual ssize_t write_bytes(off_t, ssize_t, const UserOrKernelBuffer& buffer, FileDescription*) override;
-    virtual KResultOr<NonnullRefPtr<Inode>> create_child(const String& name, mode_t, dev_t, uid_t, gid_t) override;
+    virtual KResultOr<size_t> write_bytes(off_t, size_t, const UserOrKernelBuffer& buffer, FileDescription*) override;
+    virtual KResultOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, uid_t, gid_t) override;
     virtual KResult add_child(Inode&, const StringView& name, mode_t) override;
     virtual KResult remove_child(const StringView& name) override;
-    virtual KResultOr<size_t> directory_entry_count() const override;
     virtual KResult chmod(mode_t) override;
     virtual KResult chown(uid_t, gid_t) override;
     virtual KResult truncate(u64) override;
-    virtual int set_atime(time_t) override;
-    virtual int set_ctime(time_t) override;
-    virtual int set_mtime(time_t) override;
+    virtual KResult set_atime(time_t) override;
+    virtual KResult set_ctime(time_t) override;
+    virtual KResult set_mtime(time_t) override;
     virtual void one_ref_left() override;
 
 private:
     TmpFSInode(TmpFS& fs, InodeMetadata metadata, InodeIdentifier parent);
-    static NonnullRefPtr<TmpFSInode> create(TmpFS&, InodeMetadata metadata, InodeIdentifier parent);
-    static NonnullRefPtr<TmpFSInode> create_root(TmpFS&);
-
+    static RefPtr<TmpFSInode> create(TmpFS&, InodeMetadata metadata, InodeIdentifier parent);
+    static RefPtr<TmpFSInode> create_root(TmpFS&);
     void notify_watchers();
+
+    struct Child {
+        NonnullOwnPtr<KString> name;
+        NonnullRefPtr<TmpFSInode> inode;
+        IntrusiveListNode<Child> list_node {};
+        using List = IntrusiveList<Child, RawPtr<Child>, &Child::list_node>;
+    };
+
+    Child* find_child_by_name(StringView);
 
     InodeMetadata m_metadata;
     InodeIdentifier m_parent;
 
     OwnPtr<KBuffer> m_content;
-    struct Child {
-        String name;
-        NonnullRefPtr<TmpFSInode> inode;
-    };
-    HashMap<String, Child> m_children;
+
+    Child::List m_children;
 };
 
 }

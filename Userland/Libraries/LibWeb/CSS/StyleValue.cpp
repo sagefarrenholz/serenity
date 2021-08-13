@@ -1,37 +1,20 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/ByteBuffer.h>
+#include <AK/Vector.h>
 #include <LibGfx/Palette.h>
+#include <LibWeb/CSS/Parser/StyleComponentValueRule.h>
 #include <LibWeb/CSS/StyleValue.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Loader/LoadRequest.h>
 #include <LibWeb/Loader/ResourceLoader.h>
-#include <LibWeb/Page/Frame.h>
+#include <LibWeb/Page/BrowsingContext.h>
 
 namespace Web::CSS {
 
@@ -175,8 +158,7 @@ ImageStyleValue::ImageStyleValue(const URL& url, DOM::Document& document)
     , m_url(url)
     , m_document(document)
 {
-    LoadRequest request;
-    request.set_url(url);
+    auto request = LoadRequest::create_for_url_on_page(url, document.page());
     set_resource(ResourceLoader::the().load_resource(Resource::Type::Image, request));
 }
 
@@ -186,8 +168,27 @@ void ImageStyleValue::resource_did_load()
         return;
     m_bitmap = resource()->bitmap();
     // FIXME: Do less than a full repaint if possible?
-    if (m_document->frame())
-        m_document->frame()->set_needs_display({});
+    if (m_document->browsing_context())
+        m_document->browsing_context()->set_needs_display({});
+}
+
+ValueListStyleValue::ValueListStyleValue(Vector<StyleComponentValueRule>&& values)
+    : StyleValue(Type::ValueList)
+    , m_values(move(values))
+{
+}
+
+String ValueListStyleValue::to_string() const
+{
+    StringBuilder builder;
+    builder.appendff("List[{}](", m_values.size());
+    for (auto& value : m_values) {
+        builder.append(value.to_debug_string());
+        builder.append(",");
+    }
+
+    builder.append(")");
+    return builder.to_string();
 }
 
 }

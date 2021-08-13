@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -39,9 +19,18 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/StandardCursor.h>
 
-#define REGISTER_WIDGET(namespace_, class_name)                                                                                                 \
-    namespace {                                                                                                                                 \
-    GUI::WidgetClassRegistration registration_##class_name(#namespace_ "::" #class_name, []() { return namespace_::class_name::construct(); }); \
+namespace Core {
+namespace Registration {
+extern Core::ObjectClassRegistration registration_Widget;
+}
+}
+
+#define REGISTER_WIDGET(namespace_, class_name)                                                                                                   \
+    namespace Core {                                                                                                                              \
+    namespace Registration {                                                                                                                      \
+    Core::ObjectClassRegistration registration_##class_name(                                                                                      \
+        #namespace_ "::" #class_name, []() { return static_ptr_cast<Core::Object>(namespace_::class_name::construct()); }, &registration_Widget); \
+    }                                                                                                                                             \
     }
 
 namespace GUI {
@@ -53,25 +42,6 @@ enum class HorizontalDirection {
 enum class VerticalDirection {
     Up,
     Down
-};
-
-class WidgetClassRegistration {
-    AK_MAKE_NONCOPYABLE(WidgetClassRegistration);
-    AK_MAKE_NONMOVABLE(WidgetClassRegistration);
-
-public:
-    WidgetClassRegistration(const String& class_name, Function<NonnullRefPtr<Widget>()> factory);
-    ~WidgetClassRegistration();
-
-    String class_name() const { return m_class_name; }
-    NonnullRefPtr<Widget> construct() const { return m_factory(); }
-
-    static void for_each(Function<void(const WidgetClassRegistration&)>);
-    static const WidgetClassRegistration* find(const String& class_name);
-
-private:
-    String m_class_name;
-    Function<NonnullRefPtr<Widget>()> m_factory;
 };
 
 enum class FocusPolicy {
@@ -138,20 +108,17 @@ public:
         set_max_height(height);
     }
 
+    virtual bool is_visible_for_timer_purposes() const override;
+
     bool has_tooltip() const { return !m_tooltip.is_empty(); }
     String tooltip() const { return m_tooltip; }
-    void set_tooltip(const StringView&);
+    void set_tooltip(String);
 
     bool is_enabled() const { return m_enabled; }
     void set_enabled(bool);
 
     bool updates_enabled() const { return m_updates_enabled; }
     void set_updates_enabled(bool);
-
-    virtual void event(Core::Event&) override;
-
-    // This is called after children have been painted.
-    virtual void second_paint_event(PaintEvent&);
 
     Gfx::IntRect relative_rect() const { return m_relative_rect; }
     Gfx::IntPoint relative_position() const { return m_relative_rect.location(); }
@@ -244,8 +211,14 @@ public:
     bool fill_with_background_color() const { return m_fill_with_background_color; }
 
     const Gfx::Font& font() const { return *m_font; }
+
     void set_font(const Gfx::Font*);
     void set_font(const Gfx::Font& font) { set_font(&font); }
+
+    void set_font_family(const String&);
+    void set_font_size(unsigned);
+    void set_font_weight(unsigned);
+    void set_font_fixed_width(bool);
 
     void set_global_cursor_tracking(bool);
     bool global_cursor_tracking() const;
@@ -274,12 +247,12 @@ public:
     {
         for_each_child([&](auto& child) {
             if (is<Widget>(child))
-                return callback(downcast<Widget>(child));
+                return callback(verify_cast<Widget>(child));
             return IterationDecision::Continue;
         });
     }
 
-    Vector<Widget*> child_widgets() const;
+    Vector<Widget&> child_widgets() const;
 
     void do_layout();
 
@@ -300,7 +273,7 @@ public:
     void set_override_cursor(Gfx::StandardCursor);
 
     bool load_from_gml(const StringView&);
-    bool load_from_gml(const StringView&, RefPtr<Widget> (*unregistered_child_handler)(const String&));
+    bool load_from_gml(const StringView&, RefPtr<Core::Object> (*unregistered_child_handler)(const String&));
 
     void set_shrink_to_fit(bool);
     bool is_shrink_to_fit() const { return m_shrink_to_fit; }
@@ -309,6 +282,11 @@ public:
 
 protected:
     Widget();
+
+    virtual void event(Core::Event&) override;
+
+    // This is called after children have been painted.
+    virtual void second_paint_event(PaintEvent&);
 
     virtual void custom_layout() { }
     virtual void did_change_font() { }
@@ -336,6 +314,8 @@ protected:
     virtual void drag_leave_event(Event&);
     virtual void drop_event(DropEvent&);
     virtual void theme_change_event(ThemeChangeEvent&);
+    virtual void fonts_change_event(FontsChangeEvent&);
+    virtual void screen_rects_change_event(ScreenRectsChangeEvent&);
 
     virtual void did_begin_inspection() override;
     virtual void did_end_inspection() override;
@@ -354,7 +334,7 @@ private:
     void focus_previous_widget(FocusSource, bool siblings_only);
     void focus_next_widget(FocusSource, bool siblings_only);
 
-    bool load_from_json(const JsonObject&, RefPtr<Widget> (*unregistered_child_handler)(const String&));
+    virtual bool load_from_json(const JsonObject&, RefPtr<Core::Object> (*unregistered_child_handler)(const String&)) override;
 
     // HACK: These are used as property getters for the fixed_* size property aliases.
     int dummy_fixed_width() { return 0; }
@@ -381,6 +361,7 @@ private:
     bool m_updates_enabled { true };
     bool m_accepts_emoji_input { false };
     bool m_shrink_to_fit { false };
+    bool m_default_font { true };
 
     NonnullRefPtr<Gfx::PaletteImpl> m_palette;
 
@@ -393,13 +374,13 @@ private:
 inline Widget* Widget::parent_widget()
 {
     if (parent() && is<Widget>(*parent()))
-        return &downcast<Widget>(*parent());
+        return &verify_cast<Widget>(*parent());
     return nullptr;
 }
 inline const Widget* Widget::parent_widget() const
 {
     if (parent() && is<Widget>(*parent()))
-        return &downcast<const Widget>(*parent());
+        return &verify_cast<const Widget>(*parent());
     return nullptr;
 }
 }

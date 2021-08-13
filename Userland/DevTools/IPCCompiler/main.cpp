@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
@@ -40,6 +20,24 @@ struct Parameter {
     String name;
 };
 
+static String pascal_case(String const& identifier)
+{
+    StringBuilder builder;
+    bool was_new_word = true;
+    for (auto ch : identifier) {
+        if (ch == '_') {
+            was_new_word = true;
+            continue;
+        }
+        if (was_new_word) {
+            builder.append(toupper(ch));
+            was_new_word = false;
+        } else
+            builder.append(ch);
+    }
+    return builder.to_string();
+}
+
 struct Message {
     String name;
     bool is_synchronous { false };
@@ -49,17 +47,35 @@ struct Message {
     String response_name() const
     {
         StringBuilder builder;
-        builder.append(name);
+        builder.append(pascal_case(name));
         builder.append("Response");
         return builder.to_string();
     }
 };
 
 struct Endpoint {
+    Vector<String> includes;
     String name;
-    int magic;
+    u32 magic;
     Vector<Message> messages;
 };
+
+static bool is_primitive_type(String const& type)
+{
+    return type.is_one_of("u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "bool", "double", "float", "int", "unsigned", "unsigned int");
+}
+
+static String message_name(String const& endpoint, String& message, bool is_response)
+{
+    StringBuilder builder;
+    builder.append("Messages::");
+    builder.append(endpoint);
+    builder.append("::");
+    builder.append(pascal_case(message));
+    if (is_response)
+        builder.append("Response");
+    return builder.to_string();
+}
 
 int main(int argc, char** argv)
 {
@@ -69,7 +85,7 @@ int main(int argc, char** argv)
     }
 
     auto file = Core::File::construct(argv[1]);
-    if (!file->open(Core::IODevice::ReadOnly)) {
+    if (!file->open(Core::OpenMode::ReadOnly)) {
         warnln("Error: Cannot open {}: {}", argv[1], file->error_string());
         return 1;
     }
@@ -171,25 +187,66 @@ int main(int argc, char** argv)
     auto parse_messages = [&] {
         for (;;) {
             consume_whitespace();
-            parse_message();
-            consume_whitespace();
             if (lexer.peek() == '}')
                 break;
+            parse_message();
+            consume_whitespace();
+        }
+    };
+
+    auto parse_include = [&] {
+        String include;
+        consume_whitespace();
+        include = lexer.consume_while([](char ch) { return ch != '\n'; });
+        consume_whitespace();
+
+        endpoints.last().includes.append(move(include));
+    };
+
+    auto parse_includes = [&] {
+        for (;;) {
+            consume_whitespace();
+            if (lexer.peek() != '#')
+                break;
+            parse_include();
+            consume_whitespace();
         }
     };
 
     auto parse_endpoint = [&] {
         endpoints.empend();
         consume_whitespace();
+        parse_includes();
+        consume_whitespace();
         lexer.consume_specific("endpoint");
         consume_whitespace();
         endpoints.last().name = lexer.consume_while([](char ch) { return !isspace(ch); });
+        endpoints.last().magic = Traits<String>::hash(endpoints.last().name);
         consume_whitespace();
-        assert_specific('=');
-        consume_whitespace();
-        auto magic_string = lexer.consume_while([](char ch) { return !isspace(ch) && ch != '{'; });
-        endpoints.last().magic = magic_string.to_int().value();
-        consume_whitespace();
+        if (lexer.peek() == '[') {
+            // This only supports a single parameter for now, and adding multiple
+            // endpoint parameter support is left as an exercise for the reader. :^)
+
+            lexer.consume_specific('[');
+            consume_whitespace();
+
+            auto parameter = lexer.consume_while([](char ch) { return !isspace(ch) && ch != '='; });
+            consume_whitespace();
+            assert_specific('=');
+            consume_whitespace();
+
+            if (parameter == "magic") {
+                // "magic" overwrites the default magic with a hardcoded one.
+                auto magic_string = lexer.consume_while([](char ch) { return !isspace(ch) && ch != ']'; });
+                endpoints.last().magic = magic_string.to_uint().value();
+            } else {
+                warnln("parse_endpoint: unknown parameter '{}' passed", parameter);
+                VERIFY_NOT_REACHED();
+            }
+
+            assert_specific(']');
+            consume_whitespace();
+        }
         assert_specific('{');
         parse_messages();
         assert_specific('}');
@@ -202,22 +259,32 @@ int main(int argc, char** argv)
     StringBuilder builder;
     SourceGenerator generator { builder };
 
-    generator.append(R"~~~(
-#pragma once
-#include <AK/MemoryStream.h>
+    generator.append("#pragma once\n");
+
+    // This must occur before LibIPC/Decoder.h
+    for (auto& endpoint : endpoints) {
+        for (auto& include : endpoint.includes) {
+            generator.append(include);
+            generator.append("\n");
+        }
+    }
+
+    generator.append(R"~~~(#include <AK/MemoryStream.h>
 #include <AK/OwnPtr.h>
-#include <AK/URL.h>
+#include <AK/Result.h>
 #include <AK/Utf8View.h>
-#include <LibCore/AnonymousBuffer.h>
-#include <LibGfx/Color.h>
-#include <LibGfx/Rect.h>
-#include <LibGfx/ShareableBitmap.h>
+#include <LibIPC/Connection.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Dictionary.h>
 #include <LibIPC/Encoder.h>
-#include <LibIPC/Endpoint.h>
 #include <LibIPC/File.h>
 #include <LibIPC/Message.h>
+#include <LibIPC/Stub.h>
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdefaulted-function-deleted"
+#endif
 )~~~");
 
     for (auto& endpoint : endpoints) {
@@ -240,18 +307,20 @@ enum class MessageID : i32 {
 
             message_ids.set(message.name, message_ids.size() + 1);
             message_generator.set("message.name", message.name);
+            message_generator.set("message.pascal_name", pascal_case(message.name));
             message_generator.set("message.id", String::number(message_ids.size()));
 
             message_generator.append(R"~~~(
-    @message.name@ = @message.id@,
+    @message.pascal_name@ = @message.id@,
 )~~~");
             if (message.is_synchronous) {
                 message_ids.set(message.response_name(), message_ids.size() + 1);
                 message_generator.set("message.name", message.response_name());
+                message_generator.set("message.pascal_name", pascal_case(message.response_name()));
                 message_generator.set("message.id", String::number(message_ids.size()));
 
                 message_generator.append(R"~~~(
-    @message.name@ = @message.id@,
+    @message.pascal_name@ = @message.id@,
 )~~~");
             }
         }
@@ -294,12 +363,14 @@ enum class MessageID : i32 {
 
         auto do_message = [&](const String& name, const Vector<Parameter>& parameters, const String& response_type = {}) {
             auto message_generator = endpoint_generator.fork();
+            auto pascal_name = pascal_case(name);
             message_generator.set("message.name", name);
+            message_generator.set("message.pascal_name", pascal_name);
             message_generator.set("message.response_type", response_type);
-            message_generator.set("message.constructor", constructor_for_message(name, parameters));
+            message_generator.set("message.constructor", constructor_for_message(pascal_name, parameters));
 
             message_generator.append(R"~~~(
-class @message.name@ final : public IPC::Message {
+class @message.pascal_name@ final : public IPC::Message {
 public:
 )~~~");
 
@@ -309,15 +380,19 @@ public:
 )~~~");
 
             message_generator.append(R"~~~(
+    @message.pascal_name@(decltype(nullptr)) : m_ipc_message_valid(false) { }
+    @message.pascal_name@(@message.pascal_name@ const&) = default;
+    @message.pascal_name@(@message.pascal_name@&&) = default;
+    @message.pascal_name@& operator=(@message.pascal_name@ const&) = default;
     @message.constructor@
-    virtual ~@message.name@() override {}
+    virtual ~@message.pascal_name@() override {}
 
-    virtual i32 endpoint_magic() const override { return @endpoint.magic@; }
-    virtual i32 message_id() const override { return (int)MessageID::@message.name@; }
-    static i32 static_message_id() { return (int)MessageID::@message.name@; }
-    virtual const char* message_name() const override { return "@endpoint.name@::@message.name@"; }
+    virtual u32 endpoint_magic() const override { return @endpoint.magic@; }
+    virtual i32 message_id() const override { return (int)MessageID::@message.pascal_name@; }
+    static i32 static_message_id() { return (int)MessageID::@message.pascal_name@; }
+    virtual const char* message_name() const override { return "@endpoint.name@::@message.pascal_name@"; }
 
-    static OwnPtr<@message.name@> decode(InputMemoryStream& stream, int sockfd)
+    static OwnPtr<@message.pascal_name@> decode(InputMemoryStream& stream, [[maybe_unused]] int sockfd)
     {
         IPC::Decoder decoder { stream, sockfd };
 )~~~");
@@ -360,17 +435,21 @@ public:
             message_generator.set("message.constructor_call_parameters", builder.build());
 
             message_generator.append(R"~~~(
-        return make<@message.name@>(@message.constructor_call_parameters@);
+        return make<@message.pascal_name@>(@message.constructor_call_parameters@);
     }
 )~~~");
 
             message_generator.append(R"~~~(
+    virtual bool valid() const { return m_ipc_message_valid; }
+
     virtual IPC::MessageBuffer encode() const override
     {
+        VERIFY(valid());
+
         IPC::MessageBuffer buffer;
         IPC::Encoder stream(buffer);
         stream << endpoint_magic();
-        stream << (int)MessageID::@message.name@;
+        stream << (int)MessageID::@message.pascal_name@;
 )~~~");
 
             for (auto& parameter : parameters) {
@@ -393,11 +472,13 @@ public:
                 parameter_generator.set("parameter.name", parameter.name);
                 parameter_generator.append(R"~~~(
     const @parameter.type@& @parameter.name@() const { return m_@parameter.name@; }
+    @parameter.type@ take_@parameter.name@() { return move(m_@parameter.name@); }
 )~~~");
             }
 
             message_generator.append(R"~~~(
 private:
+    bool m_ipc_message_valid { true };
             )~~~");
 
             for (auto& parameter : parameters) {
@@ -427,39 +508,176 @@ private:
         )~~~");
 
         endpoint_generator.append(R"~~~(
-class @endpoint.name@Endpoint : public IPC::Endpoint {
+template<typename LocalEndpoint, typename PeerEndpoint>
+class @endpoint.name@Proxy {
 public:
-    @endpoint.name@Endpoint() { }
-    virtual ~@endpoint.name@Endpoint() override { }
+    // Used to disambiguate the constructor call.
+    struct Tag { };
 
-    static int static_magic() { return @endpoint.magic@; }
-    virtual int magic() const override { return @endpoint.magic@; }
-    static String static_name() { return "@endpoint.name@"; }
-    virtual String name() const override { return "@endpoint.name@"; }
+    @endpoint.name@Proxy(IPC::Connection<LocalEndpoint, PeerEndpoint>& connection, Tag)
+        : m_connection(connection)
+    { }
+)~~~");
 
-    static OwnPtr<IPC::Message> decode_message(ReadonlyBytes buffer, int sockfd)
+        for (auto& message : endpoint.messages) {
+            auto message_generator = endpoint_generator.fork();
+
+            auto do_implement_proxy = [&](String const& name, Vector<Parameter> const& parameters, bool is_synchronous, bool is_try) {
+                String return_type = "void";
+                if (is_synchronous) {
+                    if (message.outputs.size() == 1)
+                        return_type = message.outputs[0].type;
+                    else if (!message.outputs.is_empty())
+                        return_type = message_name(endpoint.name, message.name, true);
+                }
+                String inner_return_type = return_type;
+                if (is_try) {
+                    StringBuilder builder;
+                    builder.append("Result<");
+                    builder.append(return_type);
+                    builder.append(", IPC::ErrorCode>");
+                    return_type = builder.to_string();
+                }
+                message_generator.set("message.name", message.name);
+                message_generator.set("message.pascal_name", pascal_case(message.name));
+                message_generator.set("message.complex_return_type", return_type);
+                message_generator.set("async_prefix_maybe", is_synchronous ? "" : "async_");
+                message_generator.set("try_prefix_maybe", is_try ? "try_" : "");
+
+                message_generator.set("handler_name", name);
+                message_generator.append(R"~~~(
+    @message.complex_return_type@ @try_prefix_maybe@@async_prefix_maybe@@handler_name@()~~~");
+
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    auto& parameter = parameters[i];
+                    auto argument_generator = message_generator.fork();
+                    argument_generator.set("argument.type", parameter.type);
+                    argument_generator.set("argument.name", parameter.name);
+                    argument_generator.append("@argument.type@ @argument.name@");
+                    if (i != parameters.size() - 1)
+                        argument_generator.append(", ");
+                }
+
+                message_generator.append(") {");
+
+                if (is_synchronous && !is_try) {
+                    if (return_type != "void") {
+                        message_generator.append(R"~~~(
+        return )~~~");
+                        if (message.outputs.size() != 1)
+                            message_generator.append("move(*");
+                    } else {
+                        message_generator.append(R"~~~(
+        )~~~");
+                    }
+
+                    message_generator.append("m_connection.template send_sync<Messages::@endpoint.name@::@message.pascal_name@>(");
+                } else if (is_try) {
+                    message_generator.append(R"~~~(
+        auto result = m_connection.template send_sync_but_allow_failure<Messages::@endpoint.name@::@message.pascal_name@>()~~~");
+                } else {
+                    message_generator.append(R"~~~(
+        m_connection.post_message(Messages::@endpoint.name@::@message.pascal_name@ { )~~~");
+                }
+
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    auto& parameter = parameters[i];
+                    auto argument_generator = message_generator.fork();
+                    argument_generator.set("argument.name", parameter.name);
+                    if (is_primitive_type(parameters[i].type))
+                        argument_generator.append("@argument.name@");
+                    else
+                        argument_generator.append("move(@argument.name@)");
+                    if (i != parameters.size() - 1)
+                        argument_generator.append(", ");
+                }
+
+                if (is_synchronous && !is_try) {
+                    if (return_type != "void") {
+                        message_generator.append(")");
+                    }
+
+                    if (message.outputs.size() == 1) {
+                        message_generator.append("->take_");
+                        message_generator.append(message.outputs[0].name);
+                        message_generator.append("()");
+                    } else
+                        message_generator.append(")");
+
+                    message_generator.append(";");
+                } else if (is_try) {
+                    message_generator.append(R"~~~();
+        if (!result)
+            return IPC::ErrorCode::PeerDisconnected;
+)~~~");
+                    if (inner_return_type != "void") {
+                        message_generator.append(R"~~~(
+        return move(*result);
+)~~~");
+                    } else {
+                        message_generator.append(R"~~~(
+        return { };
+)~~~");
+                    }
+                } else {
+                    message_generator.append(R"~~~( });
+)~~~");
+                }
+
+                message_generator.append(R"~~~(
+    }
+)~~~");
+            };
+
+            do_implement_proxy(message.name, message.inputs, message.is_synchronous, false);
+            if (message.is_synchronous) {
+                do_implement_proxy(message.name, message.inputs, false, false);
+                do_implement_proxy(message.name, message.inputs, true, true);
+            }
+        }
+
+        endpoint_generator.append(R"~~~(
+private:
+    IPC::Connection<LocalEndpoint, PeerEndpoint>& m_connection;
+};
+)~~~");
+
+        endpoint_generator.append(R"~~~(
+template<typename LocalEndpoint, typename PeerEndpoint>
+class @endpoint.name@Proxy;
+class @endpoint.name@Stub;
+
+class @endpoint.name@Endpoint {
+public:
+    template<typename LocalEndpoint>
+    using Proxy = @endpoint.name@Proxy<LocalEndpoint, @endpoint.name@Endpoint>;
+    using Stub = @endpoint.name@Stub;
+
+    static u32 static_magic() { return @endpoint.magic@; }
+
+    static OwnPtr<IPC::Message> decode_message(ReadonlyBytes buffer, [[maybe_unused]] int sockfd)
     {
         InputMemoryStream stream { buffer };
-        i32 message_endpoint_magic = 0;
+        u32 message_endpoint_magic = 0;
         stream >> message_endpoint_magic;
         if (stream.handle_any_error()) {
 )~~~");
-#if GENERATE_DEBUG_CODE
-        endpoint_generator.append(R"~~~(
-            dbgln("Failed to read message endpoint magic");
+        if constexpr (GENERATE_DEBUG) {
+            endpoint_generator.append(R"~~~(
+                dbgln("Failed to read message endpoint magic");
 )~~~");
-#endif
+        }
         endpoint_generator.append(R"~~~(
             return {};
         }
 
         if (message_endpoint_magic != @endpoint.magic@) {
 )~~~");
-#if GENERATE_DEBUG_CODE
-        endpoint_generator.append(R"~~~(
-            dbgln("Endpoint magic number message_endpoint_magic != @endpoint.magic@");
+        if constexpr (GENERATE_DEBUG) {
+            endpoint_generator.append(R"~~~(
+                dbgln("@endpoint.name@: Endpoint magic number message_endpoint_magic != @endpoint.magic@, not my message! (the other endpoint may have handled it)");
 )~~~");
-#endif
+        }
         endpoint_generator.append(R"~~~(
             return {};
         }
@@ -468,11 +686,11 @@ public:
         stream >> message_id;
         if (stream.handle_any_error()) {
 )~~~");
-#if GENERATE_DEBUG_CODE
-        endpoint_generator.append(R"~~~(
-            dbgln("Failed to read message ID");
+        if constexpr (GENERATE_DEBUG) {
+            endpoint_generator.append(R"~~~(
+                dbgln("Failed to read message ID");
 )~~~");
-#endif
+        }
         endpoint_generator.append(R"~~~(
             return {};
         }
@@ -486,10 +704,11 @@ public:
                 auto message_generator = endpoint_generator.fork();
 
                 message_generator.set("message.name", name);
+                message_generator.set("message.pascal_name", pascal_case(name));
 
                 message_generator.append(R"~~~(
-        case (int)Messages::@endpoint.name@::MessageID::@message.name@:
-            message = Messages::@endpoint.name@::@message.name@::decode(stream, sockfd);
+        case (int)Messages::@endpoint.name@::MessageID::@message.pascal_name@:
+            message = Messages::@endpoint.name@::@message.pascal_name@::decode(stream, sockfd);
             break;
 )~~~");
             };
@@ -502,22 +721,22 @@ public:
         endpoint_generator.append(R"~~~(
         default:
 )~~~");
-#if GENERATE_DEBUG_CODE
-        endpoint_generator.append(R"~~~(
-            dbgln("Failed to decode @endpoint.name@.({})", message_id);
+        if constexpr (GENERATE_DEBUG) {
+            endpoint_generator.append(R"~~~(
+                dbgln("Failed to decode @endpoint.name@.({})", message_id);
 )~~~");
-#endif
+        }
         endpoint_generator.append(R"~~~(
             return {};
         }
 
         if (stream.handle_any_error()) {
 )~~~");
-#if GENERATE_DEBUG_CODE
-        endpoint_generator.append(R"~~~(
-            dbgln("Failed to read the message");
+        if constexpr (GENERATE_DEBUG) {
+            endpoint_generator.append(R"~~~(
+                dbgln("Failed to read the message");
 )~~~");
-#endif
+        }
         endpoint_generator.append(R"~~~(
             return {};
         }
@@ -525,32 +744,70 @@ public:
         return message;
     }
 
-    virtual OwnPtr<IPC::Message> handle(const IPC::Message& message) override
+};
+
+class @endpoint.name@Stub : public IPC::Stub {
+public:
+    @endpoint.name@Stub() { }
+    virtual ~@endpoint.name@Stub() override { }
+
+    virtual u32 magic() const override { return @endpoint.magic@; }
+    virtual String name() const override { return "@endpoint.name@"; }
+
+    virtual OwnPtr<IPC::MessageBuffer> handle(const IPC::Message& message) override
     {
         switch (message.message_id()) {
 )~~~");
         for (auto& message : endpoint.messages) {
-            auto do_decode_message = [&](const String& name, bool returns_something) {
+            auto do_handle_message = [&](String const& name, Vector<Parameter> const& parameters, bool returns_something) {
                 auto message_generator = endpoint_generator.fork();
 
-                message_generator.set("message.name", name);
+                StringBuilder argument_generator;
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    auto& parameter = parameters[i];
+                    argument_generator.append("request.");
+                    argument_generator.append(parameter.name);
+                    argument_generator.append("()");
+                    if (i != parameters.size() - 1)
+                        argument_generator.append(", ");
+                }
+
+                message_generator.set("message.pascal_name", pascal_case(name));
+                message_generator.set("message.response_type", pascal_case(message.response_name()));
+                message_generator.set("handler_name", name);
+                message_generator.set("arguments", argument_generator.to_string());
                 message_generator.append(R"~~~(
-        case (int)Messages::@endpoint.name@::MessageID::@message.name@:
+        case (int)Messages::@endpoint.name@::MessageID::@message.pascal_name@: {
 )~~~");
                 if (returns_something) {
-                    message_generator.append(R"~~~(
-            return handle(static_cast<const Messages::@endpoint.name@::@message.name@&>(message));
+                    if (message.outputs.is_empty()) {
+                        message_generator.append(R"~~~(
+            [[maybe_unused]] auto& request = static_cast<const Messages::@endpoint.name@::@message.pascal_name@&>(message);
+            @handler_name@(@arguments@);
+            auto response = Messages::@endpoint.name@::@message.response_type@ { };
+            return make<IPC::MessageBuffer>(response.encode());
 )~~~");
+                    } else {
+                        message_generator.append(R"~~~(
+            [[maybe_unused]] auto& request = static_cast<const Messages::@endpoint.name@::@message.pascal_name@&>(message);
+            auto response = @handler_name@(@arguments@);
+            if (!response.valid())
+                return {};
+            return make<IPC::MessageBuffer>(response.encode());
+)~~~");
+                    }
                 } else {
                     message_generator.append(R"~~~(
-            handle(static_cast<const Messages::@endpoint.name@::@message.name@&>(message));
+            [[maybe_unused]] auto& request = static_cast<const Messages::@endpoint.name@::@message.pascal_name@&>(message);
+            @handler_name@(@arguments@);
             return {};
 )~~~");
                 }
+                message_generator.append(R"~~~(
+        }
+)~~~");
             };
-            do_decode_message(message.name, message.is_synchronous);
-            if (message.is_synchronous)
-                do_decode_message(message.response_name(), false);
+            do_handle_message(message.name, message.inputs, message.is_synchronous);
         }
         endpoint_generator.append(R"~~~(
         default:
@@ -562,53 +819,81 @@ public:
         for (auto& message : endpoint.messages) {
             auto message_generator = endpoint_generator.fork();
 
-            message_generator.set("message.name", message.name);
+            auto do_handle_message_decl = [&](String const& name, Vector<Parameter> const& parameters, bool is_response) {
+                String return_type = "void";
+                if (message.is_synchronous && !message.outputs.is_empty() && !is_response)
+                    return_type = message_name(endpoint.name, message.name, true);
+                message_generator.set("message.complex_return_type", return_type);
 
-            String return_type = "void";
-            if (message.is_synchronous) {
-                StringBuilder builder;
-                builder.append("OwnPtr<Messages::");
-                builder.append(endpoint.name);
-                builder.append("::");
-                builder.append(message.name);
-                builder.append("Response");
-                builder.append(">");
-                return_type = builder.to_string();
-            }
-            message_generator.set("message.complex_return_type", return_type);
+                message_generator.set("handler_name", name);
+                message_generator.append(R"~~~(
+    virtual @message.complex_return_type@ @handler_name@()~~~");
 
-            message_generator.append(R"~~~(
-    virtual @message.complex_return_type@ handle(const Messages::@endpoint.name@::@message.name@&) = 0;
+                auto make_argument_type = [](String const& type) {
+                    StringBuilder builder;
+
+                    bool const_ref = !is_primitive_type(type);
+
+                    builder.append(type);
+                    if (const_ref)
+                        builder.append(" const&");
+
+                    return builder.to_string();
+                };
+
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    auto& parameter = parameters[i];
+                    auto argument_generator = message_generator.fork();
+                    argument_generator.set("argument.type", make_argument_type(parameter.type));
+                    argument_generator.set("argument.name", parameter.name);
+                    argument_generator.append("[[maybe_unused]] @argument.type@ @argument.name@");
+                    if (i != parameters.size() - 1)
+                        argument_generator.append(", ");
+                }
+
+                if (is_response) {
+                    message_generator.append(R"~~~() { };
 )~~~");
+                } else {
+                    message_generator.append(R"~~~() = 0;
+)~~~");
+                }
+            };
+
+            do_handle_message_decl(message.name, message.inputs, false);
         }
 
         endpoint_generator.append(R"~~~(
 private:
 };
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 )~~~");
     }
 
     outln("{}", generator.as_string_view());
 
-#ifdef DEBUG
-    for (auto& endpoint : endpoints) {
-        warnln("Endpoint '{}' (magic: {})", endpoint.name, endpoint.magic);
-        for (auto& message : endpoint.messages) {
-            warnln("  Message: '{}'", message.name);
-            warnln("    Sync: {}", message.is_synchronous);
-            warnln("    Inputs:");
-            for (auto& parameter : message.inputs)
-                warnln("      Parameter: {} ({})", parameter.name, parameter.type);
-            if (message.inputs.is_empty())
-                warnln("      (none)");
-            if (message.is_synchronous) {
-                warnln("    Outputs:");
-                for (auto& parameter : message.outputs)
+    if constexpr (GENERATE_DEBUG) {
+        for (auto& endpoint : endpoints) {
+            warnln("Endpoint '{}' (magic: {})", endpoint.name, endpoint.magic);
+            for (auto& message : endpoint.messages) {
+                warnln("  Message: '{}'", message.name);
+                warnln("    Sync: {}", message.is_synchronous);
+                warnln("    Inputs:");
+                for (auto& parameter : message.inputs)
                     warnln("      Parameter: {} ({})", parameter.name, parameter.type);
-                if (message.outputs.is_empty())
+                if (message.inputs.is_empty())
                     warnln("      (none)");
+                if (message.is_synchronous) {
+                    warnln("    Outputs:");
+                    for (auto& parameter : message.outputs)
+                        warnln("      Parameter: {} ({})", parameter.name, parameter.type);
+                    if (message.outputs.is_empty())
+                        warnln("      (none)");
+                }
             }
         }
     }
-#endif
 }

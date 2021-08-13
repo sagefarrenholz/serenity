@@ -1,33 +1,14 @@
 /*
  * Copyright (c) 2021, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Preprocessor.h"
 #include <AK/Assertions.h>
 #include <AK/GenericLexer.h>
 #include <AK/StringBuilder.h>
+#include <LibCpp/Lexer.h>
 #include <ctype.h>
 
 namespace Cpp {
@@ -35,45 +16,100 @@ Preprocessor::Preprocessor(const String& filename, const StringView& program)
     : m_filename(filename)
     , m_program(program)
 {
-    m_lines = m_program.split_view('\n', true);
+    GenericLexer program_lexer { m_program };
+    for (;;) {
+        if (program_lexer.is_eof())
+            break;
+        auto line = program_lexer.consume_until('\n');
+        bool has_multiline = false;
+        while (line.ends_with('\\') && !program_lexer.is_eof()) {
+            auto continuation = program_lexer.consume_until('\n');
+            line = StringView { line.characters_without_null_termination(), line.length() + continuation.length() + 1 };
+            // Append an empty line to keep the line count correct.
+            m_lines.append({});
+            has_multiline = true;
+        }
+
+        if (has_multiline)
+            m_lines.last() = line;
+        else
+            m_lines.append(line);
+    }
 }
 
-const String& Preprocessor::process()
+Vector<Token> Preprocessor::process_and_lex()
 {
     for (; m_line_index < m_lines.size(); ++m_line_index) {
         auto& line = m_lines[m_line_index];
+
+        bool include_in_processed_text = false;
         if (line.starts_with("#")) {
-            handle_preprocessor_line(line);
+            auto keyword = handle_preprocessor_line(line);
+            if (m_options.keep_include_statements && keyword == "include")
+                include_in_processed_text = true;
         } else if (m_state == State::Normal) {
-            m_builder.append(line);
+            include_in_processed_text = true;
         }
-        m_builder.append("\n");
+
+        if (include_in_processed_text) {
+            process_line(line);
+        }
     }
 
-    m_processed_text = m_builder.to_string();
-    return m_processed_text;
+    return m_tokens;
 }
 
-void Preprocessor::handle_preprocessor_line(const StringView& line)
+static void consume_whitespace(GenericLexer& lexer)
+{
+    auto ignore_line = [&] {
+        for (;;) {
+            if (lexer.consume_specific("\\\n"sv)) {
+                lexer.ignore(2);
+            } else {
+                lexer.ignore_until('\n');
+                break;
+            }
+        }
+    };
+    for (;;) {
+        if (lexer.consume_specific("//"sv))
+            ignore_line();
+        else if (lexer.consume_specific("/*"sv))
+            lexer.ignore_until("*/");
+        else if (lexer.next_is("\\\n"sv))
+            lexer.ignore(2);
+        else if (lexer.is_eof() || !lexer.next_is(isspace))
+            break;
+        else
+            lexer.ignore();
+    }
+}
+
+Preprocessor::PreprocessorKeyword Preprocessor::handle_preprocessor_line(const StringView& line)
 {
     GenericLexer lexer(line);
 
-    auto consume_whitespace = [&] {
-        lexer.ignore_while([](char ch) { return isspace(ch); });
-        if (lexer.peek() == '/' && lexer.peek(1) == '/')
-            lexer.ignore_until([](char ch) { return ch == '\n'; });
-    };
-
-    consume_whitespace();
+    consume_whitespace(lexer);
     lexer.consume_specific('#');
-    consume_whitespace();
+    consume_whitespace(lexer);
     auto keyword = lexer.consume_until(' ');
     if (keyword.is_empty() || keyword.is_null() || keyword.is_whitespace())
-        return;
+        return {};
 
+    handle_preprocessor_keyword(keyword, lexer);
+    return keyword;
+}
+
+void Preprocessor::handle_preprocessor_keyword(const StringView& keyword, GenericLexer& line_lexer)
+{
     if (keyword == "include") {
-        consume_whitespace();
-        m_included_paths.append(lexer.consume_all());
+        consume_whitespace(line_lexer);
+        auto include_path = line_lexer.consume_all();
+        m_included_paths.append(include_path);
+        if (definitions_in_header_callback) {
+            for (auto& def : definitions_in_header_callback(include_path))
+                m_definitions.set(def.key, def.value);
+        }
         return;
     }
 
@@ -104,14 +140,14 @@ void Preprocessor::handle_preprocessor_line(const StringView& line)
 
     if (keyword == "define") {
         if (m_state == State::Normal) {
-            auto key = lexer.consume_until(' ');
-            consume_whitespace();
+            auto key = line_lexer.consume_until(' ');
+            consume_whitespace(line_lexer);
 
             DefinedValue value;
             value.filename = m_filename;
             value.line = m_line_index;
 
-            auto string_value = lexer.consume_all();
+            auto string_value = line_lexer.consume_all();
             if (!string_value.is_empty())
                 value.value = string_value;
 
@@ -121,8 +157,8 @@ void Preprocessor::handle_preprocessor_line(const StringView& line)
     }
     if (keyword == "undef") {
         if (m_state == State::Normal) {
-            auto key = lexer.consume_until(' ');
-            lexer.consume_all();
+            auto key = line_lexer.consume_until(' ');
+            line_lexer.consume_all();
             m_definitions.remove(key);
         }
         return;
@@ -130,7 +166,7 @@ void Preprocessor::handle_preprocessor_line(const StringView& line)
     if (keyword == "ifdef") {
         ++m_current_depth;
         if (m_state == State::Normal) {
-            auto key = lexer.consume_until(' ');
+            auto key = line_lexer.consume_until(' ');
             if (m_definitions.contains(key)) {
                 m_depths_of_taken_branches.append(m_current_depth - 1);
                 return;
@@ -145,7 +181,7 @@ void Preprocessor::handle_preprocessor_line(const StringView& line)
     if (keyword == "ifndef") {
         ++m_current_depth;
         if (m_state == State::Normal) {
-            auto key = lexer.consume_until(' ');
+            auto key = line_lexer.consume_until(' ');
             if (!m_definitions.contains(key)) {
                 m_depths_of_taken_branches.append(m_current_depth - 1);
                 return;
@@ -181,7 +217,7 @@ void Preprocessor::handle_preprocessor_line(const StringView& line)
         return;
     }
     if (keyword == "pragma") {
-        lexer.consume_all();
+        line_lexer.consume_all();
         return;
     }
 
@@ -191,10 +227,39 @@ void Preprocessor::handle_preprocessor_line(const StringView& line)
     }
 }
 
-const String& Preprocessor::processed_text()
+void Preprocessor::process_line(StringView const& line)
 {
-    VERIFY(!m_processed_text.is_null());
-    return m_processed_text;
+    Lexer line_lexer { line, m_line_index };
+    auto tokens = line_lexer.lex();
+
+    for (auto& token : tokens) {
+        if (token.type() == Token::Type::Whitespace)
+            continue;
+        if (token.type() == Token::Type::Identifier) {
+            if (auto defined_value = m_definitions.find(token.text()); defined_value != m_definitions.end()) {
+                do_substitution(token, defined_value->value);
+                continue;
+            }
+        }
+        m_tokens.append(token);
+    }
+}
+
+void Preprocessor::do_substitution(Token const& replaced_token, DefinedValue const& defined_value)
+{
+    m_substitutions.append({ replaced_token, defined_value });
+
+    if (defined_value.value.is_null())
+        return;
+
+    Lexer lexer(m_substitutions.last().defined_value.value);
+    for (auto& token : lexer.lex()) {
+        if (token.type() == Token::Type::Whitespace)
+            continue;
+        token.set_start(replaced_token.start());
+        token.set_end(replaced_token.end());
+        m_tokens.append(token);
+    }
 }
 
 };

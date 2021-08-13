@@ -1,49 +1,31 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * Copyright (c) 2020, the SerenityOS developers
- * All rights reserved.
+ * Copyright (c) 2020-2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include "ClassViewWidget.h"
 #include "Debugger/DebugInfoWidget.h"
 #include "Debugger/DisassemblyWidget.h"
 #include "EditorWrapper.h"
 #include "FindInFilesWidget.h"
-#include "FormEditorWidget.h"
+#include "GMLPreviewWidget.h"
 #include "Git/DiffViewer.h"
 #include "Git/GitWidget.h"
 #include "Locator.h"
 #include "Project.h"
 #include "ProjectFile.h"
 #include "TerminalWrapper.h"
+#include "ToDoEntriesWidget.h"
 #include <LibGUI/ActionGroup.h>
-#include <LibGUI/ScrollBar.h>
+#include <LibGUI/Scrollbar.h>
 #include <LibGUI/Splitter.h>
 #include <LibGUI/Widget.h>
-#include <LibThread/Thread.h>
+#include <LibThreading/Thread.h>
 
 namespace HackStudio {
 
@@ -52,9 +34,7 @@ class HackStudioWidget : public GUI::Widget {
 
 public:
     virtual ~HackStudioWidget() override;
-    void open_file(const String& filename);
-
-    Vector<String> selected_file_names() const;
+    bool open_file(const String& filename);
 
     void update_actions();
     Project& project();
@@ -62,8 +42,8 @@ public:
     EditorWrapper& current_editor_wrapper();
     void set_current_editor_wrapper(RefPtr<EditorWrapper>);
 
-    String currently_open_file() const { return m_currently_open_file; }
-    void initialize_menubar(GUI::MenuBar&);
+    const String& active_file() const { return m_current_editor_wrapper->filename(); }
+    void initialize_menubar(GUI::Window&);
 
     Locator& locator()
     {
@@ -71,15 +51,21 @@ public:
         return *m_locator;
     }
 
+    enum class ContinueDecision {
+        No,
+        Yes
+    };
+    ContinueDecision warn_unsaved_changes(const String& prompt);
+
 private:
     static String get_full_path_of_serenity_source(const String& file);
+    Vector<String> selected_file_paths() const;
 
     HackStudioWidget(const String& path_to_project);
     void open_project(const String& root_path);
 
     enum class EditMode {
         Text,
-        Form,
         Diff,
     };
 
@@ -97,6 +83,8 @@ private:
     NonnullRefPtr<GUI::Action> create_remove_current_editor_action();
     NonnullRefPtr<GUI::Action> create_open_action();
     NonnullRefPtr<GUI::Action> create_save_action();
+    NonnullRefPtr<GUI::Action> create_save_as_action();
+    NonnullRefPtr<GUI::Action> create_show_in_file_manager_action();
     NonnullRefPtr<GUI::Action> create_add_editor_action();
     NonnullRefPtr<GUI::Action> create_add_terminal_action();
     NonnullRefPtr<GUI::Action> create_remove_current_terminal_action();
@@ -104,41 +92,44 @@ private:
     NonnullRefPtr<GUI::Action> create_build_action();
     NonnullRefPtr<GUI::Action> create_run_action();
     NonnullRefPtr<GUI::Action> create_stop_action();
-    NonnullRefPtr<GUI::Action> create_set_autocomplete_mode_action();
 
     void add_new_editor(GUI::Widget& parent);
-    NonnullRefPtr<EditorWrapper> get_editor_of_file(const String& file_name);
+    RefPtr<EditorWrapper> get_editor_of_file(const String& filename);
     String get_project_executable_path() const;
 
     void on_action_tab_change();
     void reveal_action_tab(GUI::Widget&);
     void initialize_debugger();
+    void update_statusbar();
 
-    void create_project_tree_view(GUI::Widget& parent);
+    void handle_external_file_deletion(const String& filepath);
+
     void create_open_files_view(GUI::Widget& parent);
-    void create_form_editor(GUI::Widget& parent);
     void create_toolbar(GUI::Widget& parent);
     void create_action_tab(GUI::Widget& parent);
-    void create_app_menubar(GUI::MenuBar&);
-    void create_project_menubar(GUI::MenuBar&);
-    void create_edit_menubar(GUI::MenuBar&);
-    void create_build_menubar(GUI::MenuBar&);
-    void create_view_menubar(GUI::MenuBar&);
-    void create_help_menubar(GUI::MenuBar&);
+    void create_file_menu(GUI::Window&);
+    void create_project_menu(GUI::Window&);
+    void create_edit_menu(GUI::Window&);
+    void create_build_menu(GUI::Window&);
+    void create_view_menu(GUI::Window&);
+    void create_help_menu(GUI::Window&);
+    void create_project_tab(GUI::Widget& parent);
+    void configure_project_tree_view();
 
     void run(TerminalWrapper& wrapper);
     void build(TerminalWrapper& wrapper);
 
     void hide_action_tabs();
+    bool any_document_is_dirty() const;
+
+    void update_gml_preview();
 
     NonnullRefPtrVector<EditorWrapper> m_all_editor_wrappers;
     RefPtr<EditorWrapper> m_current_editor_wrapper;
 
-    // FIXME: This doesn't seem compatible with multiple split editors
-    String m_currently_open_file;
-
     HashMap<String, NonnullRefPtr<ProjectFile>> m_open_files;
-    Vector<String> m_open_files_vector; // NOTE: This contains the keys from m_open_files
+    RefPtr<Core::FileWatcher> m_file_watcher;
+    Vector<String> m_open_files_vector; // NOTE: This contains the keys from m_open_files and m_file_watchers
 
     OwnPtr<Project> m_project;
 
@@ -147,24 +138,27 @@ private:
     RefPtr<GUI::VerticalSplitter> m_right_hand_splitter;
     RefPtr<GUI::StackWidget> m_right_hand_stack;
     RefPtr<GUI::Splitter> m_editors_splitter;
-    RefPtr<GUI::Widget> m_form_inner_container;
-    RefPtr<FormEditorWidget> m_form_editor_widget;
-    RefPtr<GUI::TreeView> m_form_widget_tree_view;
     RefPtr<DiffViewer> m_diff_viewer;
     RefPtr<GitWidget> m_git_widget;
+    RefPtr<GMLPreviewWidget> m_gml_preview_widget;
+    RefPtr<ClassViewWidget> m_class_view;
     RefPtr<GUI::Menu> m_project_tree_view_context_menu;
+    RefPtr<GUI::Statusbar> m_statusbar;
     RefPtr<GUI::TabWidget> m_action_tab_widget;
+    RefPtr<GUI::TabWidget> m_project_tab;
     RefPtr<TerminalWrapper> m_terminal_wrapper;
     RefPtr<Locator> m_locator;
     RefPtr<FindInFilesWidget> m_find_in_files_widget;
+    RefPtr<ToDoEntriesWidget> m_todo_entries_widget;
     RefPtr<DebugInfoWidget> m_debug_info_widget;
     RefPtr<DisassemblyWidget> m_disassembly_widget;
-    RefPtr<LibThread::Thread> m_debugger_thread;
+    RefPtr<Threading::Thread> m_debugger_thread;
     RefPtr<EditorWrapper> m_current_editor_in_execution;
 
     RefPtr<GUI::Action> m_new_file_action;
     RefPtr<GUI::Action> m_new_directory_action;
     RefPtr<GUI::Action> m_open_selected_action;
+    RefPtr<GUI::Action> m_show_in_file_manager_action;
     RefPtr<GUI::Action> m_delete_action;
     RefPtr<GUI::Action> m_rename_action;
     RefPtr<GUI::Action> m_new_project_action;
@@ -173,6 +167,7 @@ private:
     RefPtr<GUI::Action> m_remove_current_editor_action;
     RefPtr<GUI::Action> m_open_action;
     RefPtr<GUI::Action> m_save_action;
+    RefPtr<GUI::Action> m_save_as_action;
     RefPtr<GUI::Action> m_add_editor_action;
     RefPtr<GUI::Action> m_add_terminal_action;
     RefPtr<GUI::Action> m_remove_current_terminal_action;

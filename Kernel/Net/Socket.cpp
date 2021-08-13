@@ -1,35 +1,15 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/Net/IPv4Socket.h>
 #include <Kernel/Net/LocalSocket.h>
+#include <Kernel/Net/NetworkingManagement.h>
 #include <Kernel/Net/Socket.h>
 #include <Kernel/Process.h>
 #include <Kernel/UnixTypes.h>
@@ -71,7 +51,7 @@ void Socket::set_setup_state(SetupState new_setup_state)
 
 RefPtr<Socket> Socket::accept()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     if (m_pending.is_empty())
         return nullptr;
     dbgln_if(SOCKET_DEBUG, "Socket({}) de-queueing connection", this);
@@ -89,10 +69,11 @@ RefPtr<Socket> Socket::accept()
 KResult Socket::queue_connection_from(NonnullRefPtr<Socket> peer)
 {
     dbgln_if(SOCKET_DEBUG, "Socket({}) queueing connection", this);
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     if (m_pending.size() >= m_backlog)
-        return ECONNREFUSED;
-    m_pending.append(peer);
+        return set_so_error(ECONNREFUSED);
+    if (!m_pending.try_append(peer))
+        return set_so_error(ENOMEM);
     evaluate_block_conditions();
     return KSuccess;
 }
@@ -127,10 +108,10 @@ KResult Socket::setsockopt(int level, int option, Userspace<const void*> user_va
         if (user_value_size != IFNAMSIZ)
             return EINVAL;
         auto user_string = static_ptr_cast<const char*>(user_value);
-        auto ifname = copy_string_from_user(user_string, user_value_size);
-        if (ifname.is_null())
-            return EFAULT;
-        auto device = NetworkAdapter::lookup_by_name(ifname);
+        auto ifname_or_error = try_copy_kstring_from_user(user_string, user_value_size);
+        if (ifname_or_error.is_error())
+            return ifname_or_error.error();
+        auto device = NetworkingManagement::the().lookup_by_name(ifname_or_error.value()->view());
         if (!device)
             return ENODEV;
         m_bound_interface = device;
@@ -200,14 +181,13 @@ KResult Socket::getsockopt(FileDescription&, int level, int option, Userspace<vo
     case SO_ERROR: {
         if (size < sizeof(int))
             return EINVAL;
-        dbgln("getsockopt(SO_ERROR): FIXME!");
-        int errno = 0;
+        int errno = so_error().error();
         if (!copy_to_user(static_ptr_cast<int*>(value), &errno))
             return EFAULT;
         size = sizeof(int);
         if (!copy_to_user(value_size, &size))
             return EFAULT;
-        return KSuccess;
+        return set_so_error(KSuccess);
     }
     case SO_BINDTODEVICE:
         if (size < IFNAMSIZ)
@@ -254,17 +234,17 @@ KResultOr<size_t> Socket::read(FileDescription& description, u64, UserOrKernelBu
 KResultOr<size_t> Socket::write(FileDescription& description, u64, const UserOrKernelBuffer& data, size_t size)
 {
     if (is_shut_down_for_writing())
-        return EPIPE;
+        return set_so_error(EPIPE);
     return sendto(description, data, size, 0, {}, 0);
 }
 
 KResult Socket::shutdown(int how)
 {
-    LOCKER(lock());
+    MutexLocker locker(lock());
     if (type() == SOCK_STREAM && !is_connected())
-        return ENOTCONN;
+        return set_so_error(ENOTCONN);
     if (m_role == Role::Listener)
-        return ENOTCONN;
+        return set_so_error(ENOTCONN);
     if (!m_shut_down_for_writing && (how & SHUT_WR))
         shut_down_for_writing();
     if (!m_shut_down_for_reading && (how & SHUT_RD))
@@ -283,7 +263,7 @@ KResult Socket::stat(::stat& st) const
 
 void Socket::set_connected(bool connected)
 {
-    LOCKER(lock());
+    MutexLocker locker(lock());
     if (m_connected == connected)
         return;
     m_connected = connected;

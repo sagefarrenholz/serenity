@@ -1,79 +1,151 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
  * Copyright (c) 2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "FileWatcher.h"
 #include <AK/Debug.h>
-#include <AK/Function.h>
 #include <AK/LexicalPath.h>
-#include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
-#include <AK/RefCounted.h>
 #include <AK/Result.h>
 #include <AK/String.h>
 #include <Kernel/API/InodeWatcherEvent.h>
-#include <LibCore/DirIterator.h>
+#include <Kernel/API/InodeWatcherFlags.h>
 #include <LibCore/Notifier.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Core {
 
-// Only supported in serenity mode because we use `watch_file`
+// Only supported in serenity mode because we use InodeWatcher syscalls
 #ifdef __serenity__
 
-static String get_child_path_from_inode_index(const String& path, unsigned child_inode_index)
+static Optional<FileWatcherEvent> get_event_from_fd(int fd, HashMap<unsigned, String> const& wd_to_path)
 {
-    DirIterator iterator(path, Core::DirIterator::SkipDots);
-    if (iterator.has_error()) {
+    u8 buffer[MAXIMUM_EVENT_SIZE];
+    int rc = read(fd, &buffer, MAXIMUM_EVENT_SIZE);
+    if (rc == 0) {
+        return {};
+    } else if (rc < 0) {
+        dbgln_if(FILE_WATCHER_DEBUG, "get_event_from_fd: Reading from wd {} failed: {}", fd, strerror(errno));
         return {};
     }
 
-    while (iterator.has_next()) {
-        auto child_full_path = String::formatted("{}/{}", path, iterator.next_path());
-        struct stat st;
+    InodeWatcherEvent* event = reinterpret_cast<InodeWatcherEvent*>(buffer);
+    FileWatcherEvent result;
 
-        if (lstat(child_full_path.characters(), &st)) {
-            return {};
-        }
-
-        if (st.st_ino == child_inode_index) {
-            return child_full_path;
-        }
+    auto it = wd_to_path.find(event->watch_descriptor);
+    if (it == wd_to_path.end()) {
+        dbgln_if(FILE_WATCHER_DEBUG, "get_event_from_fd: Got an event for a non-existent wd {}?!", event->watch_descriptor);
+        return {};
     }
-    return {};
+    String const& path = it->value;
+
+    switch (event->type) {
+    case InodeWatcherEvent::Type::ChildCreated:
+        result.type = FileWatcherEvent::Type::ChildCreated;
+        break;
+    case InodeWatcherEvent::Type::ChildDeleted:
+        result.type = FileWatcherEvent::Type::ChildDeleted;
+        break;
+    case InodeWatcherEvent::Type::Deleted:
+        result.type = FileWatcherEvent::Type::Deleted;
+        break;
+    case InodeWatcherEvent::Type::ContentModified:
+        result.type = FileWatcherEvent::Type::ContentModified;
+        break;
+    case InodeWatcherEvent::Type::MetadataModified:
+        result.type = FileWatcherEvent::Type::MetadataModified;
+        break;
+    default:
+        warnln("Unknown event type {} returned by the watch_file descriptor for {}", static_cast<unsigned>(event->type), path);
+        return {};
+    }
+
+    // We trust that the kernel only sends the name when appropriate.
+    if (event->name_length > 0) {
+        String child_name { event->name, event->name_length - 1 };
+        result.event_path = LexicalPath::join(path, child_name).string();
+    } else {
+        result.event_path = path;
+    }
+
+    dbgln_if(FILE_WATCHER_DEBUG, "get_event_from_fd: got event from wd {} on '{}' type {}", fd, result.event_path, result.type);
+    return result;
 }
 
-BlockingFileWatcher::BlockingFileWatcher(const String& path)
-    : m_path(path)
+static String canonicalize_path(String path)
 {
-    m_watcher_fd = watch_file(path.characters(), path.length());
+    if (!path.is_empty() && path[0] == '/')
+        return LexicalPath::canonicalized_path(move(path));
+    char* cwd = getcwd(nullptr, 0);
+    VERIFY(cwd);
+    return LexicalPath::join(cwd, move(path)).string();
+}
+
+Result<bool, String> FileWatcherBase::add_watch(String path, FileWatcherEvent::Type event_mask)
+{
+    String canonical_path = canonicalize_path(move(path));
+
+    if (m_path_to_wd.find(canonical_path) != m_path_to_wd.end()) {
+        dbgln_if(FILE_WATCHER_DEBUG, "add_watch: path '{}' is already being watched", canonical_path);
+        return false;
+    }
+
+    auto kernel_mask = InodeWatcherEvent::Type::Invalid;
+    if (has_flag(event_mask, FileWatcherEvent::Type::ChildCreated))
+        kernel_mask |= InodeWatcherEvent::Type::ChildCreated;
+    if (has_flag(event_mask, FileWatcherEvent::Type::ChildDeleted))
+        kernel_mask |= InodeWatcherEvent::Type::ChildDeleted;
+    if (has_flag(event_mask, FileWatcherEvent::Type::Deleted))
+        kernel_mask |= InodeWatcherEvent::Type::Deleted;
+    if (has_flag(event_mask, FileWatcherEvent::Type::ContentModified))
+        kernel_mask |= InodeWatcherEvent::Type::ContentModified;
+    if (has_flag(event_mask, FileWatcherEvent::Type::MetadataModified))
+        kernel_mask |= InodeWatcherEvent::Type::MetadataModified;
+
+    int wd = inode_watcher_add_watch(m_watcher_fd, canonical_path.characters(), canonical_path.length(), static_cast<unsigned>(kernel_mask));
+    if (wd < 0)
+        return String::formatted("Could not watch file '{}' : {}", canonical_path, strerror(errno));
+
+    m_path_to_wd.set(canonical_path, wd);
+    m_wd_to_path.set(wd, canonical_path);
+
+    dbgln_if(FILE_WATCHER_DEBUG, "add_watch: watching path '{}' on InodeWatcher {} wd {}", canonical_path, m_watcher_fd, wd);
+    return true;
+}
+
+Result<bool, String> FileWatcherBase::remove_watch(String path)
+{
+    String canonical_path = canonicalize_path(move(path));
+
+    auto it = m_path_to_wd.find(canonical_path);
+    if (it == m_path_to_wd.end()) {
+        dbgln_if(FILE_WATCHER_DEBUG, "remove_watch: path '{}' is not being watched", canonical_path);
+        return false;
+    }
+
+    int rc = inode_watcher_remove_watch(m_watcher_fd, it->value);
+    if (rc < 0) {
+        return String::formatted("Could not stop watching file '{}' : {}", path, strerror(errno));
+    }
+
+    m_path_to_wd.remove(it);
+    m_wd_to_path.remove(it->value);
+
+    dbgln_if(FILE_WATCHER_DEBUG, "remove_watch: stopped watching path '{}' on InodeWatcher {}", canonical_path, m_watcher_fd);
+    return true;
+}
+
+BlockingFileWatcher::BlockingFileWatcher(InodeWatcherFlags flags)
+    : FileWatcherBase(create_inode_watcher(static_cast<unsigned>(flags)))
+{
     VERIFY(m_watcher_fd != -1);
+    dbgln_if(FILE_WATCHER_DEBUG, "BlockingFileWatcher created with InodeWatcher {}", m_watcher_fd);
 }
 
 BlockingFileWatcher::~BlockingFileWatcher()
@@ -83,80 +155,51 @@ BlockingFileWatcher::~BlockingFileWatcher()
 
 Optional<FileWatcherEvent> BlockingFileWatcher::wait_for_event()
 {
-    InodeWatcherEvent event {};
-    int rc = read(m_watcher_fd, &event, sizeof(event));
-    if (rc <= 0)
-        return {};
+    dbgln_if(FILE_WATCHER_DEBUG, "BlockingFileWatcher::wait_for_event()");
 
-    FileWatcherEvent result;
-    if (event.type == InodeWatcherEvent::Type::ChildAdded)
-        result.type = FileWatcherEvent::Type::ChildAdded;
-    else if (event.type == InodeWatcherEvent::Type::ChildRemoved)
-        result.type = FileWatcherEvent::Type::ChildRemoved;
-    else if (event.type == InodeWatcherEvent::Type::Modified)
-        result.type = FileWatcherEvent::Type::Modified;
-    else
-        return {};
+    auto maybe_event = get_event_from_fd(m_watcher_fd, m_wd_to_path);
+    if (!maybe_event.has_value())
+        return maybe_event;
 
-    if (result.type == FileWatcherEvent::Type::ChildAdded || result.type == FileWatcherEvent::Type::ChildRemoved) {
-        auto child_path = get_child_path_from_inode_index(m_path, event.inode_index);
-        if (!LexicalPath(child_path).is_valid())
-            return {};
-
-        result.child_path = child_path;
+    auto event = maybe_event.release_value();
+    if (event.type == FileWatcherEvent::Type::Deleted) {
+        auto result = remove_watch(event.event_path);
+        if (result.is_error()) {
+            dbgln_if(FILE_WATCHER_DEBUG, "wait_for_event: {}", result.error());
+        }
     }
 
-    return result;
+    return event;
 }
 
-Result<NonnullRefPtr<FileWatcher>, String> FileWatcher::watch(const String& path)
+Result<NonnullRefPtr<FileWatcher>, String> FileWatcher::create(InodeWatcherFlags flags)
 {
-    auto watch_fd = watch_file(path.characters(), path.length());
-    if (watch_fd < 0) {
-        return String::formatted("Could not watch file '{}' : {}", path.characters(), strerror(errno));
+    auto watcher_fd = create_inode_watcher(static_cast<unsigned>(flags | InodeWatcherFlags::CloseOnExec));
+    if (watcher_fd < 0) {
+        return String::formatted("FileWatcher: Could not create InodeWatcher: {}", strerror(errno));
     }
 
-    fcntl(watch_fd, F_SETFD, FD_CLOEXEC);
-    if (watch_fd < 0) {
-        return String::formatted("Could not watch file '{}' : {}", path.characters(), strerror(errno));
-    }
-
-    dbgln_if(FILE_WATCHER_DEBUG, "Started watcher for file '{}'", path.characters());
-    auto notifier = Notifier::construct(watch_fd, Notifier::Event::Read);
-    return adopt(*new FileWatcher(move(notifier), move(path)));
+    auto notifier = Notifier::construct(watcher_fd, Notifier::Event::Read);
+    return adopt_ref(*new FileWatcher(watcher_fd, move(notifier)));
 }
 
-FileWatcher::FileWatcher(NonnullRefPtr<Notifier> notifier, const String& path)
-    : m_notifier(move(notifier))
-    , m_path(path)
+FileWatcher::FileWatcher(int watcher_fd, NonnullRefPtr<Notifier> notifier)
+    : FileWatcherBase(watcher_fd)
+    , m_notifier(move(notifier))
 {
     m_notifier->on_ready_to_read = [this] {
-        InodeWatcherEvent event {};
-        int rc = read(m_notifier->fd(), &event, sizeof(event));
-        if (rc <= 0)
-            return;
+        auto maybe_event = get_event_from_fd(m_notifier->fd(), m_wd_to_path);
+        if (maybe_event.has_value()) {
+            auto event = maybe_event.value();
+            on_change(event);
 
-        FileWatcherEvent result;
-        if (event.type == InodeWatcherEvent::Type::ChildAdded) {
-            result.type = FileWatcherEvent::Type::ChildAdded;
-        } else if (event.type == InodeWatcherEvent::Type::ChildRemoved) {
-            result.type = FileWatcherEvent::Type::ChildRemoved;
-        } else if (event.type == InodeWatcherEvent::Type::Modified) {
-            result.type = FileWatcherEvent::Type::Modified;
-        } else {
-            warnln("Unknown event type {} returned by the watch_file descriptor for {}", (unsigned)event.type, m_path.characters());
-            return;
+            if (event.type == FileWatcherEvent::Type::Deleted) {
+                auto result = remove_watch(event.event_path);
+                if (result.is_error()) {
+                    dbgln_if(FILE_WATCHER_DEBUG, "on_ready_to_read: {}", result.error());
+                }
+            }
         }
-
-        if (result.type == FileWatcherEvent::Type::ChildAdded || result.type == FileWatcherEvent::Type::ChildRemoved) {
-            auto child_path = get_child_path_from_inode_index(m_path, event.inode_index);
-            if (!LexicalPath(child_path).is_valid())
-                return;
-
-            result.child_path = child_path;
-        }
-
-        on_change(result);
     };
 }
 
@@ -164,7 +207,7 @@ FileWatcher::~FileWatcher()
 {
     m_notifier->on_ready_to_read = nullptr;
     close(m_notifier->fd());
-    dbgln_if(FILE_WATCHER_DEBUG, "Ended watcher for file '{}'", m_path.characters());
+    dbgln_if(FILE_WATCHER_DEBUG, "Stopped watcher at fd {}", m_notifier->fd());
 }
 
 #endif

@@ -1,59 +1,78 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "TextEditorWidget.h"
+#include "FileArgument.h"
+#include "MainWidget.h"
 #include <LibCore/ArgsParser.h>
-#include <LibGUI/MenuBar.h>
-#include <LibGfx/Bitmap.h>
-#include <stdio.h>
-#include <unistd.h>
+#include <LibCore/File.h>
+#include <LibCore/StandardPaths.h>
+#include <LibGUI/Menubar.h>
+#include <LibGUI/MessageBox.h>
+
+using namespace TextEditor;
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio recvfd sendfd thread rpath accept cpath wpath unix fattr", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd thread rpath cpath wpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     auto app = GUI::Application::construct(argc, argv);
 
-    if (pledge("stdio recvfd sendfd thread rpath accept cpath wpath unix", nullptr) < 0) {
-        perror("pledge");
+    char const* preview_mode = "auto";
+    char const* file_to_edit = nullptr;
+    Core::ArgsParser parser;
+    parser.add_option(preview_mode, "Preview mode, one of 'none', 'html', 'markdown', 'auto'", "preview-mode", '\0', "mode");
+    parser.add_positional_argument(file_to_edit, "File to edit, with optional starting line and column number", "file[:line[:column]]", Core::ArgsParser::Required::No);
+
+    parser.parse(argc, argv);
+
+    String file_to_edit_full_path;
+
+    if (file_to_edit) {
+        FileArgument parsed_argument(file_to_edit);
+
+        file_to_edit_full_path = Core::File::absolute_path(parsed_argument.filename());
+        VERIFY(!file_to_edit_full_path.is_empty());
+        if (Core::File::exists(parsed_argument.filename())) {
+            dbgln("unveil for: {}", file_to_edit_full_path);
+            if (unveil(file_to_edit_full_path.characters(), "r") < 0) {
+                perror("unveil");
+                return 1;
+            }
+        }
+    }
+
+    if (unveil(Core::StandardPaths::config_directory().characters(), "rw") < 0) {
+        perror("unveil");
         return 1;
     }
 
-    const char* preview_mode = "auto";
-    int initial_line_number = 0;
-    const char* file_to_edit = nullptr;
-    Core::ArgsParser parser;
-    parser.add_option(preview_mode, "Preview mode, one of 'none', 'html', 'markdown', 'auto'", "preview-mode", '\0', "mode");
-    parser.add_option(initial_line_number, "Start at line number", "line-number", 'l', "line");
-    parser.add_positional_argument(file_to_edit, "File to edit", "file", Core::ArgsParser::Required::No);
+    if (unveil("/res", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
 
-    parser.parse(argc, argv);
+    if (unveil("/tmp/portal/launch", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/webcontent", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/filesystemaccess", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    unveil(nullptr, nullptr);
 
     StringView preview_mode_view = preview_mode;
 
@@ -62,7 +81,7 @@ int main(int argc, char** argv)
     auto window = GUI::Window::construct();
     window->resize(640, 400);
 
-    auto& text_widget = window->set_main_widget<TextEditorWidget>();
+    auto& text_widget = window->set_main_widget<MainWidget>();
 
     text_widget.editor().set_focus(true);
 
@@ -75,28 +94,38 @@ int main(int argc, char** argv)
     if (preview_mode_view == "auto") {
         text_widget.set_auto_detect_preview_mode(true);
     } else if (preview_mode_view == "markdown") {
-        text_widget.set_preview_mode(TextEditorWidget::PreviewMode::Markdown);
+        text_widget.set_preview_mode(MainWidget::PreviewMode::Markdown);
     } else if (preview_mode_view == "html") {
-        text_widget.set_preview_mode(TextEditorWidget::PreviewMode::HTML);
+        text_widget.set_preview_mode(MainWidget::PreviewMode::HTML);
     } else if (preview_mode_view == "none") {
-        text_widget.set_preview_mode(TextEditorWidget::PreviewMode::None);
+        text_widget.set_preview_mode(MainWidget::PreviewMode::None);
     } else {
         warnln("Invalid mode '{}'", preview_mode);
         return 1;
     }
 
-    auto menubar = GUI::MenuBar::construct();
-    text_widget.initialize_menubar(menubar);
-    app->set_menubar(menubar);
+    text_widget.initialize_menubar(*window);
 
-    if (file_to_edit)
-        if (!text_widget.open_file(file_to_edit))
-            return 1;
+    if (file_to_edit) {
+        // A file name was passed, parse any possible line and column numbers included.
+        FileArgument parsed_argument(file_to_edit);
+        if (Core::File::exists(file_to_edit_full_path)) {
+            auto file = Core::File::open(file_to_edit_full_path, Core::OpenMode::ReadOnly);
 
+            if (file.is_error()) {
+                GUI::MessageBox::show_error(window, String::formatted("Opening \"{}\" failed: {}", file_to_edit_full_path, file.error()));
+                return 1;
+            }
+
+            if (!text_widget.read_file_and_close(file.value()->leak_fd(), file_to_edit_full_path))
+                return 1;
+
+            text_widget.editor().set_cursor_and_focus_line(parsed_argument.line().value_or(1) - 1, parsed_argument.column().value_or(0));
+        } else {
+            text_widget.open_nonexistent_file(file_to_edit_full_path);
+        }
+    }
     text_widget.update_title();
-
-    if (initial_line_number != 0)
-        text_widget.editor().set_cursor_and_focus_line(initial_line_number - 1, 0);
 
     window->show();
     window->set_icon(app_icon.bitmap_for_size(16));

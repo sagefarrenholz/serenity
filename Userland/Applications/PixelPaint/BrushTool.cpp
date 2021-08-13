@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Ben Jilks <benjyjilks@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "BrushTool.h"
@@ -31,7 +11,7 @@
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/Slider.h>
+#include <LibGUI/ValueSlider.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/Rect.h>
 
@@ -45,11 +25,17 @@ BrushTool::~BrushTool()
 {
 }
 
-void BrushTool::on_mousedown(Layer&, GUI::MouseEvent& event, GUI::MouseEvent&)
+void BrushTool::on_mousedown(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&)
 {
     if (event.button() != GUI::MouseButton::Left && event.button() != GUI::MouseButton::Right)
         return;
 
+    const int first_draw_opacity = 10;
+
+    for (int i = 0; i < first_draw_opacity; ++i)
+        draw_point(layer.bitmap(), m_editor->color_for(event), event.position());
+
+    layer.did_modify_bitmap(Gfx::IntRect::centered_on(event.position(), Gfx::IntSize { m_size * 2, m_size * 2 }));
     m_last_position = event.position();
 }
 
@@ -59,7 +45,10 @@ void BrushTool::on_mousemove(Layer& layer, GUI::MouseEvent& event, GUI::MouseEve
         return;
 
     draw_line(layer.bitmap(), m_editor->color_for(event), m_last_position, event.position());
-    layer.did_modify_bitmap(*m_editor->image());
+
+    auto modified_rect = Gfx::IntRect::from_two_points(m_last_position, event.position()).inflated(m_size * 2, m_size * 2);
+
+    layer.did_modify_bitmap(modified_rect);
     m_last_position = event.position();
     m_was_drawing = true;
 }
@@ -72,7 +61,7 @@ void BrushTool::on_mouseup(Layer&, GUI::MouseEvent&, GUI::MouseEvent&)
     }
 }
 
-void BrushTool::draw_point(Gfx::Bitmap& bitmap, const Gfx::Color& color, const Gfx::IntPoint& point)
+void BrushTool::draw_point(Gfx::Bitmap& bitmap, Gfx::Color const& color, Gfx::IntPoint const& point)
 {
     for (int y = point.y() - m_size; y < point.y() + m_size; y++) {
         for (int x = point.x() - m_size; x < point.x() + m_size; x++) {
@@ -82,7 +71,7 @@ void BrushTool::draw_point(Gfx::Bitmap& bitmap, const Gfx::Color& color, const G
             if (distance >= m_size)
                 continue;
 
-            auto falloff = (1.0 - (distance / (float)m_size)) * (1.0f / (100 - m_hardness));
+            auto falloff = (1.0 - double { distance / m_size }) * (1.0 / (100 - m_hardness));
             auto pixel_color = color;
             pixel_color.set_alpha(falloff * 255);
             bitmap.set_pixel(x, y, bitmap.get_pixel(x, y).blend(pixel_color));
@@ -90,7 +79,7 @@ void BrushTool::draw_point(Gfx::Bitmap& bitmap, const Gfx::Color& color, const G
     }
 }
 
-void BrushTool::draw_line(Gfx::Bitmap& bitmap, const Gfx::Color& color, const Gfx::IntPoint& start, const Gfx::IntPoint& end)
+void BrushTool::draw_line(Gfx::Bitmap& bitmap, Gfx::Color const& color, Gfx::IntPoint const& start, Gfx::IntPoint const& end)
 {
     int length_x = end.x() - start.x();
     int length_y = end.y() - start.y();
@@ -137,11 +126,11 @@ GUI::Widget* BrushTool::get_properties_widget()
         size_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
         size_label.set_fixed_size(80, 20);
 
-        auto& size_slider = size_container.add<GUI::HorizontalSlider>();
-        size_slider.set_fixed_height(20);
+        auto& size_slider = size_container.add<GUI::ValueSlider>(Orientation::Horizontal, "px");
         size_slider.set_range(1, 100);
         size_slider.set_value(m_size);
-        size_slider.on_change = [this](int value) {
+
+        size_slider.on_change = [&](int value) {
             m_size = value;
         };
 
@@ -153,11 +142,11 @@ GUI::Widget* BrushTool::get_properties_widget()
         hardness_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
         hardness_label.set_fixed_size(80, 20);
 
-        auto& hardness_slider = hardness_container.add<GUI::HorizontalSlider>();
-        hardness_slider.set_fixed_height(20);
+        auto& hardness_slider = hardness_container.add<GUI::ValueSlider>(Orientation::Horizontal, "%");
         hardness_slider.set_range(1, 99);
         hardness_slider.set_value(m_hardness);
-        hardness_slider.on_change = [this](int value) {
+
+        hardness_slider.on_change = [&](int value) {
             m_hardness = value;
         };
     }

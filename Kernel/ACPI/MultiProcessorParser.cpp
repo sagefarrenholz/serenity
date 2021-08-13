@@ -1,28 +1,8 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/StringView.h>
@@ -30,9 +10,9 @@
 #include <Kernel/Arch/PC/BIOS.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Interrupts/IOAPIC.h>
+#include <Kernel/Memory/TypedMapping.h>
+#include <Kernel/Sections.h>
 #include <Kernel/StdLib.h>
-#include <Kernel/VM/MemoryManager.h>
-#include <Kernel/VM/TypedMapping.h>
 
 namespace Kernel {
 
@@ -41,7 +21,9 @@ UNMAP_AFTER_INIT OwnPtr<MultiProcessorParser> MultiProcessorParser::autodetect()
     auto floating_pointer = find_floating_pointer();
     if (!floating_pointer.has_value())
         return {};
-    return adopt_own(*new MultiProcessorParser(floating_pointer.value()));
+    auto parser = adopt_own_if_nonnull(new (nothrow) MultiProcessorParser(floating_pointer.value()));
+    VERIFY(parser != nullptr);
+    return parser;
 }
 
 UNMAP_AFTER_INIT MultiProcessorParser::MultiProcessorParser(PhysicalAddress floating_pointer)
@@ -54,15 +36,15 @@ UNMAP_AFTER_INIT MultiProcessorParser::MultiProcessorParser(PhysicalAddress floa
 
 UNMAP_AFTER_INIT void MultiProcessorParser::parse_floating_pointer_data()
 {
-    auto floating_pointer = map_typed<MultiProcessor::FloatingPointer>(m_floating_pointer);
+    auto floating_pointer = Memory::map_typed<MultiProcessor::FloatingPointer>(m_floating_pointer);
     m_configuration_table = PhysicalAddress(floating_pointer->physical_address_ptr);
     dbgln("Features {}, IMCR? {}", floating_pointer->feature_info[0], (floating_pointer->feature_info[0] & (1 << 7)));
 }
 
 UNMAP_AFTER_INIT void MultiProcessorParser::parse_configuration_table()
 {
-    auto configuration_table_length = map_typed<MultiProcessor::ConfigurationTableHeader>(m_configuration_table)->length;
-    auto config_table = map_typed<MultiProcessor::ConfigurationTableHeader>(m_configuration_table, configuration_table_length);
+    auto configuration_table_length = Memory::map_typed<MultiProcessor::ConfigurationTableHeader>(m_configuration_table)->length;
+    auto config_table = Memory::map_typed<MultiProcessor::ConfigurationTableHeader>(m_configuration_table, configuration_table_length);
 
     size_t entry_count = config_table->entry_count;
     auto* entry = config_table->entries;

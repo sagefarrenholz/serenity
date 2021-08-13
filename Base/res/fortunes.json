@@ -78,5 +78,29 @@
     "utc_time": 1615228585,
     "url": "https://freenode.logbot.info/serenityos/20210308#c7177736",
     "context": "Overflow-correct code is deviously hard. https://github.com/SerenityOS/serenity/commit/183b2e71ba8d85293db493cab27b8adb4af54981"
+  },
+  {
+    "quote": "clang-format formatted your JSON file? Call Brian at bgianf@serenityos.org today! *Terms and conditions apply",
+    "author": "Andrew Kaster",
+    "utc_time": 1619133730,
+    "url": "https://discord.com/channels/830522505605283862/830739873119207426/834932114125488149"
+  },
+  {
+    "quote": "we started with dialup and \"web 2.0\" and ended up with touchscreen smartphones sucking broadband out of thin air",
+    "author": "nooga",
+    "url": "https://discord.com/channels/830522505605283862/830525235803586570/864277610510549002",
+    "utc_time": 1626130562
+  },
+  {
+    "quote": "1.28 GiB worth of hash table is a lot of hash table",
+    "author": "awesomekling",
+    "url": "https://discord.com/channels/830522505605283862/830739873119207426/870071227929202738",
+    "utc_time": 1627511606
+  },
+  {
+    "quote": "Changelog: All boogs fixed, thar be no moar boogs",
+    "author": "CxByte",
+    "utc_time": "1627859603",
+    "url": "https://github.com/SerenityOS/serenity/pull/9127#issuecomment-890603297"
   }
 ]

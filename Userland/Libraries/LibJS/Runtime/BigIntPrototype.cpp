@@ -1,30 +1,11 @@
 /*
- * Copyright (c) 2020, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Function.h>
+#include <AK/TypeCasts.h>
 #include <LibJS/Runtime/BigIntObject.h>
 #include <LibJS/Runtime/BigIntPrototype.h>
 #include <LibJS/Runtime/Error.h>
@@ -46,44 +27,55 @@ void BigIntPrototype::initialize(GlobalObject& global_object)
     define_native_function(vm.names.toLocaleString, to_locale_string, 0, attr);
     define_native_function(vm.names.valueOf, value_of, 0, attr);
 
-    define_property(vm.well_known_symbol_to_string_tag(), js_string(global_object.heap(), "BigInt"), Attribute::Configurable);
+    // 21.2.3.5 BigInt.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-bigint.prototype-@@tostringtag
+    define_direct_property(*vm.well_known_symbol_to_string_tag(), js_string(global_object.heap(), vm.names.BigInt.as_string()), Attribute::Configurable);
 }
 
 BigIntPrototype::~BigIntPrototype()
 {
 }
 
-static BigIntObject* bigint_object_from(VM& vm, GlobalObject& global_object)
+// thisBigIntValue ( value ), https://tc39.es/ecma262/#thisbigintvalue
+static Value this_bigint_value(GlobalObject& global_object, Value value)
 {
-    auto* this_object = vm.this_value(global_object).to_object(global_object);
-    if (!this_object)
-        return nullptr;
-    if (!is<BigIntObject>(this_object)) {
-        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "BigInt");
-        return nullptr;
-    }
-    return static_cast<BigIntObject*>(this_object);
+    if (value.is_bigint())
+        return value;
+    if (value.is_object() && is<BigIntObject>(value.as_object()))
+        return &static_cast<BigIntObject&>(value.as_object()).bigint();
+    auto& vm = global_object.vm();
+    vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "BigInt");
+    return {};
 }
 
+// 21.2.3.3 BigInt.prototype.toString ( [ radix ] ), https://tc39.es/ecma262/#sec-bigint.prototype.tostring
 JS_DEFINE_NATIVE_FUNCTION(BigIntPrototype::to_string)
 {
-    auto* bigint_object = bigint_object_from(vm, global_object);
-    if (!bigint_object)
+    auto bigint_value = this_bigint_value(global_object, vm.this_value(global_object));
+    if (vm.exception())
         return {};
-    return js_string(vm, bigint_object->bigint().big_integer().to_base10());
+    double radix = 10;
+    if (!vm.argument(0).is_undefined()) {
+        radix = vm.argument(0).to_integer_or_infinity(global_object);
+        if (vm.exception())
+            return {};
+        if (radix < 2 || radix > 36) {
+            vm.throw_exception<RangeError>(global_object, ErrorType::InvalidRadix);
+            return {};
+        }
+    }
+    return js_string(vm, bigint_value.as_bigint().big_integer().to_base(radix));
 }
 
+// 21.2.3.2 BigInt.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ), https://tc39.es/ecma262/#sec-bigint.prototype.tolocalestring
 JS_DEFINE_NATIVE_FUNCTION(BigIntPrototype::to_locale_string)
 {
     return to_string(vm, global_object);
 }
 
+// 21.2.3.4 BigInt.prototype.valueOf ( ), https://tc39.es/ecma262/#sec-bigint.prototype.valueof
 JS_DEFINE_NATIVE_FUNCTION(BigIntPrototype::value_of)
 {
-    auto* bigint_object = bigint_object_from(vm, global_object);
-    if (!bigint_object)
-        return {};
-    return bigint_object->value_of();
+    return this_bigint_value(global_object, vm.this_value(global_object));
 }
 
 }

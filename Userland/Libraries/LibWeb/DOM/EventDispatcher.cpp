@@ -1,32 +1,12 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
 #include <AK/TypeCasts.h>
-#include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <LibWeb/Bindings/EventTargetWrapper.h>
 #include <LibWeb/Bindings/EventTargetWrapperFactory.h>
 #include <LibWeb/Bindings/EventWrapper.h>
@@ -55,14 +35,14 @@ static EventTarget* retarget(EventTarget* left, [[maybe_unused]] EventTarget* ri
         if (!is<Node>(left))
             return left;
 
-        auto* left_node = downcast<Node>(left);
+        auto* left_node = verify_cast<Node>(left);
         auto* left_root = left_node->root();
         if (!is<ShadowRoot>(left_root))
             return left;
 
         // FIXME: If right is a node and left’s root is a shadow-including inclusive ancestor of right, return left.
 
-        auto* left_shadow_root = downcast<ShadowRoot>(left_root);
+        auto* left_shadow_root = verify_cast<ShadowRoot>(left_root);
         left = left_shadow_root->host();
     }
 }
@@ -96,7 +76,7 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<EventTarget::EventListen
         RefPtr<Event> current_event;
 
         if (is<Bindings::WindowObject>(global)) {
-            auto& bindings_window_global = downcast<Bindings::WindowObject>(global);
+            auto& bindings_window_global = verify_cast<Bindings::WindowObject>(global);
             auto& window_impl = bindings_window_global.impl();
             current_event = window_impl.current_event();
             if (!invocation_target_in_shadow_tree)
@@ -117,7 +97,7 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<EventTarget::EventListen
 
         event.set_in_passive_listener(false);
         if (is<Bindings::WindowObject>(global)) {
-            auto& bindings_window_global = downcast<Bindings::WindowObject>(global);
+            auto& bindings_window_global = verify_cast<Bindings::WindowObject>(global);
             auto& window_impl = bindings_window_global.impl();
             window_impl.set_current_event(current_event);
         }
@@ -182,7 +162,7 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
         target_override = target;
     } else {
         // NOTE: This can be done because legacy_target_override is only set for events targeted at Window.
-        target_override = downcast<Window>(*target).document();
+        target_override = verify_cast<Window>(*target).document();
     }
 
     RefPtr<EventTarget> activation_target;
@@ -252,13 +232,13 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
         VERIFY(clear_targets_struct.has_value());
 
         if (is<Node>(clear_targets_struct.value().shadow_adjusted_target.ptr())) {
-            auto& shadow_adjusted_target_node = downcast<Node>(*clear_targets_struct.value().shadow_adjusted_target);
+            auto& shadow_adjusted_target_node = verify_cast<Node>(*clear_targets_struct.value().shadow_adjusted_target);
             if (is<ShadowRoot>(shadow_adjusted_target_node.root()))
                 clear_targets = true;
         }
 
         if (!clear_targets && is<Node>(clear_targets_struct.value().related_target.ptr())) {
-            auto& related_target_node = downcast<Node>(*clear_targets_struct.value().related_target);
+            auto& related_target_node = verify_cast<Node>(*clear_targets_struct.value().related_target);
             if (is<ShadowRoot>(related_target_node.root()))
                 clear_targets = true;
         }
@@ -266,7 +246,7 @@ bool EventDispatcher::dispatch(NonnullRefPtr<EventTarget> target, NonnullRefPtr<
         if (!clear_targets) {
             for (auto touch_target : clear_targets_struct.value().touch_target_list) {
                 if (is<Node>(*touch_target.ptr())) {
-                    auto& touch_target_node = downcast<Node>(*touch_target.ptr());
+                    auto& touch_target_node = verify_cast<Node>(*touch_target.ptr());
                     if (is<ShadowRoot>(touch_target_node.root())) {
                         clear_targets = true;
                         break;

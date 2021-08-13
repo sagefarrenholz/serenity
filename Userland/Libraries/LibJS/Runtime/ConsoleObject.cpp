@@ -1,29 +1,9 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2020, Linus Groh <mail@linusgroh.de>
+ * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2020, Emanuele Torre <torreemanuele6@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Console.h>
@@ -41,64 +21,81 @@ void ConsoleObject::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     Object::initialize(global_object);
-    define_native_function(vm.names.log, log);
-    define_native_function(vm.names.debug, debug);
-    define_native_function(vm.names.info, info);
-    define_native_function(vm.names.warn, warn);
-    define_native_function(vm.names.error, error);
-    define_native_function(vm.names.trace, trace);
-    define_native_function(vm.names.count, count);
-    define_native_function(vm.names.countReset, count_reset);
-    define_native_function(vm.names.clear, clear);
+    u8 attr = Attribute::Writable | Attribute::Enumerable | Attribute::Configurable;
+    define_native_function(vm.names.log, log, 0, attr);
+    define_native_function(vm.names.debug, debug, 0, attr);
+    define_native_function(vm.names.info, info, 0, attr);
+    define_native_function(vm.names.warn, warn, 0, attr);
+    define_native_function(vm.names.error, error, 0, attr);
+    define_native_function(vm.names.trace, trace, 0, attr);
+    define_native_function(vm.names.count, count, 0, attr);
+    define_native_function(vm.names.countReset, count_reset, 0, attr);
+    define_native_function(vm.names.clear, clear, 0, attr);
+    define_native_function(vm.names.assert, assert_, 0, attr);
 }
 
 ConsoleObject::~ConsoleObject()
 {
 }
 
+// 1.1.6. log(...data), https://console.spec.whatwg.org/#log
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::log)
 {
     return global_object.console().log();
 }
 
+// 1.1.3. debug(...data), https://console.spec.whatwg.org/#debug
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::debug)
 {
     return global_object.console().debug();
 }
 
+// 1.1.5. info(...data), https://console.spec.whatwg.org/#info
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::info)
 {
     return global_object.console().info();
 }
 
+// 1.1.9. warn(...data), https://console.spec.whatwg.org/#warn
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::warn)
 {
     return global_object.console().warn();
 }
 
+// 1.1.4. error(...data), https://console.spec.whatwg.org/#error
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::error)
 {
     return global_object.console().error();
 }
 
+// 1.1.8. trace(...data), https://console.spec.whatwg.org/#trace
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::trace)
 {
     return global_object.console().trace();
 }
 
+// 1.2.1. count(label), https://console.spec.whatwg.org/#count
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::count)
 {
     return global_object.console().count();
 }
 
+// 1.2.2. countReset(label), https://console.spec.whatwg.org/#countreset
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::count_reset)
 {
     return global_object.console().count_reset();
 }
 
+// 1.1.2. clear(), https://console.spec.whatwg.org/#clear
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::clear)
 {
     return global_object.console().clear();
+}
+
+// 1.1.1. assert(condition, ...data), https://console.spec.whatwg.org/#assert
+JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::assert_)
+{
+    return global_object.console().assert_();
 }
 
 }

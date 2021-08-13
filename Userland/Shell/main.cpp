@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Shell.h"
@@ -62,7 +42,7 @@ int main(int argc, char** argv)
     });
 
 #ifdef __serenity__
-    if (pledge("stdio rpath wpath cpath proc exec tty accept sigaction unix fattr", nullptr) < 0) {
+    if (pledge("stdio rpath wpath cpath proc exec tty sigaction unix fattr", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -113,21 +93,23 @@ int main(int argc, char** argv)
     bool skip_rc_files = false;
     const char* format = nullptr;
     bool should_format_live = false;
+    bool keep_open = false;
 
     Core::ArgsParser parser;
     parser.add_option(command_to_run, "String to read commands from", "command-string", 'c', "command-string");
     parser.add_option(skip_rc_files, "Skip running shellrc files", "skip-shellrc", 0);
     parser.add_option(format, "Format the given file into stdout and exit", "format", 0, "file");
     parser.add_option(should_format_live, "Enable live formatting", "live-formatting", 'f');
+    parser.add_option(keep_open, "Keep the shell open after running the specified command or file", "keep-open", 0);
     parser.add_positional_argument(file_to_read_from, "File to read commands from", "file", Core::ArgsParser::Required::No);
     parser.add_positional_argument(script_args, "Extra arguments to pass to the script (via $* and co)", "argument", Core::ArgsParser::Required::No);
 
     parser.parse(argc, argv);
 
     if (format) {
-        auto file = Core::File::open(format, Core::IODevice::ReadOnly);
+        auto file = Core::File::open(format, Core::OpenMode::ReadOnly);
         if (file.is_error()) {
-            fprintf(stderr, "Error: %s", file.error().characters());
+            warnln("Error: {}", file.error());
             return 1;
         }
 
@@ -146,7 +128,6 @@ int main(int argc, char** argv)
         }
     } else if (sid != pid) {
         if (getpgid(pid) != pid) {
-            dbgln("We were already in a session with sid={} (we are {}), let's do some gymnastics", sid, pid);
             if (setpgid(pid, sid) < 0) {
                 auto strerr = strerror(errno);
                 dbgln("couldn't setpgid: {}", strerr);
@@ -158,8 +139,13 @@ int main(int argc, char** argv)
         }
     }
 
-    auto execute_file = file_to_read_from && StringView { "-" } != file_to_read_from;
+    auto execute_file = file_to_read_from && "-"sv != file_to_read_from;
     attempt_interactive = !execute_file;
+
+    if (keep_open && !command_to_run && !execute_file) {
+        warnln("Option --keep-open can only be used in combination with -c or when specifying a file to execute.");
+        return 1;
+    }
 
     initialize();
 
@@ -183,18 +169,23 @@ int main(int argc, char** argv)
         Vector<String> args;
         for (auto* arg : script_args)
             args.empend(arg);
-        shell->set_local_variable("ARGV", adopt(*new Shell::AST::ListValue(move(args))));
+        shell->set_local_variable("ARGV", adopt_ref(*new Shell::AST::ListValue(move(args))));
     }
 
     if (command_to_run) {
         dbgln("sh -c '{}'\n", command_to_run);
-        return shell->run_command(command_to_run);
+        auto result = shell->run_command(command_to_run);
+        if (!keep_open)
+            return result;
     }
 
     if (execute_file) {
-        if (shell->run_file(file_to_read_from))
-            return 0;
-        return 1;
+        auto result = shell->run_file(file_to_read_from);
+        if (!keep_open) {
+            if (result)
+                return 0;
+            return 1;
+        }
     }
 
     shell->add_child(*editor);

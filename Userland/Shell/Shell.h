@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, The SerenityOS developers.
- * All rights reserved.
+ * Copyright (c) 2020-2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -45,10 +25,12 @@
     __ENUMERATE_SHELL_BUILTIN(cd)      \
     __ENUMERATE_SHELL_BUILTIN(cdh)     \
     __ENUMERATE_SHELL_BUILTIN(pwd)     \
+    __ENUMERATE_SHELL_BUILTIN(type)    \
     __ENUMERATE_SHELL_BUILTIN(exec)    \
     __ENUMERATE_SHELL_BUILTIN(exit)    \
     __ENUMERATE_SHELL_BUILTIN(export)  \
     __ENUMERATE_SHELL_BUILTIN(glob)    \
+    __ENUMERATE_SHELL_BUILTIN(unalias) \
     __ENUMERATE_SHELL_BUILTIN(unset)   \
     __ENUMERATE_SHELL_BUILTIN(history) \
     __ENUMERATE_SHELL_BUILTIN(umask)   \
@@ -65,7 +47,8 @@
     __ENUMERATE_SHELL_BUILTIN(fg)      \
     __ENUMERATE_SHELL_BUILTIN(bg)      \
     __ENUMERATE_SHELL_BUILTIN(wait)    \
-    __ENUMERATE_SHELL_BUILTIN(dump)
+    __ENUMERATE_SHELL_BUILTIN(dump)    \
+    __ENUMERATE_SHELL_BUILTIN(kill)
 
 #define ENUMERATE_SHELL_OPTIONS()                                                                                    \
     __ENUMERATE_SHELL_OPTION(inline_exec_keep_empty_segments, false, "Keep empty segments in inline execute $(...)") \
@@ -122,11 +105,13 @@ public:
     String resolve_path(String) const;
     String resolve_alias(const String&) const;
 
+    static String find_in_path(const StringView& program_name);
+
     static bool has_history_event(StringView);
 
-    RefPtr<AST::Value> get_argument(size_t);
-    RefPtr<AST::Value> lookup_local_variable(const String&);
-    String local_variable_or(const String&, const String&);
+    RefPtr<AST::Value> get_argument(size_t) const;
+    RefPtr<AST::Value> lookup_local_variable(const String&) const;
+    String local_variable_or(const String&, const String&) const;
     void set_local_variable(const String&, RefPtr<AST::Value>, bool only_in_current_frame = false);
     void unset_local_variable(const String&, bool only_in_current_frame = false);
 
@@ -172,14 +157,25 @@ public:
     static String escape_token_for_single_quotes(const String& token);
     static String escape_token(const String& token);
     static String unescape_token(const String& token);
-    static bool is_special(char c);
+    enum class SpecialCharacterEscapeMode {
+        Untouched,
+        Escaped,
+        QuotedAsEscape,
+        QuotedAsHex,
+    };
+    static SpecialCharacterEscapeMode special_character_escape_mode(u32 c);
 
     static bool is_glob(const StringView&);
     static Vector<StringView> split_path(const StringView&);
 
+    enum class ExecutableOnly {
+        Yes,
+        No
+    };
+
     void highlight(Line::Editor&) const;
     Vector<Line::CompletionSuggestion> complete();
-    Vector<Line::CompletionSuggestion> complete_path(const String& base, const String&, size_t offset);
+    Vector<Line::CompletionSuggestion> complete_path(const String& base, const String&, size_t offset, ExecutableOnly executable_only);
     Vector<Line::CompletionSuggestion> complete_program_name(const String&, size_t offset);
     Vector<Line::CompletionSuggestion> complete_variable(const String&, size_t offset);
     Vector<Line::CompletionSuggestion> complete_user(const String&, size_t offset);
@@ -189,7 +185,7 @@ public:
     void restore_ios();
 
     u64 find_last_job_id() const;
-    const Job* find_job(u64 id);
+    const Job* find_job(u64 id, bool is_pid = false);
     const Job* current_job() const { return m_current_job; }
     void kill_job(const Job*, int sig);
 
@@ -281,15 +277,25 @@ private:
     Shell();
     virtual ~Shell() override;
 
+    void timer_event(Core::TimerEvent&) override;
+
+    bool is_allowed_to_modify_termios(const AST::Command&) const;
+
     // FIXME: Port to Core::Property
     void save_to(JsonObject&);
     void bring_cursor_to_beginning_of_a_line() const;
 
+    Optional<int> resolve_job_spec(const String&);
     void cache_path();
     void add_entry_to_cache(const String&);
+    void remove_entry_from_cache(const String&);
     void stop_all_jobs();
     const Job* m_current_job { nullptr };
     LocalFrame* find_frame_containing_local_variable(const String& name);
+    const LocalFrame* find_frame_containing_local_variable(const String& name) const
+    {
+        return const_cast<Shell*>(this)->find_frame_containing_local_variable(name);
+    }
 
     void run_tail(RefPtr<Job>);
     void run_tail(const AST::Command&, const AST::NodeWithAction&, int head_exit_code);
@@ -351,6 +357,8 @@ private:
     bool m_default_constructed { false };
 
     mutable bool m_last_continuation_state { false }; // false == not needed.
+
+    Optional<size_t> m_history_autosave_time;
 };
 
 [[maybe_unused]] static constexpr bool is_word_character(char c)
@@ -362,17 +370,37 @@ inline size_t find_offset_into_node(const String& unescaped_text, size_t escaped
 {
     size_t unescaped_offset = 0;
     size_t offset = 0;
-    for (auto& c : unescaped_text) {
-        if (offset == escaped_offset)
-            return unescaped_offset;
+    auto do_find_offset = [&](auto& unescaped_text) {
+        for (auto c : unescaped_text) {
+            if (offset == escaped_offset)
+                return unescaped_offset;
 
-        if (Shell::is_special(c))
+            switch (Shell::special_character_escape_mode(c)) {
+            case Shell::SpecialCharacterEscapeMode::Untouched:
+                break;
+            case Shell::SpecialCharacterEscapeMode::Escaped:
+                ++offset; // X -> \X
+                break;
+            case Shell::SpecialCharacterEscapeMode::QuotedAsEscape:
+                offset += 3; // X -> "\Y"
+                break;
+            case Shell::SpecialCharacterEscapeMode::QuotedAsHex:
+                if (c > NumericLimits<u8>::max())
+                    offset += 11; // X -> "\uhhhhhhhh"
+                else
+                    offset += 5; // X -> "\xhh"
+                break;
+            }
             ++offset;
-        ++offset;
-        ++unescaped_offset;
-    }
+            ++unescaped_offset;
+        }
+        return unescaped_offset;
+    };
 
-    return unescaped_offset;
+    Utf8View view { unescaped_text };
+    if (view.validate())
+        return do_find_offset(view);
+    return do_find_offset(unescaped_text);
 }
 
 }

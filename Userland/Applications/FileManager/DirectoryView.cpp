@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "DirectoryView.h"
@@ -45,7 +26,24 @@
 
 namespace FileManager {
 
-NonnullRefPtr<GUI::Action> LauncherHandler::create_launch_action(Function<void(const LauncherHandler&)> launch_handler)
+void spawn_terminal(String const& directory)
+{
+    posix_spawn_file_actions_t spawn_actions;
+    posix_spawn_file_actions_init(&spawn_actions);
+    posix_spawn_file_actions_addchdir(&spawn_actions, directory.characters());
+
+    pid_t pid;
+    char const* argv[] = { "Terminal", nullptr };
+    if ((errno = posix_spawn(&pid, "/bin/Terminal", &spawn_actions, nullptr, const_cast<char**>(argv), environ))) {
+        perror("posix_spawn");
+    } else {
+        if (disown(pid) < 0)
+            perror("disown");
+    }
+    posix_spawn_file_actions_destroy(&spawn_actions);
+}
+
+NonnullRefPtr<GUI::Action> LauncherHandler::create_launch_action(Function<void(LauncherHandler const&)> launch_handler)
 {
     auto icon = GUI::FileIconProvider::icon_for_executable(details().executable).bitmap_for_size(16);
     return GUI::Action::create(details().name, move(icon), [this, launch_handler = move(launch_handler)](auto&) {
@@ -53,7 +51,7 @@ NonnullRefPtr<GUI::Action> LauncherHandler::create_launch_action(Function<void(c
     });
 }
 
-RefPtr<LauncherHandler> DirectoryView::get_default_launch_handler(const NonnullRefPtrVector<LauncherHandler>& handlers)
+RefPtr<LauncherHandler> DirectoryView::get_default_launch_handler(NonnullRefPtrVector<LauncherHandler> const& handlers)
 {
     // If this is an application, pick it first
     for (size_t i = 0; i < handlers.size(); i++) {
@@ -78,21 +76,21 @@ RefPtr<LauncherHandler> DirectoryView::get_default_launch_handler(const NonnullR
     return {};
 }
 
-NonnullRefPtrVector<LauncherHandler> DirectoryView::get_launch_handlers(const URL& url)
+NonnullRefPtrVector<LauncherHandler> DirectoryView::get_launch_handlers(URL const& url)
 {
     NonnullRefPtrVector<LauncherHandler> handlers;
     for (auto& h : Desktop::Launcher::get_handlers_with_details_for_url(url)) {
-        handlers.append(adopt(*new LauncherHandler(h)));
+        handlers.append(adopt_ref(*new LauncherHandler(h)));
     }
     return handlers;
 }
 
-NonnullRefPtrVector<LauncherHandler> DirectoryView::get_launch_handlers(const String& path)
+NonnullRefPtrVector<LauncherHandler> DirectoryView::get_launch_handlers(String const& path)
 {
     return get_launch_handlers(URL::create_with_file_protocol(path));
 }
 
-void DirectoryView::handle_activation(const GUI::ModelIndex& index)
+void DirectoryView::handle_activation(GUI::ModelIndex const& index)
 {
     if (!index.is_valid())
         return;
@@ -118,8 +116,12 @@ void DirectoryView::handle_activation(const GUI::ModelIndex& index)
     auto url = URL::create_with_file_protocol(path);
     auto launcher_handlers = get_launch_handlers(url);
     auto default_launcher = get_default_launch_handler(launcher_handlers);
+
     if (default_launcher) {
+        auto launch_origin_rect = current_view().to_widget_rect(current_view().content_rect(index)).translated(current_view().screen_relative_rect().location());
+        setenv("__libgui_launch_origin_rect", String::formatted("{},{},{},{}", launch_origin_rect.x(), launch_origin_rect.y(), launch_origin_rect.width(), launch_origin_rect.height()).characters(), 1);
         launch(url, *default_launcher);
+        unsetenv("__libgui_launch_origin_rect");
     } else {
         auto error_message = String::formatted("Could not open {}", path);
         GUI::MessageBox::show(window(), error_message, "File Manager", GUI::MessageBox::Type::Error);
@@ -150,14 +152,14 @@ DirectoryView::DirectoryView(Mode mode)
     set_view_mode(ViewMode::Icon);
 }
 
-const GUI::FileSystemModel::Node& DirectoryView::node(const GUI::ModelIndex& index) const
+GUI::FileSystemModel::Node const& DirectoryView::node(GUI::ModelIndex const& index) const
 {
     return model().node(m_sorting_model->map_to_source(index));
 }
 
 void DirectoryView::setup_model()
 {
-    m_model->on_error = [this](int, const char* error_string) {
+    m_model->on_directory_change_error = [this](int, char const* error_string) {
         auto failed_path = m_model->root_path();
         auto error_message = String::formatted("Could not read {}:\n{}", failed_path, error_string);
         m_error_label->set_text(error_message);
@@ -170,6 +172,10 @@ void DirectoryView::setup_model()
 
         if (on_path_change)
             on_path_change(failed_path, false, false);
+    };
+
+    m_model->on_rename_error = [this](int, char const* error_string) {
+        GUI::MessageBox::show_error(window(), String::formatted("Unable to rename file: {}", error_string));
     };
 
     m_model->on_complete = [this] {
@@ -213,6 +219,7 @@ void DirectoryView::setup_icon_view()
 
     if (is_desktop()) {
         m_icon_view->set_frame_shape(Gfx::FrameShape::NoFrame);
+        m_icon_view->set_frame_thickness(0);
         m_icon_view->set_scrollbars_enabled(false);
         m_icon_view->set_fill_with_background_color(false);
         m_icon_view->set_draw_item_text_with_shadow(true);
@@ -307,7 +314,7 @@ DirectoryView::~DirectoryView()
 
 void DirectoryView::model_did_update(unsigned flags)
 {
-    if (flags & GUI::Model::UpdateFlag::InvalidateAllIndexes) {
+    if (flags & GUI::Model::UpdateFlag::InvalidateAllIndices) {
         for_each_view_implementation([](auto& view) {
             view.selection().clear();
         });
@@ -336,7 +343,7 @@ void DirectoryView::set_view_mode(ViewMode mode)
     VERIFY_NOT_REACHED();
 }
 
-void DirectoryView::add_path_to_history(const StringView& path)
+void DirectoryView::add_path_to_history(String path)
 {
     if (m_path_history.size() && m_path_history.at(m_path_history_position) == path)
         return;
@@ -344,16 +351,16 @@ void DirectoryView::add_path_to_history(const StringView& path)
     if (m_path_history_position < m_path_history.size())
         m_path_history.resize(m_path_history_position + 1);
 
-    m_path_history.append(path);
+    m_path_history.append(move(path));
     m_path_history_position = m_path_history.size() - 1;
 }
 
-void DirectoryView::open(const StringView& path)
+void DirectoryView::open(String const& path)
 {
     auto real_path = Core::File::real_path_for(path);
 
     if (model().root_path() == real_path) {
-        model().update();
+        model().invalidate();
         return;
     }
 
@@ -361,7 +368,7 @@ void DirectoryView::open(const StringView& path)
     model().set_root_path(real_path);
 }
 
-void DirectoryView::set_status_message(const StringView& message)
+void DirectoryView::set_status_message(StringView const& message)
 {
     if (on_status_message)
         on_status_message(message);
@@ -375,7 +382,7 @@ void DirectoryView::open_parent_directory()
 
 void DirectoryView::refresh()
 {
-    model().update();
+    model().invalidate();
 }
 
 void DirectoryView::open_previous_directory()
@@ -401,11 +408,13 @@ void DirectoryView::update_statusbar()
     if (m_view_mode == ViewMode::Invalid)
         return;
 
-    size_t total_size = model().node({}).total_size;
+    StringBuilder builder;
+
     if (current_view().selection().is_empty()) {
-        set_status_message(String::formatted("{} item(s) ({})",
-            model().row_count(),
-            human_readable_size(total_size)));
+        int total_item_count = model().row_count();
+        size_t total_size = model().node({}).total_size;
+        builder.appendff("{} item{} ({})", total_item_count, total_item_count != 1 ? "s" : "", human_readable_size(total_size));
+        set_status_message(builder.string_view());
         return;
     }
 
@@ -413,20 +422,11 @@ void DirectoryView::update_statusbar()
     size_t selected_byte_count = 0;
 
     current_view().selection().for_each_index([&](auto& index) {
-        auto& model = *current_view().model();
-        auto size_index = model.index(index.row(), GUI::FileSystemModel::Column::Size, model.parent_index(index));
-        auto file_size = size_index.data().to_i32();
-        selected_byte_count += file_size;
+        auto const& node = this->node(index);
+        selected_byte_count += node.size;
     });
 
-    StringBuilder builder;
-    builder.append(String::number(selected_item_count));
-    builder.append(" item");
-    if (selected_item_count != 1)
-        builder.append('s');
-    builder.append(" selected (");
-    builder.append(human_readable_size(selected_byte_count).characters());
-    builder.append(')');
+    builder.appendff("{} item{} selected ({})", selected_item_count, selected_item_count != 1 ? "s" : "", human_readable_size(selected_byte_count));
 
     if (selected_item_count == 1) {
         auto& node = this->node(current_view().selection().first());
@@ -436,7 +436,7 @@ void DirectoryView::update_statusbar()
         }
     }
 
-    set_status_message(builder.to_string());
+    set_status_message(builder.string_view());
 }
 
 void DirectoryView::set_should_show_dotfiles(bool show_dotfiles)
@@ -444,17 +444,23 @@ void DirectoryView::set_should_show_dotfiles(bool show_dotfiles)
     m_model->set_should_show_dotfiles(show_dotfiles);
 }
 
-void DirectoryView::launch(const URL&, const LauncherHandler& launcher_handler) const
+void DirectoryView::launch(URL const&, LauncherHandler const& launcher_handler) const
 {
     pid_t child;
     if (launcher_handler.details().launcher_type == Desktop::Launcher::LauncherType::Application) {
-        const char* argv[] = { launcher_handler.details().name.characters(), nullptr };
-        posix_spawn(&child, launcher_handler.details().executable.characters(), nullptr, nullptr, const_cast<char**>(argv), environ);
+        posix_spawn_file_actions_t spawn_actions;
+        posix_spawn_file_actions_init(&spawn_actions);
+        posix_spawn_file_actions_addchdir(&spawn_actions, path().characters());
+
+        char const* argv[] = { launcher_handler.details().name.characters(), nullptr };
+        posix_spawn(&child, launcher_handler.details().executable.characters(), &spawn_actions, nullptr, const_cast<char**>(argv), environ);
         if (disown(child) < 0)
             perror("disown");
+
+        posix_spawn_file_actions_destroy(&spawn_actions);
     } else {
         for (auto& path : selected_file_paths()) {
-            const char* argv[] = { launcher_handler.details().name.characters(), path.characters(), nullptr };
+            char const* argv[] = { launcher_handler.details().name.characters(), path.characters(), nullptr };
             posix_spawn(&child, launcher_handler.details().executable.characters(), nullptr, nullptr, const_cast<char**>(argv), environ);
             if (disown(child) < 0)
                 perror("disown");
@@ -467,7 +473,7 @@ Vector<String> DirectoryView::selected_file_paths() const
     Vector<String> paths;
     auto& view = current_view();
     auto& model = *view.model();
-    view.selection().for_each_index([&](const GUI::ModelIndex& index) {
+    view.selection().for_each_index([&](GUI::ModelIndex const& index) {
         auto parent_index = model.parent_index(index);
         auto name_index = model.index(index.row(), GUI::FileSystemModel::Column::Name, parent_index);
         auto path = name_index.data(GUI::ModelRole::Custom).to_string();
@@ -480,16 +486,17 @@ void DirectoryView::do_delete(bool should_confirm)
 {
     auto paths = selected_file_paths();
     VERIFY(!paths.is_empty());
-    FileUtils::delete_paths(paths, should_confirm, window());
+    delete_paths(paths, should_confirm, window());
 }
 
 void DirectoryView::handle_selection_change()
 {
     update_statusbar();
 
-    bool can_delete = !current_view().selection().is_empty() && access(path().characters(), W_OK) == 0;
-    m_delete_action->set_enabled(can_delete);
-    m_force_delete_action->set_enabled(can_delete);
+    bool can_modify = !current_view().selection().is_empty() && access(path().characters(), W_OK) == 0;
+    m_delete_action->set_enabled(can_modify);
+    m_force_delete_action->set_enabled(can_modify);
+    m_rename_action->set_enabled(can_modify);
 
     if (on_selection_change)
         on_selection_change(current_view());
@@ -497,7 +504,7 @@ void DirectoryView::handle_selection_change()
 
 void DirectoryView::setup_actions()
 {
-    m_mkdir_action = GUI::Action::create("New directory...", { Mod_Ctrl | Mod_Shift, Key_N }, Gfx::Bitmap::load_from_file("/res/icons/16x16/mkdir.png"), [&](const GUI::Action&) {
+    m_mkdir_action = GUI::Action::create("&New Directory...", { Mod_Ctrl | Mod_Shift, Key_N }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/mkdir.png"), [&](GUI::Action const&) {
         String value;
         if (GUI::InputBox::show(window(), value, "Enter name:", "New directory") == GUI::InputBox::ExecOK && !value.is_empty()) {
             auto new_dir_path = LexicalPath::canonicalized_path(String::formatted("{}/{}", path(), value));
@@ -509,7 +516,7 @@ void DirectoryView::setup_actions()
         }
     });
 
-    m_touch_action = GUI::Action::create("New file...", { Mod_Ctrl | Mod_Shift, Key_F }, Gfx::Bitmap::load_from_file("/res/icons/16x16/new.png"), [&](const GUI::Action&) {
+    m_touch_action = GUI::Action::create("New &File...", { Mod_Ctrl | Mod_Shift, Key_F }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/new.png"), [&](GUI::Action const&) {
         String value;
         if (GUI::InputBox::show(window(), value, "Enter name:", "New file") == GUI::InputBox::ExecOK && !value.is_empty()) {
             auto new_file_path = LexicalPath::canonicalized_path(String::formatted("{}/{}", path(), value));
@@ -535,30 +542,23 @@ void DirectoryView::setup_actions()
         }
     });
 
-    m_open_terminal_action = GUI::Action::create("Open Terminal here", Gfx::Bitmap::load_from_file("/res/icons/16x16/app-terminal.png"), [&](auto&) {
-        posix_spawn_file_actions_t spawn_actions;
-        posix_spawn_file_actions_init(&spawn_actions);
-        posix_spawn_file_actions_addchdir(&spawn_actions, path().characters());
-        pid_t pid;
-        const char* argv[] = { "Terminal", nullptr };
-        if ((errno = posix_spawn(&pid, "/bin/Terminal", &spawn_actions, nullptr, const_cast<char**>(argv), environ))) {
-            perror("posix_spawn");
-        } else {
-            if (disown(pid) < 0)
-                perror("disown");
-        }
-        posix_spawn_file_actions_destroy(&spawn_actions);
+    m_open_terminal_action = GUI::Action::create("Open &Terminal Here", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-terminal.png"), [&](auto&) {
+        spawn_terminal(path());
     });
 
     m_delete_action = GUI::CommonActions::make_delete_action([this](auto&) { do_delete(true); }, window());
+    m_rename_action = GUI::CommonActions::make_rename_action([this](auto&) {
+        current_view().begin_editing(current_view().cursor_index());
+    },
+        window());
 
     m_force_delete_action = GUI::Action::create(
-        "Delete without confirmation", { Mod_Shift, Key_Delete },
+        "Delete Without Confirmation", { Mod_Shift, Key_Delete },
         [this](auto&) { do_delete(false); },
         window());
 }
 
-void DirectoryView::handle_drop(const GUI::ModelIndex& index, const GUI::DropEvent& event)
+void DirectoryView::handle_drop(GUI::ModelIndex const& index, GUI::DropEvent const& event)
 {
     if (!event.mime_data().has_urls())
         return;
@@ -573,20 +573,21 @@ void DirectoryView::handle_drop(const GUI::ModelIndex& index, const GUI::DropEve
         return;
 
     bool had_accepted_drop = false;
+    Vector<String> paths_to_copy;
     for (auto& url_to_copy : urls) {
         if (!url_to_copy.is_valid() || url_to_copy.path() == target_node.full_path())
             continue;
-        auto new_path = String::formatted("{}/{}", target_node.full_path(), LexicalPath(url_to_copy.path()).basename());
+        auto new_path = String::formatted("{}/{}", target_node.full_path(), LexicalPath::basename(url_to_copy.path()));
         if (url_to_copy.path() == new_path)
             continue;
 
-        if (auto result = Core::File::copy_file_or_directory(new_path, url_to_copy.path()); result.is_error()) {
-            auto error_message = String::formatted("Could not copy {} into {}: {}", url_to_copy.to_string(), new_path, result.error().error_code);
-            GUI::MessageBox::show(window(), error_message, "File Manager", GUI::MessageBox::Type::Error);
-        } else {
-            had_accepted_drop = true;
-        }
+        paths_to_copy.append(url_to_copy.path());
+        had_accepted_drop = true;
     }
+
+    if (!paths_to_copy.is_empty())
+        run_file_operation(FileOperation::Copy, paths_to_copy, target_node.full_path(), window());
+
     if (had_accepted_drop && on_accepted_drop)
         on_accepted_drop();
 }

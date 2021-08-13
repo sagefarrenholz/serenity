@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -41,6 +21,10 @@ enum class ParserBehaviour : u32 {
     TrimLeadingFieldSpaces = ReadHeaders << 2,
     TrimTrailingFieldSpaces = ReadHeaders << 3,
     QuoteOnlyInFieldStart = ReadHeaders << 4,
+    Lenient = ReadHeaders << 5, // This is the typical "spreadsheet import" behavior
+                                // Currently, it:
+                                // - fills in missing fields with empty values
+                                // - updates previous rows with extra columns
 };
 
 ParserBehaviour operator&(ParserBehaviour left, ParserBehaviour right);
@@ -68,24 +52,25 @@ enum class ReadError {
 #undef E
 };
 
-inline constexpr ParserBehaviour default_behaviours()
+constexpr ParserBehaviour default_behaviours()
 {
     return ParserBehaviour::QuoteOnlyInFieldStart;
 }
 
 class XSV {
 public:
-    XSV(StringView source, const ParserTraits& traits, ParserBehaviour behaviours = default_behaviours())
+    XSV(StringView source, ParserTraits traits, ParserBehaviour behaviours = default_behaviours())
         : m_source(source)
         , m_lexer(m_source)
         , m_traits(traits)
         , m_behaviours(behaviours)
     {
-        parse();
+        parse_preview();
     }
 
     virtual ~XSV() { }
 
+    void parse();
     bool has_error() const { return m_error != ReadError::None; }
     ReadError error() const { return m_error; }
     String error_string() const
@@ -196,8 +181,15 @@ private:
         }
     };
     void set_error(ReadError error);
-    void parse();
+    void parse_preview();
     void read_headers();
+    void reset()
+    {
+        m_lexer = GenericLexer { m_source };
+        m_rows.clear();
+        m_names.clear();
+        m_error = ReadError::None;
+    }
     Vector<Field> read_row(bool header_row = false);
     Field read_one_field();
     Field read_one_quoted_field();
@@ -205,7 +197,7 @@ private:
 
     StringView m_source;
     GenericLexer m_lexer;
-    const ParserTraits& m_traits;
+    ParserTraits m_traits;
     ParserBehaviour m_behaviours;
     Vector<Field> m_names;
     Vector<Vector<Field>> m_rows;

@@ -1,33 +1,11 @@
 /*
  * Copyright (c) 2020, Hüseyin Aslıtürk <asliturk@hotmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/INILexer.h>
 #include <LibGUI/INISyntaxHighlighter.h>
-#include <LibGUI/TextEditor.h>
-#include <LibGfx/Font.h>
 #include <LibGfx/Palette.h>
 
 namespace GUI {
@@ -52,9 +30,9 @@ static Syntax::TextStyle style_for_token_type(const Gfx::Palette& palette, IniTo
     }
 }
 
-bool IniSyntaxHighlighter::is_identifier(void* token) const
+bool IniSyntaxHighlighter::is_identifier(u64 token) const
 {
-    auto ini_token = static_cast<GUI::IniToken::Type>(reinterpret_cast<size_t>(token));
+    auto ini_token = static_cast<GUI::IniToken::Type>(token);
     return ini_token == GUI::IniToken::Type::Name;
 }
 
@@ -73,7 +51,7 @@ void IniSyntaxHighlighter::rehighlight(const Palette& palette)
         span.attributes.color = style.color;
         span.attributes.bold = style.bold;
         span.is_skippable = token.m_type == IniToken::Type::Whitespace;
-        span.data = reinterpret_cast<void*>(token.m_type);
+        span.data = static_cast<u64>(token.m_type);
         spans.append(span);
     }
     m_client->do_set_spans(move(spans));
@@ -84,18 +62,18 @@ void IniSyntaxHighlighter::rehighlight(const Palette& palette)
     m_client->do_update();
 }
 
-Vector<IniSyntaxHighlighter::MatchingTokenPair> IniSyntaxHighlighter::matching_token_pairs() const
+Vector<IniSyntaxHighlighter::MatchingTokenPair> IniSyntaxHighlighter::matching_token_pairs_impl() const
 {
     static Vector<MatchingTokenPair> pairs;
     if (pairs.is_empty()) {
-        pairs.append({ reinterpret_cast<void*>(IniToken::Type::LeftBracket), reinterpret_cast<void*>(IniToken::Type::RightBracket) });
+        pairs.append({ static_cast<u64>(IniToken::Type::LeftBracket), static_cast<u64>(IniToken::Type::RightBracket) });
     }
     return pairs;
 }
 
-bool IniSyntaxHighlighter::token_types_equal(void* token1, void* token2) const
+bool IniSyntaxHighlighter::token_types_equal(u64 token1, u64 token2) const
 {
-    return static_cast<GUI::IniToken::Type>(reinterpret_cast<size_t>(token1)) == static_cast<GUI::IniToken::Type>(reinterpret_cast<size_t>(token2));
+    return static_cast<GUI::IniToken::Type>(token1) == static_cast<GUI::IniToken::Type>(token2);
 }
 
 IniSyntaxHighlighter::~IniSyntaxHighlighter()

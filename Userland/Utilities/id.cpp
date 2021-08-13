@@ -1,29 +1,11 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringUtils.h>
+#include <LibCore/Account.h>
 #include <LibCore/ArgsParser.h>
 #include <alloca.h>
 #include <grp.h>
@@ -31,12 +13,13 @@
 #include <stdio.h>
 #include <unistd.h>
 
-static int print_id_objects();
+static int print_id_objects(Core::Account const&);
 
 static bool flag_print_uid = false;
 static bool flag_print_gid = false;
 static bool flag_print_name = false;
 static bool flag_print_gid_all = false;
+static String user_str;
 
 int main(int argc, char** argv)
 {
@@ -65,116 +48,118 @@ int main(int argc, char** argv)
     args_parser.add_option(flag_print_gid, "Print GID", nullptr, 'g');
     args_parser.add_option(flag_print_gid_all, "Print all GIDs", nullptr, 'G');
     args_parser.add_option(flag_print_name, "Print name", nullptr, 'n');
+    args_parser.add_positional_argument(user_str, "User name/UID to query", "USER", Core::ArgsParser::Required::No);
     args_parser.parse(argc, argv);
 
     if (flag_print_name && !(flag_print_uid || flag_print_gid || flag_print_gid_all)) {
-        fprintf(stderr, "cannot print only names or real IDs in default format\n");
+        warnln("cannot print only names or real IDs in default format");
         return 1;
     }
 
     if (flag_print_uid + flag_print_gid + flag_print_gid_all > 1) {
-        fprintf(stderr, "cannot print \"only\" of more than one choice\n");
+        warnln("cannot print \"only\" of more than one choice");
         return 1;
     }
 
-    int status = print_id_objects();
-    return status;
-}
-
-static bool print_uid_object(uid_t uid)
-{
-    if (flag_print_name) {
-        struct passwd* pw = getpwuid(uid);
-        printf("%s", pw ? pw->pw_name : "n/a");
-    } else
-        printf("%u", uid);
-
-    return true;
-}
-
-static bool print_gid_object(gid_t gid)
-{
-    if (flag_print_name) {
-        struct group* gr = getgrgid(gid);
-        printf("%s", gr ? gr->gr_name : "n/a");
-    } else
-        printf("%u", gid);
-    return true;
-}
-
-static bool print_gid_list()
-{
-    int extra_gid_count = getgroups(0, nullptr);
-    if (extra_gid_count) {
-        auto* extra_gids = (gid_t*)alloca(extra_gid_count * sizeof(gid_t));
-        int rc = getgroups(extra_gid_count, extra_gids);
-
-        if (rc < 0) {
-            perror("\ngetgroups");
-            return false;
+    Optional<Core::Account> account;
+    if (!user_str.is_empty()) {
+        if (auto user_id = user_str.to_uint(); user_id.has_value()) {
+            auto result = Core::Account::from_uid(user_id.value(), Core::Account::Read::PasswdOnly);
+            if (result.is_error()) {
+                warnln("Couldn't retrieve user id '{}': {}", user_str, result.error());
+                return 1;
+            }
+            account = result.release_value();
+        } else {
+            auto result = Core::Account::from_name(user_str.characters(), Core::Account::Read::PasswdOnly);
+            if (result.is_error()) {
+                warnln("Couldn't retrieve user name '{}': {}", user_str, result.error());
+                return 1;
+            }
+            account = result.release_value();
         }
-
-        for (int g = 0; g < extra_gid_count; ++g) {
-            auto* gr = getgrgid(extra_gids[g]);
-            if (flag_print_name && gr)
-                printf("%s", gr->gr_name);
-            else
-                printf("%u", extra_gids[g]);
-            if (g != extra_gid_count - 1)
-                printf(" ");
-        }
+    } else {
+        account = Core::Account::self(Core::Account::Read::PasswdOnly);
     }
+
+    return print_id_objects(account.value());
+}
+
+static bool print_uid_object(Core::Account const& account)
+{
+    if (flag_print_name)
+        out("{}", account.username());
+    else
+        out("{}", account.uid());
+
     return true;
 }
 
-static bool print_full_id_list()
+static bool print_gid_object(Core::Account const& account)
 {
+    if (flag_print_name) {
+        struct group* gr = getgrgid(account.gid());
+        out("{}", gr ? gr->gr_name : "n/a");
+    } else
+        out("{}", account.gid());
 
-    uid_t uid = getuid();
-    gid_t gid = getgid();
+    return true;
+}
+
+static bool print_gid_list(Core::Account const& account)
+{
+    auto& extra_gids = account.extra_gids();
+    auto extra_gid_count = extra_gids.size();
+    for (size_t g = 0; g < extra_gid_count; ++g) {
+        auto gid = extra_gids[g];
+        auto* gr = getgrgid(gid);
+        if (flag_print_name && gr)
+            out("{}", gr->gr_name);
+        else
+            out("{}", gid);
+        if (g != extra_gid_count - 1)
+            out(" ");
+    }
+
+    return true;
+}
+
+static bool print_full_id_list(Core::Account const& account)
+{
+    auto uid = account.uid();
+    auto gid = account.gid();
     struct passwd* pw = getpwuid(uid);
     struct group* gr = getgrgid(gid);
 
-    printf("uid=%u(%s) gid=%u(%s)", uid, pw ? pw->pw_name : "n/a", gid, gr ? gr->gr_name : "n/a");
+    out("uid={}({}) gid={}({})", uid, pw ? pw->pw_name : "n/a", gid, gr ? gr->gr_name : "n/a");
 
-    int extra_gid_count = getgroups(0, nullptr);
-    if (extra_gid_count) {
-        auto* extra_gids = (gid_t*)alloca(extra_gid_count * sizeof(gid_t));
-        int rc = getgroups(extra_gid_count, extra_gids);
-        if (rc < 0) {
-            perror("\ngetgroups");
-            return false;
-        }
-        printf(" groups=");
-        for (int g = 0; g < extra_gid_count; ++g) {
-            auto* gr = getgrgid(extra_gids[g]);
-            if (gr)
-                printf("%u(%s)", extra_gids[g], gr->gr_name);
-            else
-                printf("%u", extra_gids[g]);
-            if (g != extra_gid_count - 1)
-                printf(",");
-        }
+    for (auto extra_gid : account.extra_gids()) {
+        auto* gr = getgrgid(extra_gid);
+        if (gr)
+            out(" {}({})", extra_gid, gr->gr_name);
+        else
+            out(" {}", extra_gid);
     }
+
     return true;
 }
 
-static int print_id_objects()
+static int print_id_objects(Core::Account const& account)
 {
     if (flag_print_uid) {
-        if (!print_uid_object(getuid()))
+        if (!print_uid_object(account))
             return 1;
     } else if (flag_print_gid) {
-        if (!print_gid_object(getgid()))
+        if (!print_gid_object(account))
             return 1;
     } else if (flag_print_gid_all) {
-        if (!print_gid_list())
+        if (!print_gid_list(account))
             return 1;
     } else {
-        if (!print_full_id_list())
+        if (!print_full_id_list(account))
             return 1;
     }
 
-    printf("\n");
+    outln();
     return 0;
 }

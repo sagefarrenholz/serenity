@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, The SerenityOS developers.
- * All rights reserved.
+ * Copyright (c) 2020, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
@@ -85,7 +65,7 @@ void Job::on_socket_connected()
 
             auto line = read_line(PAGE_SIZE);
             if (line.is_null()) {
-                fprintf(stderr, "Job: Expected status line\n");
+                warnln("Job: Expected status line");
                 return deferred_invoke([this](auto&) { did_fail(Core::NetworkJob::Error::TransmissionFailed); });
             }
 
@@ -97,7 +77,7 @@ void Job::on_socket_connected()
 
             auto status = parts[0].to_uint();
             if (!status.has_value()) {
-                fprintf(stderr, "Job: Expected numeric status code\n");
+                warnln("Job: Expected numeric status code");
                 return deferred_invoke([this](auto&) { did_fail(Core::NetworkJob::Error::ProtocolFailed); });
             }
 
@@ -117,7 +97,7 @@ void Job::on_socket_connected()
             } else if (m_status >= 60 && m_status < 70) {
                 m_state = State::InBody;
             } else {
-                fprintf(stderr, "Job: Expected status between 10 and 69; instead got %d\n", m_status);
+                warnln("Job: Expected status between 10 and 69; instead got {}", m_status);
                 return deferred_invoke([this](auto&) { did_fail(Core::NetworkJob::Error::ProtocolFailed); });
             }
 
@@ -130,7 +110,7 @@ void Job::on_socket_connected()
             auto read_size = 64 * KiB;
 
             auto payload = receive(read_size);
-            if (!payload) {
+            if (payload.is_empty()) {
                 if (eof()) {
                     finish_up();
                     return IterationDecision::Break;
@@ -152,9 +132,7 @@ void Job::on_socket_connected()
         });
 
         if (!is_established()) {
-#if JOB_DEBUG
-            dbgln("Connection appears to have closed, finishing up");
-#endif
+            dbgln_if(JOB_DEBUG, "Connection appears to have closed, finishing up");
             finish_up();
         }
     });

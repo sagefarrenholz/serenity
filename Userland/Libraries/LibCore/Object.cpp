@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
@@ -34,9 +14,9 @@
 
 namespace Core {
 
-IntrusiveList<Object, &Object::m_all_objects_list_node>& Object::all_objects()
+IntrusiveList<Object, RawPtr<Object>, &Object::m_all_objects_list_node>& Object::all_objects()
 {
-    static IntrusiveList<Object, &Object::m_all_objects_list_node> objects;
+    static IntrusiveList<Object, RawPtr<Object>, &Object::m_all_objects_list_node> objects;
     return objects;
 }
 
@@ -169,12 +149,12 @@ void Object::stop_timer()
 void Object::dump_tree(int indent)
 {
     for (int i = 0; i < indent; ++i) {
-        printf(" ");
+        out(" ");
     }
-    printf("%s{%p}", class_name(), this);
+    out("{}{{{:p}}}", class_name(), this);
     if (!name().is_null())
-        printf(" %s", name().characters());
-    printf("\n");
+        out(" {}", name());
+    outln();
 
     for_each_child([&](auto& child) {
         child.dump_tree(indent + 2);
@@ -195,7 +175,7 @@ void Object::save_to(JsonObject& json)
     }
 }
 
-JsonValue Object::property(const StringView& name) const
+JsonValue Object::property(String const& name) const
 {
     auto it = m_properties.find(name);
     if (it == m_properties.end())
@@ -203,7 +183,7 @@ JsonValue Object::property(const StringView& name) const
     return it->value->get();
 }
 
-bool Object::set_property(const StringView& name, const JsonValue& value)
+bool Object::set_property(String const& name, JsonValue const& value)
 {
     auto it = m_properties.find(name);
     if (it == m_properties.end())
@@ -227,6 +207,9 @@ void Object::dispatch_event(Core::Event& e, Object* stay_within)
     VERIFY(!stay_within || stay_within == this || stay_within->is_ancestor_of(*this));
     auto* target = this;
     do {
+        // If there's an event filter on this target, ask if it wants to swallow this event.
+        if (target->m_event_filter && !target->m_event_filter(e))
+            return;
         target->event(e);
         target = target->parent();
         if (target == stay_within) {
@@ -243,14 +226,14 @@ bool Object::is_visible_for_timer_purposes() const
     return true;
 }
 
-void Object::increment_inspector_count(Badge<RPCClient>)
+void Object::increment_inspector_count(Badge<InspectorServerConnection>)
 {
     ++m_inspector_count;
     if (m_inspector_count == 1)
         did_begin_inspection();
 }
 
-void Object::decrement_inspector_count(Badge<RPCClient>)
+void Object::decrement_inspector_count(Badge<InspectorServerConnection>)
 {
     --m_inspector_count;
     if (!m_inspector_count)
@@ -262,4 +245,49 @@ void Object::register_property(const String& name, Function<JsonValue()> getter,
     m_properties.set(name, make<Property>(name, move(getter), move(setter)));
 }
 
+void Object::set_event_filter(Function<bool(Core::Event&)> filter)
+{
+    m_event_filter = move(filter);
+}
+
+static HashMap<String, ObjectClassRegistration*>& object_classes()
+{
+    static HashMap<String, ObjectClassRegistration*>* map;
+    if (!map)
+        map = new HashMap<String, ObjectClassRegistration*>;
+    return *map;
+}
+
+ObjectClassRegistration::ObjectClassRegistration(const String& class_name, Function<NonnullRefPtr<Object>()> factory, ObjectClassRegistration* parent_class)
+    : m_class_name(class_name)
+    , m_factory(move(factory))
+    , m_parent_class(parent_class)
+{
+    object_classes().set(class_name, this);
+}
+
+ObjectClassRegistration::~ObjectClassRegistration()
+{
+}
+
+bool ObjectClassRegistration::is_derived_from(const ObjectClassRegistration& base_class) const
+{
+    if (&base_class == this)
+        return true;
+    if (!m_parent_class)
+        return false;
+    return m_parent_class->is_derived_from(base_class);
+}
+
+void ObjectClassRegistration::for_each(Function<void(const ObjectClassRegistration&)> callback)
+{
+    for (auto& it : object_classes()) {
+        callback(*it.value);
+    }
+}
+
+const ObjectClassRegistration* ObjectClassRegistration::find(const String& class_name)
+{
+    return object_classes().get(class_name).value_or(nullptr);
+}
 }

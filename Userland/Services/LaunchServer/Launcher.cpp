@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Nicholas Hollett <niax@niax.co.uk>, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Launcher.h"
@@ -32,7 +12,9 @@
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ConfigFile.h>
+#include <LibCore/File.h>
 #include <LibDesktop/AppFile.h>
+#include <errno.h>
 #include <serenity.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -45,7 +27,7 @@ static bool spawn(String executable, const Vector<String>& arguments);
 
 String Handler::name_from_executable(const StringView& executable)
 {
-    auto separator = executable.find_last_of('/');
+    auto separator = executable.find_last('/');
     if (separator.has_value()) {
         auto start = separator.value() + 1;
         return executable.substring_view(start, executable.length() - start);
@@ -106,7 +88,8 @@ void Launcher::load_handlers(const String& af_dir)
         HashTable<String> protocols;
         for (auto& protocol : af->launcher_protocols())
             protocols.set(protocol);
-        m_handlers.set(app_executable, { Handler::Type::Default, app_name, app_executable, file_types, protocols });
+        if (access(app_executable.characters(), X_OK) == 0)
+            m_handlers.set(app_executable, { Handler::Type::Default, app_name, app_executable, file_types, protocols });
     },
         af_dir);
 }
@@ -117,12 +100,16 @@ void Launcher::load_config(const Core::ConfigFile& cfg)
         auto handler = cfg.read_entry("FileType", key).trim_whitespace();
         if (handler.is_empty())
             continue;
+        if (access(handler.characters(), X_OK) != 0)
+            continue;
         m_file_handlers.set(key.to_lowercase(), handler);
     }
 
     for (auto key : cfg.keys("Protocol")) {
         auto handler = cfg.read_entry("Protocol", key).trim_whitespace();
         if (handler.is_empty())
+            continue;
+        if (access(handler.characters(), X_OK) != 0)
             continue;
         m_protocol_handlers.set(key.to_lowercase(), handler);
     }
@@ -266,21 +253,36 @@ void Launcher::for_each_handler(const String& key, HashMap<String, String>& user
 void Launcher::for_each_handler_for_path(const String& path, Function<bool(const Handler&)> f)
 {
     struct stat st;
-    if (stat(path.characters(), &st) < 0) {
-        perror("stat");
+    if (lstat(path.characters(), &st) < 0) {
+        perror("lstat");
         return;
     }
 
-    // TODO: Make directory opening configurable
     if (S_ISDIR(st.st_mode)) {
-        f(get_handler_for_executable(Handler::Type::Default, "/bin/FileManager"));
+        auto handler_optional = m_file_handlers.get("directory");
+        if (!handler_optional.has_value())
+            return;
+        auto& handler = handler_optional.value();
+        f(get_handler_for_executable(Handler::Type::Default, handler));
         return;
+    }
+
+    if (!S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode))
+        return;
+
+    if (S_ISLNK(st.st_mode)) {
+        auto link_target = LexicalPath { Core::File::read_link(path) };
+        LexicalPath absolute_link_target = link_target.is_absolute() ? link_target : LexicalPath::join(LexicalPath::dirname(path), link_target.string());
+        auto real_path = Core::File::real_path_for(absolute_link_target.string());
+        return for_each_handler_for_path(real_path, [&](const auto& handler) -> bool {
+            return f(handler);
+        });
     }
 
     if ((st.st_mode & S_IFMT) == S_IFREG && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
         f(get_handler_for_executable(Handler::Type::Application, path));
 
-    auto extension = LexicalPath(path).extension().to_lowercase();
+    auto extension = LexicalPath::extension(path).to_lowercase();
 
     for_each_handler(extension, m_file_handlers, [&](const auto& handler) -> bool {
         if (handler.handler_type != Handler::Type::Default || handler.file_types.contains(extension))
@@ -297,17 +299,22 @@ bool Launcher::open_file_url(const URL& url)
         return false;
     }
 
-    // TODO: Make directory opening configurable
     if (S_ISDIR(st.st_mode)) {
         Vector<String> fm_arguments;
         if (url.fragment().is_empty()) {
             fm_arguments.append(url.path());
         } else {
-            fm_arguments.append(String::formatted("{}/{}", url.path(), url.fragment()));
             fm_arguments.append("-s");
             fm_arguments.append("-r");
+            fm_arguments.append(String::formatted("{}/{}", url.path(), url.fragment()));
         }
-        return spawn("/bin/FileManager", fm_arguments);
+
+        auto handler_optional = m_file_handlers.get("directory");
+        if (!handler_optional.has_value())
+            return false;
+        auto& handler = handler_optional.value();
+
+        return spawn(handler, fm_arguments);
     }
 
     if ((st.st_mode & S_IFMT) == S_IFREG && st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
@@ -318,18 +325,28 @@ bool Launcher::open_file_url(const URL& url)
     if (extension_parts.size() > 1)
         extension = extension_parts.last();
 
-    // Additional parameters parsing, specific for the file protocol and TextEditor
+    auto handler_optional = m_file_handlers.get("txt");
+    if (!handler_optional.has_value())
+        return false;
+    auto& default_handler = handler_optional.value();
+
+    // Additional parameters parsing, specific for the file protocol and txt file handlers
     Vector<String> additional_parameters;
-    additional_parameters.append(url.path());
+    String filepath = url.path();
+
     auto parameters = url.query().split('&');
-    for (auto parameter = parameters.begin(); parameter != parameters.end(); ++parameter) {
-        auto pair = parameter->split('=');
+    for (auto const& parameter : parameters) {
+        auto pair = parameter.split('=');
         if (pair.size() == 2 && pair[0] == "line_number") {
             auto line = pair[1].to_int();
             if (line.has_value())
-                additional_parameters.prepend(String::formatted("-l {}", line.value()));
+                // TextEditor uses file:line:col to open a file at a specific line number
+                filepath = String::formatted("{}:{}", filepath, line.value());
         }
     }
-    return open_with_user_preferences(m_file_handlers, extension, additional_parameters, "/bin/TextEditor");
+
+    additional_parameters.append(filepath);
+
+    return open_with_user_preferences(m_file_handlers, extension, additional_parameters, default_handler);
 }
 }

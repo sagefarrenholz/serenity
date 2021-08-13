@@ -1,41 +1,20 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "PTYMultiplexer.h"
-#include "MasterPTY.h"
 #include <AK/Singleton.h>
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/FileDescription.h>
-#include <Kernel/Process.h>
+#include <Kernel/Sections.h>
+#include <Kernel/TTY/MasterPTY.h>
+#include <Kernel/TTY/PTYMultiplexer.h>
 #include <LibC/errno_numbers.h>
 
 namespace Kernel {
 
-static const unsigned s_max_pty_pairs = 8;
-static AK::Singleton<PTYMultiplexer> s_the;
+static Singleton<PTYMultiplexer> s_the;
 
 PTYMultiplexer& PTYMultiplexer::the()
 {
@@ -45,9 +24,11 @@ PTYMultiplexer& PTYMultiplexer::the()
 UNMAP_AFTER_INIT PTYMultiplexer::PTYMultiplexer()
     : CharacterDevice(5, 2)
 {
-    m_freelist.ensure_capacity(s_max_pty_pairs);
-    for (int i = s_max_pty_pairs; i > 0; --i)
-        m_freelist.unchecked_append(i - 1);
+    m_freelist.with_exclusive([&](auto& freelist) {
+        freelist.ensure_capacity(max_pty_pairs);
+        for (int i = max_pty_pairs; i > 0; --i)
+            freelist.unchecked_append(i - 1);
+    });
 }
 
 UNMAP_AFTER_INIT PTYMultiplexer::~PTYMultiplexer()
@@ -56,25 +37,30 @@ UNMAP_AFTER_INIT PTYMultiplexer::~PTYMultiplexer()
 
 KResultOr<NonnullRefPtr<FileDescription>> PTYMultiplexer::open(int options)
 {
-    LOCKER(m_lock);
-    if (m_freelist.is_empty())
-        return EBUSY;
-    auto master_index = m_freelist.take_last();
-    auto master = adopt(*new MasterPTY(master_index));
-    dbgln_if(PTMX_DEBUG, "PTYMultiplexer::open: Vending master {}", master->index());
-    auto description = FileDescription::create(move(master));
-    if (!description.is_error()) {
-        description.value()->set_rw_mode(options);
-        description.value()->set_file_flags(options);
-    }
-    return description;
+    return m_freelist.with_exclusive([&](auto& freelist) -> KResultOr<NonnullRefPtr<FileDescription>> {
+        if (freelist.is_empty())
+            return EBUSY;
+
+        auto master_index = freelist.take_last();
+        auto master = MasterPTY::try_create(master_index);
+        if (!master)
+            return ENOMEM;
+        dbgln_if(PTMX_DEBUG, "PTYMultiplexer::open: Vending master {}", master->index());
+        auto description = FileDescription::create(*master);
+        if (!description.is_error()) {
+            description.value()->set_rw_mode(options);
+            description.value()->set_file_flags(options);
+        }
+        return description;
+    });
 }
 
 void PTYMultiplexer::notify_master_destroyed(Badge<MasterPTY>, unsigned index)
 {
-    LOCKER(m_lock);
-    m_freelist.append(index);
-    dbgln_if(PTMX_DEBUG, "PTYMultiplexer: {} added to freelist", index);
+    m_freelist.with_exclusive([&](auto& freelist) {
+        freelist.append(index);
+        dbgln_if(PTMX_DEBUG, "PTYMultiplexer: {} added to freelist", index);
+    });
 }
 
 }

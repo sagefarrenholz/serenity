@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -29,9 +9,9 @@
 #include <AK/String.h>
 #include <AK/Types.h>
 #include <AK/Userspace.h>
+#include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/StdLib.h>
 #include <Kernel/UnixTypes.h>
-#include <Kernel/VM/MemoryManager.h>
 #include <LibC/errno_numbers.h>
 
 namespace Kernel {
@@ -42,13 +22,13 @@ public:
 
     static UserOrKernelBuffer for_kernel_buffer(u8* kernel_buffer)
     {
-        VERIFY(!kernel_buffer || !is_user_address(VirtualAddress(kernel_buffer)));
+        VERIFY(!kernel_buffer || !Memory::is_user_address(VirtualAddress(kernel_buffer)));
         return UserOrKernelBuffer(kernel_buffer);
     }
 
     static Optional<UserOrKernelBuffer> for_user_buffer(u8* user_buffer, size_t size)
     {
-        if (user_buffer && !is_user_range(VirtualAddress(user_buffer), size))
+        if (user_buffer && !Memory::is_user_range(VirtualAddress(user_buffer), size))
             return {};
         return UserOrKernelBuffer(user_buffer);
     }
@@ -56,7 +36,7 @@ public:
     template<typename UserspaceType>
     static Optional<UserOrKernelBuffer> for_user_buffer(UserspaceType userspace, size_t size)
     {
-        if (!is_user_range(VirtualAddress(userspace.unsafe_userspace_ptr()), size))
+        if (!Memory::is_user_range(VirtualAddress(userspace.unsafe_userspace_ptr()), size))
             return {};
         return UserOrKernelBuffer(const_cast<u8*>((const u8*)userspace.unsafe_userspace_ptr()));
     }
@@ -64,7 +44,7 @@ public:
     [[nodiscard]] bool is_kernel_buffer() const;
     [[nodiscard]] const void* user_or_kernel_ptr() const { return m_buffer; }
 
-    [[nodiscard]] UserOrKernelBuffer offset(ssize_t offset) const
+    [[nodiscard]] UserOrKernelBuffer offset(size_t offset) const
     {
         if (!m_buffer)
             return *this;
@@ -75,6 +55,7 @@ public:
     }
 
     [[nodiscard]] String copy_into_string(size_t size) const;
+    [[nodiscard]] KResultOr<NonnullOwnPtr<KString>> try_copy_into_kstring(size_t) const;
     [[nodiscard]] bool write(const void* src, size_t offset, size_t len);
     [[nodiscard]] bool write(const void* src, size_t len)
     {
@@ -102,10 +83,10 @@ public:
     }
 
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] ssize_t write_buffered(size_t offset, size_t len, F f)
+    [[nodiscard]] KResultOr<size_t> write_buffered(size_t offset, size_t len, F f)
     {
         if (!m_buffer)
-            return -EFAULT;
+            return EFAULT;
         if (is_kernel_buffer()) {
             // We're transferring directly to a kernel buffer, bypass
             return f(m_buffer + offset, len);
@@ -117,29 +98,30 @@ public:
         size_t nwritten = 0;
         while (nwritten < len) {
             auto to_copy = min(sizeof(buffer), len - nwritten);
-            ssize_t copied = f(buffer, to_copy);
-            if (copied < 0)
-                return copied;
-            VERIFY((size_t)copied <= to_copy);
-            if (!write(buffer, nwritten, (size_t)copied))
-                return -EFAULT;
-            nwritten += (size_t)copied;
-            if ((size_t)copied < to_copy)
+            KResultOr<size_t> copied_or_error = f(buffer, to_copy);
+            if (copied_or_error.is_error())
+                return copied_or_error.error();
+            auto copied = copied_or_error.value();
+            VERIFY(copied <= to_copy);
+            if (!write(buffer, nwritten, copied))
+                return EFAULT;
+            nwritten += copied;
+            if (copied < to_copy)
                 break;
         }
-        return (ssize_t)nwritten;
+        return nwritten;
     }
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] ssize_t write_buffered(size_t len, F f)
+    [[nodiscard]] KResultOr<size_t> write_buffered(size_t len, F f)
     {
         return write_buffered<BUFFER_BYTES, F>(0, len, f);
     }
 
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] ssize_t read_buffered(size_t offset, size_t len, F f) const
+    [[nodiscard]] KResultOr<size_t> read_buffered(size_t offset, size_t len, F f) const
     {
         if (!m_buffer)
-            return -EFAULT;
+            return EFAULT;
         if (is_kernel_buffer()) {
             // We're transferring directly from a kernel buffer, bypass
             return f(m_buffer + offset, len);
@@ -152,19 +134,20 @@ public:
         while (nread < len) {
             auto to_copy = min(sizeof(buffer), len - nread);
             if (!read(buffer, nread, to_copy))
-                return -EFAULT;
-            ssize_t copied = f(buffer, to_copy);
-            if (copied < 0)
-                return copied;
-            VERIFY((size_t)copied <= to_copy);
-            nread += (size_t)copied;
-            if ((size_t)copied < to_copy)
+                return EFAULT;
+            KResultOr<size_t> copied_or_error = f(buffer, to_copy);
+            if (copied_or_error.is_error())
+                return copied_or_error.error();
+            auto copied = copied_or_error.value();
+            VERIFY(copied <= to_copy);
+            nread += copied;
+            if (copied < to_copy)
                 break;
         }
         return nread;
     }
     template<size_t BUFFER_BYTES, typename F>
-    [[nodiscard]] ssize_t read_buffered(size_t len, F f) const
+    [[nodiscard]] KResultOr<size_t> read_buffered(size_t len, F f) const
     {
         return read_buffered<BUFFER_BYTES, F>(0, len, f);
     }

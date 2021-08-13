@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -39,25 +19,25 @@ class ProcessModel final : public GUI::Model {
 public:
     enum Column {
         Icon = 0,
+        PID,
         Name,
         CPU,
-        Processor,
         State,
-        Priority,
         User,
-        PID,
-        TID,
-        PPID,
-        PGID,
-        SID,
         Virtual,
-        Physical,
         DirtyPrivate,
+        Pledge,
+        Physical,
         CleanInode,
         PurgeableVolatile,
         PurgeableNonvolatile,
         Veil,
-        Pledge,
+        Processor,
+        Priority,
+        TID,
+        PPID,
+        PGID,
+        SID,
         Syscalls,
         InodeFaults,
         ZeroFaults,
@@ -73,14 +53,15 @@ public:
 
     static ProcessModel& the();
 
-    static NonnullRefPtr<ProcessModel> create() { return adopt(*new ProcessModel); }
+    static NonnullRefPtr<ProcessModel> create() { return adopt_ref(*new ProcessModel); }
     virtual ~ProcessModel() override;
 
     virtual int row_count(const GUI::ModelIndex&) const override;
     virtual int column_count(const GUI::ModelIndex&) const override;
     virtual String column_name(int column) const override;
     virtual GUI::Variant data(const GUI::ModelIndex&, GUI::ModelRole) const override;
-    virtual void update() override;
+    virtual bool is_column_sortable(int column_index) const override { return column_index != Column::Icon; }
+    void update();
 
     struct CpuInfo {
         u32 id;
@@ -94,6 +75,7 @@ public:
     };
 
     Function<void(const NonnullOwnPtrVector<CpuInfo>&)> on_cpu_info_change;
+    Function<void(int process_count, int thread_count)> on_state_update;
 
     const NonnullOwnPtrVector<CpuInfo>& cpus() const { return m_cpus; }
 
@@ -106,8 +88,9 @@ private:
         pid_t ppid;
         pid_t pgid;
         pid_t sid;
-        unsigned ticks_user;
-        unsigned ticks_kernel;
+        u64 time_user;
+        u64 time_kernel;
+        bool kernel;
         String executable;
         String name;
         String state;
@@ -145,4 +128,8 @@ private:
     NonnullOwnPtrVector<CpuInfo> m_cpus;
     Vector<int> m_tids;
     RefPtr<Core::File> m_proc_all;
+    GUI::Icon m_kernel_process_icon;
+    u64 m_total_time_scheduled { 0 };
+    u64 m_total_time_scheduled_kernel { 0 };
+    bool m_has_total_scheduled_time { false };
 };

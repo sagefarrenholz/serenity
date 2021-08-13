@@ -1,4 +1,3 @@
-endpoint LookupClient = 9002
+endpoint LookupClient
 {
-    Dummy() =|
 }

@@ -1,31 +1,14 @@
 /*
- * Copyright (c) 2020, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2020, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Function.h>
+#include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
+#include <LibJS/Runtime/ArrayBufferConstructor.h>
 #include <LibJS/Runtime/ArrayBufferPrototype.h>
 #include <LibJS/Runtime/GlobalObject.h>
 
@@ -42,10 +25,10 @@ void ArrayBufferPrototype::initialize(GlobalObject& global_object)
     Object::initialize(global_object);
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(vm.names.slice, slice, 2, attr);
-    // FIXME: This should be an accessor property
-    define_native_property(vm.names.byteLength, byte_length_getter, {}, Attribute::Configurable);
+    define_native_accessor(vm.names.byteLength, byte_length_getter, {}, Attribute::Configurable);
 
-    define_property(vm.well_known_symbol_to_string_tag(), js_string(vm.heap(), "ArrayBuffer"), Attribute::Configurable);
+    // 25.1.5.4 ArrayBuffer.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-arraybuffer.prototype-@@tostringtag
+    define_direct_property(*vm.well_known_symbol_to_string_tag(), js_string(vm, vm.names.ArrayBuffer.as_string()), Attribute::Configurable);
 }
 
 ArrayBufferPrototype::~ArrayBufferPrototype()
@@ -56,32 +39,102 @@ static ArrayBuffer* array_buffer_object_from(VM& vm, GlobalObject& global_object
 {
     // ArrayBuffer.prototype.* deliberately don't coerce |this| value to object.
     auto this_value = vm.this_value(global_object);
-    if (!this_value.is_object())
-        return nullptr;
-    auto& this_object = this_value.as_object();
-    if (!is<ArrayBuffer>(this_object)) {
+    if (!this_value.is_object() || !is<ArrayBuffer>(this_value.as_object())) {
         vm.throw_exception<TypeError>(global_object, ErrorType::NotAn, "ArrayBuffer");
         return nullptr;
     }
-    return static_cast<ArrayBuffer*>(&this_object);
+    return static_cast<ArrayBuffer*>(&this_value.as_object());
 }
 
+// 25.1.5.3 ArrayBuffer.prototype.slice ( start, end ), https://tc39.es/ecma262/#sec-arraybuffer.prototype.slice
 JS_DEFINE_NATIVE_FUNCTION(ArrayBufferPrototype::slice)
 {
     auto array_buffer_object = array_buffer_object_from(vm, global_object);
     if (!array_buffer_object)
         return {};
-    TODO();
+
+    // FIXME: Check for shared buffer
+    if (array_buffer_object->is_detached()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
+        return {};
+    }
+
+    auto length = array_buffer_object->byte_length();
+
+    auto relative_start = vm.argument(0).to_integer_or_infinity(global_object);
+    if (vm.exception())
+        return {};
+
+    double first;
+    if (relative_start < 0)
+        first = max(length + relative_start, 0.0);
+    else
+        first = min(relative_start, (double)length);
+
+    auto relative_end = vm.argument(1).is_undefined() ? length : vm.argument(1).to_integer_or_infinity(global_object);
+    if (vm.exception())
+        return {};
+
+    double final;
+    if (relative_end < 0)
+        final = max(length + relative_end, 0.0);
+    else
+        final = min(relative_end, (double)length);
+
+    auto new_length = max(final - first, 0.0);
+
+    auto constructor = species_constructor(global_object, *array_buffer_object, *global_object.array_buffer_constructor());
+    if (vm.exception())
+        return {};
+
+    MarkedValueList arguments(vm.heap());
+    arguments.append(Value(new_length));
+    auto new_array_buffer = vm.construct(*constructor, *constructor, move(arguments));
+    if (vm.exception())
+        return {};
+
+    if (!new_array_buffer.is_object() || !is<ArrayBuffer>(new_array_buffer.as_object())) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::SpeciesConstructorDidNotCreate, "an ArrayBuffer");
+        return {};
+    }
+    auto* new_array_buffer_object = static_cast<ArrayBuffer*>(&new_array_buffer.as_object());
+
+    // FIXME: Check for shared buffer
+    if (new_array_buffer_object->is_detached()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::SpeciesConstructorReturned, "a detached ArrayBuffer");
+        return {};
+    }
+    if (same_value(new_array_buffer_object, array_buffer_object)) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::SpeciesConstructorReturned, "same ArrayBuffer instance");
+        return {};
+    }
+    if (new_array_buffer_object->byte_length() < new_length) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::SpeciesConstructorReturned, "an ArrayBuffer smaller than requested");
+        return {};
+    }
+
+    if (array_buffer_object->is_detached()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::DetachedArrayBuffer);
+        return {};
+    }
+
+    // This is ugly, is there a better way to do this?
+    array_buffer_object->buffer().span().slice(first, new_length).copy_to(new_array_buffer_object->buffer().span());
+    return new_array_buffer_object;
 }
 
+// 25.1.5.1 get ArrayBuffer.prototype.byteLength, https://tc39.es/ecma262/#sec-get-arraybuffer.prototype.bytelength
 JS_DEFINE_NATIVE_GETTER(ArrayBufferPrototype::byte_length_getter)
 {
     auto array_buffer_object = array_buffer_object_from(vm, global_object);
     if (!array_buffer_object)
         return {};
+
     // FIXME: Check for shared buffer
-    // FIXME: Check for detached buffer
-    return Value((double)array_buffer_object->byte_length());
+    if (array_buffer_object->is_detached())
+        return Value(0);
+
+    return Value(array_buffer_object->byte_length());
 }
 
 }

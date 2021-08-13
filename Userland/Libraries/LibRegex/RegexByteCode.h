@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Emanuel Sprung <emanuel.sprung@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,8 +15,10 @@
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/Traits.h>
+#include <AK/TypeCasts.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
+#include <LibUnicode/Forward.h>
 
 namespace regex {
 
@@ -58,6 +40,8 @@ using ByteCodeValueType = u64;
     __ENUMERATE_OPCODE(Save)                       \
     __ENUMERATE_OPCODE(Restore)                    \
     __ENUMERATE_OPCODE(GoBack)                     \
+    __ENUMERATE_OPCODE(ClearCaptureGroup)          \
+    __ENUMERATE_OPCODE(ClearNamedCaptureGroup)     \
     __ENUMERATE_OPCODE(Exit)
 
 // clang-format off
@@ -82,6 +66,10 @@ enum class OpCodeId : ByteCodeValueType {
     __ENUMERATE_CHARACTER_COMPARE_TYPE(CharRange)        \
     __ENUMERATE_CHARACTER_COMPARE_TYPE(Reference)        \
     __ENUMERATE_CHARACTER_COMPARE_TYPE(NamedReference)   \
+    __ENUMERATE_CHARACTER_COMPARE_TYPE(Property)         \
+    __ENUMERATE_CHARACTER_COMPARE_TYPE(GeneralCategory)  \
+    __ENUMERATE_CHARACTER_COMPARE_TYPE(Script)           \
+    __ENUMERATE_CHARACTER_COMPARE_TYPE(ScriptExtension)  \
     __ENUMERATE_CHARACTER_COMPARE_TYPE(RangeExpressionDummy)
 
 enum class CharacterCompareType : ByteCodeValueType {
@@ -122,8 +110,8 @@ enum class BoundaryCheckType : ByteCodeValueType {
 };
 
 struct CharRange {
-    const u32 from;
-    const u32 to;
+    u32 const from;
+    u32 const to;
 
     CharRange(u64 value)
         : from(value >> 32)
@@ -149,8 +137,15 @@ class OpCode;
 
 class ByteCode : public Vector<ByteCodeValueType> {
 public:
-    ByteCode() = default;
+    ByteCode()
+    {
+        ensure_opcodes_initialized();
+    }
+
+    ByteCode(ByteCode const&) = default;
     virtual ~ByteCode() = default;
+
+    ByteCode& operator=(ByteCode&&) = default;
 
     void insert_bytecode_compare_values(Vector<CompareTypeAndValuePair>&& pairs)
     {
@@ -172,9 +167,9 @@ public:
         }
 
         bytecode.empend(arguments.size()); // size of arguments
-        bytecode.append(move(arguments));
+        bytecode.extend(move(arguments));
 
-        append(move(bytecode));
+        extend(move(bytecode));
     }
 
     void insert_bytecode_check_boundary(BoundaryCheckType type)
@@ -183,7 +178,20 @@ public:
         bytecode.empend((ByteCodeValueType)OpCodeId::CheckBoundary);
         bytecode.empend((ByteCodeValueType)type);
 
-        append(move(bytecode));
+        extend(move(bytecode));
+    }
+
+    void insert_bytecode_clear_capture_group(size_t index)
+    {
+        empend(static_cast<ByteCodeValueType>(OpCodeId::ClearCaptureGroup));
+        empend(index);
+    }
+
+    void insert_bytecode_clear_named_capture_group(StringView name)
+    {
+        empend(static_cast<ByteCodeValueType>(OpCodeId::ClearNamedCaptureGroup));
+        empend(reinterpret_cast<ByteCodeValueType>(name.characters_without_null_termination()));
+        empend(name.length());
     }
 
     void insert_bytecode_compare_string(StringView view)
@@ -199,9 +207,9 @@ public:
         arguments.insert_string(view);
 
         bytecode.empend(arguments.size()); // size of arguments
-        bytecode.append(move(arguments));
+        bytecode.extend(move(arguments));
 
-        append(move(bytecode));
+        extend(move(bytecode));
     }
 
     void insert_bytecode_compare_named_reference(StringView name)
@@ -218,9 +226,9 @@ public:
         arguments.empend(name.length());
 
         bytecode.empend(arguments.size()); // size of arguments
-        bytecode.append(move(arguments));
+        bytecode.extend(move(arguments));
 
-        append(move(bytecode));
+        extend(move(bytecode));
     }
 
     void insert_bytecode_group_capture_left(size_t capture_groups_count)
@@ -229,7 +237,7 @@ public:
         empend(capture_groups_count);
     }
 
-    void insert_bytecode_group_capture_left(const StringView& name)
+    void insert_bytecode_group_capture_left(StringView const& name)
     {
         empend(static_cast<ByteCodeValueType>(OpCodeId::SaveLeftNamedCaptureGroup));
         empend(reinterpret_cast<ByteCodeValueType>(name.characters_without_null_termination()));
@@ -242,7 +250,7 @@ public:
         empend(capture_groups_count);
     }
 
-    void insert_bytecode_group_capture_right(const StringView& name)
+    void insert_bytecode_group_capture_right(StringView const& name)
     {
         empend(static_cast<ByteCodeValueType>(OpCodeId::SaveRightNamedCaptureGroup));
         empend(reinterpret_cast<ByteCodeValueType>(name.characters_without_null_termination()));
@@ -265,7 +273,7 @@ public:
             // REGEXP BODY
             // RESTORE
             empend((ByteCodeValueType)OpCodeId::Save);
-            append(move(lookaround_body));
+            extend(move(lookaround_body));
             empend((ByteCodeValueType)OpCodeId::Restore);
             return;
         }
@@ -281,7 +289,7 @@ public:
             auto body_length = lookaround_body.size();
             empend((ByteCodeValueType)OpCodeId::Jump);
             empend((ByteCodeValueType)body_length + 2); // JUMP to label _A
-            append(move(lookaround_body));
+            extend(move(lookaround_body));
             empend((ByteCodeValueType)OpCodeId::FailForks);
             empend((ByteCodeValueType)2); // Fail two forks
             empend((ByteCodeValueType)OpCodeId::Save);
@@ -298,7 +306,7 @@ public:
             empend((ByteCodeValueType)OpCodeId::Save);
             empend((ByteCodeValueType)OpCodeId::GoBack);
             empend((ByteCodeValueType)match_length);
-            append(move(lookaround_body));
+            extend(move(lookaround_body));
             empend((ByteCodeValueType)OpCodeId::Restore);
             return;
         case LookAroundType::NegatedLookBehind: {
@@ -316,7 +324,7 @@ public:
             empend((ByteCodeValueType)body_length + 4); // JUMP to label _A
             empend((ByteCodeValueType)OpCodeId::GoBack);
             empend((ByteCodeValueType)match_length);
-            append(move(lookaround_body));
+            extend(move(lookaround_body));
             empend((ByteCodeValueType)OpCodeId::FailForks);
             empend((ByteCodeValueType)2); // Fail two forks
             empend((ByteCodeValueType)OpCodeId::Save);
@@ -334,51 +342,53 @@ public:
     {
 
         // FORKJUMP _ALT
-        // REGEXP ALT1
+        // REGEXP ALT2
         // JUMP  _END
         // LABEL _ALT
-        // REGEXP ALT2
+        // REGEXP ALT1
         // LABEL _END
 
         ByteCode byte_code;
 
         empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
-        empend(left.size() + 2); // Jump to the _ALT label
+        empend(right.size() + 2); // Jump to the _ALT label
 
-        for (auto& op : left)
+        for (auto& op : right)
             append(move(op));
 
         empend(static_cast<ByteCodeValueType>(OpCodeId::Jump));
-        empend(right.size()); // Jump to the _END label
+        empend(left.size()); // Jump to the _END label
 
         // LABEL _ALT = bytecode.size() + 2
 
-        for (auto& op : right)
+        for (auto& op : left)
             append(move(op));
 
         // LABEL _END = alterantive_bytecode.size
     }
 
-    void insert_bytecode_repetition_min_max(ByteCode& bytecode_to_repeat, size_t minimum, Optional<size_t> maximum)
+    static void transform_bytecode_repetition_min_max(ByteCode& bytecode_to_repeat, size_t minimum, Optional<size_t> maximum, bool greedy = true)
     {
         ByteCode new_bytecode;
         new_bytecode.insert_bytecode_repetition_n(bytecode_to_repeat, minimum);
 
         if (maximum.has_value()) {
+            auto jump_kind = static_cast<ByteCodeValueType>(greedy ? OpCodeId::ForkStay : OpCodeId::ForkJump);
             if (maximum.value() > minimum) {
                 auto diff = maximum.value() - minimum;
-                new_bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkStay));
+                new_bytecode.empend(jump_kind);
                 new_bytecode.empend(diff * (bytecode_to_repeat.size() + 2)); // Jump to the _END label
 
                 for (size_t i = 0; i < diff; ++i) {
-                    new_bytecode.append(bytecode_to_repeat);
-                    new_bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkStay));
+                    new_bytecode.extend(bytecode_to_repeat);
+                    new_bytecode.empend(jump_kind);
                     new_bytecode.empend((diff - i - 1) * (bytecode_to_repeat.size() + 2)); // Jump to the _END label
                 }
             }
         } else {
             // no maximum value set, repeat finding if possible
-            new_bytecode.empend(static_cast<ByteCodeValueType>(OpCodeId::ForkJump));
+            auto jump_kind = static_cast<ByteCodeValueType>(greedy ? OpCodeId::ForkJump : OpCodeId::ForkStay);
+            new_bytecode.empend(jump_kind);
             new_bytecode.empend(-bytecode_to_repeat.size() - 2); // Jump to the last iteration
         }
 
@@ -388,10 +398,10 @@ public:
     void insert_bytecode_repetition_n(ByteCode& bytecode_to_repeat, size_t n)
     {
         for (size_t i = 0; i < n; ++i)
-            append(bytecode_to_repeat);
+            extend(bytecode_to_repeat);
     }
 
-    void insert_bytecode_repetition_min_one(ByteCode& bytecode_to_repeat, bool greedy)
+    static void transform_bytecode_repetition_min_one(ByteCode& bytecode_to_repeat, bool greedy)
     {
         // LABEL _START = -bytecode_to_repeat.size()
         // REGEXP
@@ -405,7 +415,7 @@ public:
         bytecode_to_repeat.empend(-(bytecode_to_repeat.size() + 1)); // Jump to the _START label
     }
 
-    void insert_bytecode_repetition_any(ByteCode& bytecode_to_repeat, bool greedy)
+    static void transform_bytecode_repetition_any(ByteCode& bytecode_to_repeat, bool greedy)
     {
         // LABEL _START
         // FORKJUMP _END  (FORKSTAY -> Greedy)
@@ -433,7 +443,7 @@ public:
         bytecode_to_repeat = move(bytecode);
     }
 
-    void insert_bytecode_repetition_zero_or_one(ByteCode& bytecode_to_repeat, bool greedy)
+    static void transform_bytecode_repetition_zero_or_one(ByteCode& bytecode_to_repeat, bool greedy)
     {
         // FORKJUMP _END (FORKSTAY -> Greedy)
         // REGEXP
@@ -454,18 +464,20 @@ public:
         bytecode_to_repeat = move(bytecode);
     }
 
-    OpCode* get_opcode(MatchState& state) const;
+    OpCode& get_opcode(MatchState& state) const;
 
 private:
-    void insert_string(const StringView& view)
+    void insert_string(StringView const& view)
     {
         empend((ByteCodeValueType)view.length());
         for (size_t i = 0; i < view.length(); ++i)
             empend((ByteCodeValueType)view[i]);
     }
 
-    ALWAYS_INLINE OpCode* get_opcode_by_id(OpCodeId id) const;
-    static HashMap<u32, OwnPtr<OpCode>> s_opcodes;
+    void ensure_opcodes_initialized();
+    ALWAYS_INLINE OpCode& get_opcode_by_id(OpCodeId id) const;
+    static OwnPtr<OpCode> s_opcodes[(size_t)OpCodeId::Last + 1];
+    static bool s_opcodes_initialized;
 };
 
 #define ENUMERATE_EXECUTION_RESULTS                          \
@@ -482,24 +494,20 @@ enum class ExecutionResult : u8 {
 #undef __ENUMERATE_EXECUTION_RESULT
 };
 
-const char* execution_result_name(ExecutionResult result);
-const char* opcode_id_name(OpCodeId opcode_id);
-const char* boundary_check_type_name(BoundaryCheckType);
-const char* character_compare_type_name(CharacterCompareType result);
-const char* execution_result_name(ExecutionResult result);
+char const* execution_result_name(ExecutionResult result);
+char const* opcode_id_name(OpCodeId opcode_id);
+char const* boundary_check_type_name(BoundaryCheckType);
+char const* character_compare_type_name(CharacterCompareType result);
+char const* execution_result_name(ExecutionResult result);
 
 class OpCode {
 public:
-    OpCode(ByteCode& bytecode)
-        : m_bytecode(&bytecode)
-    {
-    }
-
+    OpCode() = default;
     virtual ~OpCode() = default;
 
     virtual OpCodeId opcode_id() const = 0;
     virtual size_t size() const = 0;
-    virtual ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const = 0;
+    virtual ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const = 0;
 
     ALWAYS_INLINE ByteCodeValueType argument(size_t offset) const
     {
@@ -507,331 +515,279 @@ public:
         return m_bytecode->at(state().instruction_position + 1 + offset);
     }
 
-    ALWAYS_INLINE const char* name() const;
-    static const char* name(const OpCodeId);
+    ALWAYS_INLINE char const* name() const;
+    static char const* name(OpCodeId const);
 
-    ALWAYS_INLINE OpCode* set_state(MatchState& state)
+    ALWAYS_INLINE void set_state(MatchState& state) { m_state = &state; }
+
+    ALWAYS_INLINE void set_bytecode(ByteCode& bytecode) { m_bytecode = &bytecode; }
+
+    ALWAYS_INLINE MatchState const& state() const
     {
-        m_state = &state;
-        return this;
+        VERIFY(m_state);
+        return *m_state;
     }
 
-    ALWAYS_INLINE OpCode* set_bytecode(ByteCode& bytecode)
+    String const to_string() const
     {
-        m_bytecode = &bytecode;
-        return this;
+        return String::formatted("[{:#02X}] {}", (int)opcode_id(), name(opcode_id()));
     }
 
-    ALWAYS_INLINE void reset_state() { m_state.clear(); }
+    virtual String const arguments_string() const = 0;
 
-    ALWAYS_INLINE const MatchState& state() const
-    {
-        VERIFY(m_state.has_value());
-        return *m_state.value();
-    }
-
-    const String to_string() const
-    {
-        return String::format("[0x%02X] %s", (int)opcode_id(), name(opcode_id()));
-    }
-
-    virtual const String arguments_string() const = 0;
-
-    ALWAYS_INLINE const ByteCode& bytecode() const { return *m_bytecode; }
+    ALWAYS_INLINE ByteCode const& bytecode() const { return *m_bytecode; }
 
 protected:
-    ByteCode* m_bytecode;
-    Optional<MatchState*> m_state;
+    ByteCode* m_bytecode { nullptr };
+    MatchState* m_state { nullptr };
 };
 
 class OpCode_Exit final : public OpCode {
 public:
-    OpCode_Exit(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::Exit; }
     ALWAYS_INLINE size_t size() const override { return 1; }
-    const String arguments_string() const override { return ""; }
+    String const arguments_string() const override { return ""; }
 };
 
 class OpCode_FailForks final : public OpCode {
 public:
-    OpCode_FailForks(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::FailForks; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE size_t count() const { return argument(0); }
-    const String arguments_string() const override { return String::formatted("count={}", count()); }
+    String const arguments_string() const override { return String::formatted("count={}", count()); }
 };
 
 class OpCode_Save final : public OpCode {
 public:
-    OpCode_Save(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::Save; }
     ALWAYS_INLINE size_t size() const override { return 1; }
-    const String arguments_string() const override { return ""; }
+    String const arguments_string() const override { return ""; }
 };
 
 class OpCode_Restore final : public OpCode {
 public:
-    OpCode_Restore(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::Restore; }
     ALWAYS_INLINE size_t size() const override { return 1; }
-    const String arguments_string() const override { return ""; }
+    String const arguments_string() const override { return ""; }
 };
 
 class OpCode_GoBack final : public OpCode {
 public:
-    OpCode_GoBack(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::GoBack; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE size_t count() const { return argument(0); }
-    const String arguments_string() const override { return String::formatted("count={}", count()); }
+    String const arguments_string() const override { return String::formatted("count={}", count()); }
 };
 
 class OpCode_Jump final : public OpCode {
 public:
-    OpCode_Jump(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::Jump; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE ssize_t offset() const { return argument(0); }
-    const String arguments_string() const override
+    String const arguments_string() const override
     {
-        return String::format("offset=%zd [&%zu]", offset(), state().instruction_position + size() + offset());
+        return String::formatted("offset={} [&{}]", offset(), state().instruction_position + size() + offset());
     }
 };
 
 class OpCode_ForkJump final : public OpCode {
 public:
-    OpCode_ForkJump(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::ForkJump; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE ssize_t offset() const { return argument(0); }
-    const String arguments_string() const override
+    String const arguments_string() const override
     {
-        return String::format("offset=%zd [&%zu], sp: %zu", offset(), state().instruction_position + size() + offset(), state().string_position);
+        return String::formatted("offset={} [&{}], sp: {}", offset(), state().instruction_position + size() + offset(), state().string_position);
     }
 };
 
 class OpCode_ForkStay final : public OpCode {
 public:
-    OpCode_ForkStay(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::ForkStay; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE ssize_t offset() const { return argument(0); }
-    const String arguments_string() const override
+    String const arguments_string() const override
     {
-        return String::format("offset=%zd [&%zu], sp: %zu", offset(), state().instruction_position + size() + offset(), state().string_position);
+        return String::formatted("offset={} [&{}], sp: {}", offset(), state().instruction_position + size() + offset(), state().string_position);
     }
 };
 
 class OpCode_CheckBegin final : public OpCode {
 public:
-    OpCode_CheckBegin(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::CheckBegin; }
     ALWAYS_INLINE size_t size() const override { return 1; }
-    const String arguments_string() const override { return ""; }
+    String const arguments_string() const override { return ""; }
 };
 
 class OpCode_CheckEnd final : public OpCode {
 public:
-    OpCode_CheckEnd(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::CheckEnd; }
     ALWAYS_INLINE size_t size() const override { return 1; }
-    const String arguments_string() const override { return ""; }
+    String const arguments_string() const override { return ""; }
 };
 
 class OpCode_CheckBoundary final : public OpCode {
 public:
-    OpCode_CheckBoundary(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::CheckBoundary; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE size_t arguments_count() const { return 1; }
     ALWAYS_INLINE BoundaryCheckType type() const { return static_cast<BoundaryCheckType>(argument(0)); }
-    const String arguments_string() const override { return String::format("kind=%lu (%s)", (long unsigned int)argument(0), boundary_check_type_name(type())); }
+    String const arguments_string() const override { return String::formatted("kind={} ({})", (long unsigned int)argument(0), boundary_check_type_name(type())); }
+};
+
+class OpCode_ClearCaptureGroup final : public OpCode {
+public:
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::ClearCaptureGroup; }
+    ALWAYS_INLINE size_t size() const override { return 2; }
+    ALWAYS_INLINE size_t id() const { return argument(0); }
+    String const arguments_string() const override { return String::formatted("id={}", id()); }
+};
+
+class OpCode_ClearNamedCaptureGroup final : public OpCode {
+public:
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::ClearNamedCaptureGroup; }
+    ALWAYS_INLINE size_t size() const override { return 3; }
+    ALWAYS_INLINE StringView name() const { return { reinterpret_cast<char*>(argument(0)), length() }; }
+    ALWAYS_INLINE size_t length() const { return argument(1); }
+    String const arguments_string() const override
+    {
+        return String::formatted("name={}, length={}", name(), length());
+    }
 };
 
 class OpCode_SaveLeftCaptureGroup final : public OpCode {
 public:
-    OpCode_SaveLeftCaptureGroup(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::SaveLeftCaptureGroup; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE size_t id() const { return argument(0); }
-    const String arguments_string() const override { return String::format("id=%lu", id()); }
+    String const arguments_string() const override { return String::formatted("id={}", id()); }
 };
 
 class OpCode_SaveRightCaptureGroup final : public OpCode {
 public:
-    OpCode_SaveRightCaptureGroup(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::SaveRightCaptureGroup; }
     ALWAYS_INLINE size_t size() const override { return 2; }
     ALWAYS_INLINE size_t id() const { return argument(0); }
-    const String arguments_string() const override { return String::format("id=%lu", id()); }
+    String const arguments_string() const override { return String::formatted("id={}", id()); }
 };
 
 class OpCode_SaveLeftNamedCaptureGroup final : public OpCode {
 public:
-    OpCode_SaveLeftNamedCaptureGroup(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::SaveLeftNamedCaptureGroup; }
     ALWAYS_INLINE size_t size() const override { return 3; }
     ALWAYS_INLINE StringView name() const { return { reinterpret_cast<char*>(argument(0)), length() }; }
     ALWAYS_INLINE size_t length() const { return argument(1); }
-    const String arguments_string() const override
+    String const arguments_string() const override
     {
-        return String::format("name=%s, length=%lu", name().to_string().characters(), length());
+        return String::formatted("name={}, length={}", name(), length());
     }
 };
 
 class OpCode_SaveRightNamedCaptureGroup final : public OpCode {
 public:
-    OpCode_SaveRightNamedCaptureGroup(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::SaveRightNamedCaptureGroup; }
     ALWAYS_INLINE size_t size() const override { return 3; }
     ALWAYS_INLINE StringView name() const { return { reinterpret_cast<char*>(argument(0)), length() }; }
     ALWAYS_INLINE size_t length() const { return argument(1); }
-    const String arguments_string() const override
+    String const arguments_string() const override
     {
-        return String::format("name=%s, length=%zu", name().to_string().characters(), length());
+        return String::formatted("name={}, length={}", name(), length());
     }
 };
 
 class OpCode_Compare final : public OpCode {
 public:
-    OpCode_Compare(ByteCode& bytecode)
-        : OpCode(bytecode)
-    {
-    }
-    ExecutionResult execute(const MatchInput& input, MatchState& state, MatchOutput& output) const override;
+    ExecutionResult execute(MatchInput const& input, MatchState& state, MatchOutput& output) const override;
     ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::Compare; }
     ALWAYS_INLINE size_t size() const override { return arguments_size() + 3; }
     ALWAYS_INLINE size_t arguments_count() const { return argument(0); }
     ALWAYS_INLINE size_t arguments_size() const { return argument(1); }
-    const String arguments_string() const override;
-    const Vector<String> variable_arguments_to_string(Optional<MatchInput> input = {}) const;
+    String const arguments_string() const override;
+    Vector<String> const variable_arguments_to_string(Optional<MatchInput> input = {}) const;
 
 private:
-    ALWAYS_INLINE static void compare_char(const MatchInput& input, MatchState& state, u32 ch1, bool inverse, bool& inverse_matched);
-    ALWAYS_INLINE static bool compare_string(const MatchInput& input, MatchState& state, const char* str, size_t length);
-    ALWAYS_INLINE static void compare_character_class(const MatchInput& input, MatchState& state, CharClass character_class, u32 ch, bool inverse, bool& inverse_matched);
-    ALWAYS_INLINE static void compare_character_range(const MatchInput& input, MatchState& state, u32 from, u32 to, u32 ch, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static void compare_char(MatchInput const& input, MatchState& state, u32 ch1, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static bool compare_string(MatchInput const& input, MatchState& state, RegexStringView const& str, bool& had_zero_length_match);
+    ALWAYS_INLINE static void compare_character_class(MatchInput const& input, MatchState& state, CharClass character_class, u32 ch, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static void compare_character_range(MatchInput const& input, MatchState& state, u32 from, u32 to, u32 ch, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static void compare_property(MatchInput const& input, MatchState& state, Unicode::Property property, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static void compare_general_category(MatchInput const& input, MatchState& state, Unicode::GeneralCategory general_category, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static void compare_script(MatchInput const& input, MatchState& state, Unicode::Script script, bool inverse, bool& inverse_matched);
+    ALWAYS_INLINE static void compare_script_extension(MatchInput const& input, MatchState& state, Unicode::Script script, bool inverse, bool& inverse_matched);
 };
 
 template<typename T>
-bool is(const OpCode&);
+bool is(OpCode const&);
 
 template<typename T>
-ALWAYS_INLINE bool is(const OpCode&)
+ALWAYS_INLINE bool is(OpCode const&)
 {
     return false;
 }
 
 template<typename T>
-ALWAYS_INLINE bool is(const OpCode* opcode)
+ALWAYS_INLINE bool is(OpCode const* opcode)
 {
     return is<T>(*opcode);
 }
 
 template<>
-ALWAYS_INLINE bool is<OpCode_ForkStay>(const OpCode& opcode)
+ALWAYS_INLINE bool is<OpCode_ForkStay>(OpCode const& opcode)
 {
     return opcode.opcode_id() == OpCodeId::ForkStay;
 }
 
 template<>
-ALWAYS_INLINE bool is<OpCode_Exit>(const OpCode& opcode)
+ALWAYS_INLINE bool is<OpCode_Exit>(OpCode const& opcode)
 {
     return opcode.opcode_id() == OpCodeId::Exit;
 }
 
 template<>
-ALWAYS_INLINE bool is<OpCode_Compare>(const OpCode& opcode)
+ALWAYS_INLINE bool is<OpCode_Compare>(OpCode const& opcode)
 {
     return opcode.opcode_id() == OpCodeId::Compare;
 }
 
 template<typename T>
-ALWAYS_INLINE const T& to(const OpCode& opcode)
+ALWAYS_INLINE T const& to(OpCode const& opcode)
 {
-    VERIFY(is<T>(opcode));
-    return static_cast<const T&>(opcode);
+    return verify_cast<T>(opcode);
 }
 
 template<typename T>
 ALWAYS_INLINE T* to(OpCode* opcode)
 {
-    VERIFY(is<T>(opcode));
-    return static_cast<T*>(opcode);
+    return verify_cast<T>(opcode);
 }
 
 template<typename T>
-ALWAYS_INLINE const T* to(const OpCode* opcode)
+ALWAYS_INLINE T const* to(OpCode const* opcode)
 {
-    VERIFY(is<T>(opcode));
-    return static_cast<const T*>(opcode);
+    return verify_cast<T>(opcode);
 }
 
 template<typename T>
 ALWAYS_INLINE T& to(OpCode& opcode)
 {
-    VERIFY(is<T>(opcode));
-    return static_cast<T&>(opcode);
+    return verify_cast<T>(opcode);
 }
 
 }

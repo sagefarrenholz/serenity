@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -32,6 +12,8 @@
 
 namespace Web {
 
+constexpr size_t maximum_redirects_allowed = 20;
+
 class FrameLoader final
     : public ResourceClient {
 public:
@@ -41,7 +23,7 @@ public:
         IFrame,
     };
 
-    explicit FrameLoader(Frame&);
+    explicit FrameLoader(BrowsingContext&);
     ~FrameLoader();
 
     bool load(const URL&, Type);
@@ -49,8 +31,8 @@ public:
 
     void load_html(const StringView&, const URL&);
 
-    Frame& frame() { return m_frame; }
-    const Frame& frame() const { return m_frame; }
+    BrowsingContext& browsing_context() { return m_browsing_context; }
+    const BrowsingContext& browsing_context() const { return m_browsing_context; }
 
 private:
     // ^ResourceClient
@@ -58,9 +40,11 @@ private:
     virtual void resource_did_fail() override;
 
     void load_error_page(const URL& failed_url, const String& error_message);
+    void load_favicon(RefPtr<Gfx::Bitmap> bitmap = nullptr);
     bool parse_document(DOM::Document&, const ByteBuffer& data);
 
-    Frame& m_frame;
+    BrowsingContext& m_browsing_context;
+    size_t m_redirects_count { 0 };
 };
 
 }

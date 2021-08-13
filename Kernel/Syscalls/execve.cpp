@@ -1,45 +1,25 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/LexicalPath.h>
 #include <AK/ScopeGuard.h>
 #include <AK/TemporaryChange.h>
 #include <AK/WeakPtr.h>
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/FileDescription.h>
-#include <Kernel/PerformanceEventBuffer.h>
+#include <Kernel/Memory/AllocationStrategy.h>
+#include <Kernel/Memory/MemoryManager.h>
+#include <Kernel/Memory/PageDirectory.h>
+#include <Kernel/Memory/Region.h>
+#include <Kernel/Memory/SharedInodeVMObject.h>
+#include <Kernel/Panic.h>
+#include <Kernel/PerformanceManager.h>
 #include <Kernel/Process.h>
 #include <Kernel/Random.h>
 #include <Kernel/Time/TimeManagement.h>
-#include <Kernel/VM/AllocationStrategy.h>
-#include <Kernel/VM/MemoryManager.h>
-#include <Kernel/VM/PageDirectory.h>
-#include <Kernel/VM/Region.h>
-#include <Kernel/VM/SharedInodeVMObject.h>
 #include <LibC/limits.h>
 #include <LibELF/AuxiliaryVector.h>
 #include <LibELF/Image.h>
@@ -47,17 +27,17 @@
 
 namespace Kernel {
 
-extern Region* g_signal_trampoline_region;
+extern Memory::Region* g_signal_trampoline_region;
 
 struct LoadResult {
-    OwnPtr<Space> space;
+    OwnPtr<Memory::AddressSpace> space;
     FlatPtr load_base { 0 };
     FlatPtr entry_eip { 0 };
     size_t size { 0 };
-    WeakPtr<Region> tls_region;
+    WeakPtr<Memory::Region> tls_region;
     size_t tls_size { 0 };
     size_t tls_alignment { 0 };
-    WeakPtr<Region> stack_region;
+    WeakPtr<Memory::Region> stack_region;
 };
 
 static Vector<ELF::AuxiliaryValue> generate_auxiliary_vector(FlatPtr load_base, FlatPtr entry_eip, uid_t uid, uid_t euid, gid_t gid, gid_t egid, String executable_path, int main_program_fd);
@@ -88,47 +68,50 @@ static bool validate_stack_size(const Vector<String>& arguments, const Vector<St
     return true;
 }
 
-static KResultOr<FlatPtr> make_userspace_stack_for_main_thread(Region& region, Vector<String> arguments, Vector<String> environment, Vector<ELF::AuxiliaryValue> auxiliary_values)
+static KResultOr<FlatPtr> make_userspace_context_for_main_thread([[maybe_unused]] ThreadRegisters& regs, Memory::Region& region, Vector<String> arguments,
+    Vector<String> environment, Vector<ELF::AuxiliaryValue> auxiliary_values)
 {
-    FlatPtr new_esp = region.range().end().get();
+    FlatPtr new_sp = region.range().end().get();
 
     // Add some bits of randomness to the user stack pointer.
-    new_esp -= round_up_to_power_of_two(get_fast_random<u32>() % 4096, 16);
+    new_sp -= round_up_to_power_of_two(get_fast_random<u32>() % 4096, 16);
 
-    auto push_on_new_stack = [&new_esp](u32 value) {
-        new_esp -= 4;
-        Userspace<u32*> stack_ptr = new_esp;
+    auto push_on_new_stack = [&new_sp](FlatPtr value) {
+        new_sp -= sizeof(FlatPtr);
+        Userspace<FlatPtr*> stack_ptr = new_sp;
         return copy_to_user(stack_ptr, &value);
     };
 
-    auto push_aux_value_on_new_stack = [&new_esp](auxv_t value) {
-        new_esp -= sizeof(auxv_t);
-        Userspace<auxv_t*> stack_ptr = new_esp;
+    auto push_aux_value_on_new_stack = [&new_sp](auxv_t value) {
+        new_sp -= sizeof(auxv_t);
+        Userspace<auxv_t*> stack_ptr = new_sp;
         return copy_to_user(stack_ptr, &value);
     };
 
-    auto push_string_on_new_stack = [&new_esp](const String& string) {
-        new_esp -= round_up_to_power_of_two(string.length() + 1, 4);
-        Userspace<u32*> stack_ptr = new_esp;
+    auto push_string_on_new_stack = [&new_sp](const String& string) {
+        new_sp -= round_up_to_power_of_two(string.length() + 1, sizeof(FlatPtr));
+        Userspace<FlatPtr*> stack_ptr = new_sp;
         return copy_to_user(stack_ptr, string.characters(), string.length() + 1);
     };
 
     Vector<FlatPtr> argv_entries;
     for (auto& argument : arguments) {
         push_string_on_new_stack(argument);
-        argv_entries.append(new_esp);
+        if (!argv_entries.try_append(new_sp))
+            return ENOMEM;
     }
 
     Vector<FlatPtr> env_entries;
     for (auto& variable : environment) {
         push_string_on_new_stack(variable);
-        env_entries.append(new_esp);
+        if (!env_entries.try_append(new_sp))
+            return ENOMEM;
     }
 
     for (auto& value : auxiliary_values) {
         if (!value.optional_string.is_empty()) {
             push_string_on_new_stack(value.optional_string);
-            value.auxv.a_un.a_ptr = (void*)new_esp;
+            value.auxv.a_un.a_ptr = (void*)new_sp;
         }
     }
 
@@ -140,22 +123,35 @@ static KResultOr<FlatPtr> make_userspace_stack_for_main_thread(Region& region, V
     push_on_new_stack(0);
     for (ssize_t i = env_entries.size() - 1; i >= 0; --i)
         push_on_new_stack(env_entries[i]);
-    FlatPtr envp = new_esp;
+    FlatPtr envp = new_sp;
 
     push_on_new_stack(0);
     for (ssize_t i = argv_entries.size() - 1; i >= 0; --i)
         push_on_new_stack(argv_entries[i]);
-    FlatPtr argv = new_esp;
+    FlatPtr argv = new_sp;
 
     // NOTE: The stack needs to be 16-byte aligned.
-    new_esp -= new_esp % 16;
+    new_sp -= new_sp % 16;
 
-    push_on_new_stack((FlatPtr)envp);
-    push_on_new_stack((FlatPtr)argv);
-    push_on_new_stack((FlatPtr)argv_entries.size());
-    push_on_new_stack(0);
+#if ARCH(I386)
+    // GCC assumes that the return address has been pushed to the stack when it enters the function,
+    // so we need to reserve an extra pointer's worth of bytes below this to make GCC's stack alignment
+    // calculations work
+    new_sp -= sizeof(void*);
 
-    return new_esp;
+    push_on_new_stack(envp);
+    push_on_new_stack(argv);
+    push_on_new_stack(argv_entries.size());
+#else
+    regs.rdi = argv_entries.size();
+    regs.rsi = argv;
+    regs.rdx = envp;
+#endif
+
+    VERIFY(new_sp % 16 == 0);
+
+    // FIXME: The way we're setting up the stack and passing arguments to the entry point isn't ABI-compliant
+    return new_sp;
 }
 
 struct RequiredLoadRange {
@@ -166,11 +162,15 @@ struct RequiredLoadRange {
 static KResultOr<RequiredLoadRange> get_required_load_range(FileDescription& program_description)
 {
     auto& inode = *(program_description.inode());
-    auto vmobject = SharedInodeVMObject::create_with_inode(inode);
+    auto vmobject = Memory::SharedInodeVMObject::try_create_with_inode(inode);
+    if (!vmobject) {
+        dbgln("get_required_load_range: Unable to allocate SharedInodeVMObject");
+        return ENOMEM;
+    }
 
     size_t executable_size = inode.size();
 
-    auto region = MM.allocate_kernel_region_with_vmobject(*vmobject, page_round_up(executable_size), "ELF memory range calculation", Region::Access::Read);
+    auto region = MM.allocate_kernel_region_with_vmobject(*vmobject, Memory::page_round_up(executable_size), "ELF memory range calculation", Memory::Region::Access::Read);
     if (!region) {
         dbgln("Could not allocate memory for ELF");
         return ENOMEM;
@@ -184,7 +184,7 @@ static KResultOr<RequiredLoadRange> get_required_load_range(FileDescription& pro
     RequiredLoadRange range {};
     elf_image.for_each_program_header([&range](const auto& pheader) {
         if (pheader.type() != PT_LOAD)
-            return IterationDecision::Continue;
+            return;
 
         auto region_start = (FlatPtr)pheader.vaddr().as_ptr();
         auto region_end = region_start + pheader.size_in_memory();
@@ -192,25 +192,24 @@ static KResultOr<RequiredLoadRange> get_required_load_range(FileDescription& pro
             range.start = region_start;
         if (range.end == 0 || region_end > range.end)
             range.end = region_end;
-        return IterationDecision::Continue;
     });
 
     VERIFY(range.end > range.start);
     return range;
 };
 
-static KResultOr<FlatPtr> get_interpreter_load_offset(const Elf32_Ehdr& main_program_header, FileDescription& main_program_description, FileDescription& interpreter_description)
+static KResultOr<FlatPtr> get_load_offset(const ElfW(Ehdr) & main_program_header, FileDescription& main_program_description, FileDescription* interpreter_description)
 {
-    constexpr FlatPtr interpreter_load_range_start = 0x08000000;
-    constexpr FlatPtr interpreter_load_range_size = 65536 * PAGE_SIZE; // 2**16 * PAGE_SIZE = 256MB
-    constexpr FlatPtr minimum_interpreter_load_offset_randomization_size = 10 * MiB;
+    constexpr FlatPtr load_range_start = 0x08000000;
+    constexpr FlatPtr load_range_size = 65536 * PAGE_SIZE; // 2**16 * PAGE_SIZE = 256MB
+    constexpr FlatPtr minimum_load_offset_randomization_size = 10 * MiB;
 
     auto random_load_offset_in_range([](auto start, auto size) {
-        return page_round_down(start + get_good_random<FlatPtr>() % size);
+        return Memory::page_round_down(start + get_good_random<FlatPtr>() % size);
     });
 
     if (main_program_header.e_type == ET_DYN) {
-        return random_load_offset_in_range(interpreter_load_range_start, interpreter_load_range_size);
+        return random_load_offset_in_range(load_range_start, load_range_size);
     }
 
     if (main_program_header.e_type != ET_EXEC)
@@ -222,29 +221,33 @@ static KResultOr<FlatPtr> get_interpreter_load_offset(const Elf32_Ehdr& main_pro
 
     auto main_program_load_range = main_program_load_range_result.value();
 
-    auto interpreter_load_range_result = get_required_load_range(interpreter_description);
-    if (interpreter_load_range_result.is_error())
-        return interpreter_load_range_result.error();
-
-    auto interpreter_size_in_memory = interpreter_load_range_result.value().end - interpreter_load_range_result.value().start;
-    auto interpreter_load_range_end = interpreter_load_range_start + interpreter_load_range_size - interpreter_size_in_memory;
-
-    // No intersection
-    if (main_program_load_range.end < interpreter_load_range_start || main_program_load_range.start > interpreter_load_range_end)
-        return random_load_offset_in_range(interpreter_load_range_start, interpreter_load_range_size);
-
-    RequiredLoadRange first_available_part = { interpreter_load_range_start, main_program_load_range.start };
-    RequiredLoadRange second_available_part = { main_program_load_range.end, interpreter_load_range_end };
-
     RequiredLoadRange selected_range {};
-    // Select larger part
-    if (first_available_part.end - first_available_part.start > second_available_part.end - second_available_part.start)
-        selected_range = first_available_part;
-    else
-        selected_range = second_available_part;
 
-    // If main program is too big and leaves us without enough space for adequate loader randmoization
-    if (selected_range.end - selected_range.start < minimum_interpreter_load_offset_randomization_size)
+    if (interpreter_description) {
+        auto interpreter_load_range_result = get_required_load_range(*interpreter_description);
+        if (interpreter_load_range_result.is_error())
+            return interpreter_load_range_result.error();
+
+        auto interpreter_size_in_memory = interpreter_load_range_result.value().end - interpreter_load_range_result.value().start;
+        auto interpreter_load_range_end = load_range_start + load_range_size - interpreter_size_in_memory;
+
+        // No intersection
+        if (main_program_load_range.end < load_range_start || main_program_load_range.start > interpreter_load_range_end)
+            return random_load_offset_in_range(load_range_start, load_range_size);
+
+        RequiredLoadRange first_available_part = { load_range_start, main_program_load_range.start };
+        RequiredLoadRange second_available_part = { main_program_load_range.end, interpreter_load_range_end };
+
+        // Select larger part
+        if (first_available_part.end - first_available_part.start > second_available_part.end - second_available_part.start)
+            selected_range = first_available_part;
+        else
+            selected_range = second_available_part;
+    } else
+        selected_range = main_program_load_range;
+
+    // If main program is too big and leaves us without enough space for adequate loader randomization
+    if (selected_range.end - selected_range.start < minimum_load_offset_randomization_size)
         return E2BIG;
 
     return random_load_offset_in_range(selected_range.start, selected_range.end - selected_range.start);
@@ -255,10 +258,21 @@ enum class ShouldAllocateTls {
     Yes,
 };
 
-static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, FileDescription& object_description, FlatPtr load_offset, ShouldAllocateTls should_allocate_tls)
+enum class ShouldAllowSyscalls {
+    No,
+    Yes,
+};
+
+static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Memory::AddressSpace> new_space, FileDescription& object_description,
+    FlatPtr load_offset, ShouldAllocateTls should_allocate_tls, ShouldAllowSyscalls should_allow_syscalls)
 {
     auto& inode = *(object_description.inode());
-    auto vmobject = SharedInodeVMObject::create_with_inode(inode);
+    auto vmobject = Memory::SharedInodeVMObject::try_create_with_inode(inode);
+    if (!vmobject) {
+        dbgln("load_elf_object: Unable to allocate SharedInodeVMObject");
+        return ENOMEM;
+    }
+
     if (vmobject->writable_mappings()) {
         dbgln("Refusing to execute a write-mapped program");
         return ETXTBSY;
@@ -266,7 +280,7 @@ static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, Fil
 
     size_t executable_size = inode.size();
 
-    auto executable_region = MM.allocate_kernel_region_with_vmobject(*vmobject, page_round_up(executable_size), "ELF loading", Region::Access::Read);
+    auto executable_region = MM.allocate_kernel_region_with_vmobject(*vmobject, Memory::page_round_up(executable_size), "ELF loading", Memory::Region::Access::Read);
     if (!executable_region) {
         dbgln("Could not allocate memory for ELF loading");
         return ENOMEM;
@@ -277,15 +291,15 @@ static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, Fil
     if (!elf_image.is_valid())
         return ENOEXEC;
 
-    Region* master_tls_region { nullptr };
+    Memory::Region* master_tls_region { nullptr };
     size_t master_tls_size = 0;
     size_t master_tls_alignment = 0;
     FlatPtr load_base_address = 0;
 
     String elf_name = object_description.absolute_path();
-    VERIFY(!Processor::current().in_critical());
+    VERIFY(!Processor::in_critical());
 
-    MemoryManager::enter_space(*new_space);
+    Memory::MemoryManager::enter_space(*new_space);
 
     KResult ph_load_result = KSuccess;
     elf_image.for_each_program_header([&](const ELF::Image::ProgramHeader& program_header) {
@@ -342,8 +356,8 @@ static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, Fil
                 prot |= PROT_WRITE;
             auto region_name = String::formatted("{} (data-{}{})", elf_name, program_header.is_readable() ? "r" : "", program_header.is_writable() ? "w" : "");
 
-            auto range_base = VirtualAddress { page_round_down(program_header.vaddr().offset(load_offset).get()) };
-            auto range_end = VirtualAddress { page_round_up(program_header.vaddr().offset(load_offset).offset(program_header.size_in_memory()).get()) };
+            auto range_base = VirtualAddress { Memory::page_round_down(program_header.vaddr().offset(load_offset).get()) };
+            auto range_end = VirtualAddress { Memory::page_round_up(program_header.vaddr().offset(load_offset).offset(program_header.size_in_memory()).get()) };
 
             auto range = new_space->allocate_range(range_base, range_end.get() - range_base.get());
             if (!range.has_value()) {
@@ -382,7 +396,10 @@ static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, Fil
             prot |= PROT_WRITE;
         if (program_header.is_executable())
             prot |= PROT_EXEC;
-        auto range = new_space->allocate_range(program_header.vaddr().offset(load_offset), program_header.size_in_memory());
+
+        auto range_base = VirtualAddress { Memory::page_round_down(program_header.vaddr().offset(load_offset).get()) };
+        auto range_end = VirtualAddress { Memory::page_round_up(program_header.vaddr().offset(load_offset).offset(program_header.size_in_memory()).get()) };
+        auto range = new_space->allocate_range(range_base, range_end.get() - range_base.get());
         if (!range.has_value()) {
             ph_load_result = ENOMEM;
             return IterationDecision::Break;
@@ -392,6 +409,8 @@ static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, Fil
             ph_load_result = region_or_error.error();
             return IterationDecision::Break;
         }
+        if (should_allow_syscalls == ShouldAllowSyscalls::Yes)
+            region_or_error.value()->set_syscall_region(true);
         if (program_header.offset() == 0)
             load_base_address = (FlatPtr)region_or_error.value()->vaddr().as_ptr();
         return IterationDecision::Continue;
@@ -431,18 +450,24 @@ static KResultOr<LoadResult> load_elf_object(NonnullOwnPtr<Space> new_space, Fil
     };
 }
 
-KResultOr<LoadResult> Process::load(NonnullRefPtr<FileDescription> main_program_description, RefPtr<FileDescription> interpreter_description, const Elf32_Ehdr& main_program_header)
+KResultOr<LoadResult> Process::load(NonnullRefPtr<FileDescription> main_program_description,
+    RefPtr<FileDescription> interpreter_description, const ElfW(Ehdr) & main_program_header)
 {
-    auto new_space = Space::create(*this, nullptr);
+    auto new_space = Memory::AddressSpace::try_create(nullptr);
     if (!new_space)
         return ENOMEM;
 
     ScopeGuard space_guard([&]() {
-        MemoryManager::enter_process_paging_scope(*this);
+        Memory::MemoryManager::enter_process_paging_scope(*this);
     });
 
+    auto load_offset = get_load_offset(main_program_header, main_program_description, interpreter_description);
+    if (load_offset.is_error()) {
+        return load_offset.error();
+    }
+
     if (interpreter_description.is_null()) {
-        auto result = load_elf_object(new_space.release_nonnull(), main_program_description, FlatPtr { 0 }, ShouldAllocateTls::Yes);
+        auto result = load_elf_object(new_space.release_nonnull(), main_program_description, load_offset.value(), ShouldAllocateTls::Yes, ShouldAllowSyscalls::No);
         if (result.is_error())
             return result.error();
 
@@ -453,12 +478,7 @@ KResultOr<LoadResult> Process::load(NonnullRefPtr<FileDescription> main_program_
         return result;
     }
 
-    auto interpreter_load_offset = get_interpreter_load_offset(main_program_header, main_program_description, *interpreter_description);
-    if (interpreter_load_offset.is_error()) {
-        return interpreter_load_offset.error();
-    }
-
-    auto interpreter_load_result = load_elf_object(new_space.release_nonnull(), *interpreter_description, interpreter_load_offset.value(), ShouldAllocateTls::No);
+    auto interpreter_load_result = load_elf_object(new_space.release_nonnull(), *interpreter_description, load_offset.value(), ShouldAllocateTls::No, ShouldAllowSyscalls::Yes);
 
     if (interpreter_load_result.is_error())
         return interpreter_load_result.error();
@@ -471,10 +491,11 @@ KResultOr<LoadResult> Process::load(NonnullRefPtr<FileDescription> main_program_
     return interpreter_load_result;
 }
 
-KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Vector<String> arguments, Vector<String> environment, RefPtr<FileDescription> interpreter_description, Thread*& new_main_thread, u32& prev_flags, const Elf32_Ehdr& main_program_header)
+KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Vector<String> arguments, Vector<String> environment,
+    RefPtr<FileDescription> interpreter_description, Thread*& new_main_thread, u32& prev_flags, const ElfW(Ehdr) & main_program_header)
 {
     VERIFY(is_user_process());
-    VERIFY(!Processor::current().in_critical());
+    VERIFY(!Processor::in_critical());
     auto path = main_program_description->absolute_path();
 
     dbgln_if(EXEC_DEBUG, "do_exec: {}", path);
@@ -504,9 +525,10 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
     // We commit to the new executable at this point. There is no turning back!
 
     // Prevent other processes from attaching to us with ptrace while we're doing this.
-    Locker ptrace_locker(ptrace_lock());
+    MutexLocker ptrace_locker(ptrace_lock());
 
     // Disable profiling temporarily in case it's running on this process.
+    auto was_profiling = m_profiling;
     TemporaryChange profiling_disabler(m_profiling, false);
 
     kill_threads_except_self();
@@ -518,21 +540,27 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
         if (main_program_metadata.is_setuid()) {
             executable_is_setid = true;
             ProtectedDataMutationScope scope { *this };
-            m_euid = main_program_metadata.uid;
-            m_suid = main_program_metadata.uid;
+            m_protected_values.euid = main_program_metadata.uid;
+            m_protected_values.suid = main_program_metadata.uid;
         }
         if (main_program_metadata.is_setgid()) {
             executable_is_setid = true;
             ProtectedDataMutationScope scope { *this };
-            m_egid = main_program_metadata.gid;
-            m_sgid = main_program_metadata.gid;
+            m_protected_values.egid = main_program_metadata.gid;
+            m_protected_values.sgid = main_program_metadata.gid;
         }
     }
 
     set_dumpable(!executable_is_setid);
 
-    m_space = load_result.space.release_nonnull();
-    MemoryManager::enter_space(*m_space);
+    {
+        // We must disable global profiling (especially kfree tracing) here because
+        // we might otherwise end up walking the stack into the process' space that
+        // is about to be destroyed.
+        TemporaryChange global_profiling_disabler(g_profiling_all_threads, false);
+        m_space = load_result.space.release_nonnull();
+    }
+    Memory::MemoryManager::enter_space(*m_space);
 
     auto signal_trampoline_region = m_space->allocate_region_with_vmobject(signal_trampoline_range.value(), g_signal_trampoline_region->vmobject(), 0, "Signal trampoline", PROT_READ | PROT_EXEC, true);
     if (signal_trampoline_region.is_error()) {
@@ -547,28 +575,30 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
 
     m_veil_state = VeilState::None;
     m_unveiled_paths.clear();
+    m_unveiled_paths.set_metadata({ "/", UnveilAccess::None, false });
 
-    m_coredump_metadata.clear();
+    for (auto& property : m_coredump_properties)
+        property = {};
 
     auto current_thread = Thread::current();
     current_thread->clear_signals();
 
     clear_futex_queues_on_exec();
 
-    for (size_t i = 0; i < m_fds.size(); ++i) {
-        auto& description_and_flags = m_fds[i];
-        if (description_and_flags.description() && description_and_flags.flags() & FD_CLOEXEC)
-            description_and_flags = {};
-    }
+    fds().change_each([&](auto& file_description_metadata) {
+        if (file_description_metadata.is_valid() && file_description_metadata.flags() & FD_CLOEXEC)
+            file_description_metadata = {};
+    });
 
     int main_program_fd = -1;
     if (interpreter_description) {
-        main_program_fd = alloc_fd();
-        VERIFY(main_program_fd >= 0);
+        auto main_program_fd_wrapper = m_fds.allocate().release_value();
+        VERIFY(main_program_fd_wrapper.fd >= 0);
         auto seek_result = main_program_description->seek(0, SEEK_SET);
         VERIFY(!seek_result.is_error());
         main_program_description->set_readable(true);
-        m_fds[main_program_fd].set(move(main_program_description), FD_CLOEXEC);
+        m_fds[main_program_fd_wrapper.fd].set(move(main_program_description), FD_CLOEXEC);
+        main_program_fd = main_program_fd_wrapper.fd;
     }
 
     new_main_thread = nullptr;
@@ -586,10 +616,10 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
 
     // NOTE: We create the new stack before disabling interrupts since it will zero-fault
     //       and we don't want to deal with faults after this point.
-    auto make_stack_result = make_userspace_stack_for_main_thread(*load_result.stack_region.unsafe_ptr(), move(arguments), move(environment), move(auxv));
+    auto make_stack_result = make_userspace_context_for_main_thread(new_main_thread->regs(), *load_result.stack_region.unsafe_ptr(), move(arguments), move(environment), move(auxv));
     if (make_stack_result.is_error())
         return make_stack_result.error();
-    u32 new_userspace_esp = make_stack_result.value();
+    FlatPtr new_userspace_sp = make_stack_result.value();
 
     if (wait_for_tracer_at_next_execve()) {
         // Make sure we release the ptrace lock here or the tracer will block forever.
@@ -600,25 +630,27 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
     // We enter a critical section here because we don't want to get interrupted between do_exec()
     // and Processor::assume_context() or the next context switch.
     // If we used an InterruptDisabler that sti()'d on exit, we might timer tick'd too soon in exec().
-    Processor::current().enter_critical(prev_flags);
+    Processor::enter_critical();
+    prev_flags = cpu_flags();
+    cli();
 
     // NOTE: Be careful to not trigger any page faults below!
 
     m_name = parts.take_last();
-    new_main_thread->set_name(m_name);
+    new_main_thread->set_name(KString::try_create(m_name));
 
     {
         ProtectedDataMutationScope scope { *this };
-        m_promises = m_execpromises;
-        m_has_promises = m_has_execpromises;
+        m_protected_values.promises = m_protected_values.execpromises.load();
+        m_protected_values.has_promises = m_protected_values.has_execpromises.load();
 
-        m_execpromises = 0;
-        m_has_execpromises = false;
+        m_protected_values.execpromises = 0;
+        m_protected_values.has_execpromises = false;
 
-        m_signal_trampoline = signal_trampoline_region.value()->vaddr();
+        m_protected_values.signal_trampoline = signal_trampoline_region.value()->vaddr();
 
         // FIXME: PID/TID ISSUE
-        m_pid = new_main_thread->tid().value();
+        m_protected_values.pid = new_main_thread->tid().value();
     }
 
     auto tsr_result = new_main_thread->make_thread_specific_region({});
@@ -628,21 +660,26 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
     }
     new_main_thread->reset_fpu_state();
 
-    auto& tss = new_main_thread->m_tss;
-    tss.cs = GDT_SELECTOR_CODE3 | 3;
-    tss.ds = GDT_SELECTOR_DATA3 | 3;
-    tss.es = GDT_SELECTOR_DATA3 | 3;
-    tss.ss = GDT_SELECTOR_DATA3 | 3;
-    tss.fs = GDT_SELECTOR_DATA3 | 3;
-    tss.gs = GDT_SELECTOR_TLS | 3;
-    tss.eip = load_result.entry_eip;
-    tss.esp = new_userspace_esp;
-    tss.cr3 = space().page_directory().cr3();
-    tss.ss2 = pid().value();
+    auto& regs = new_main_thread->m_regs;
+#if ARCH(I386)
+    regs.cs = GDT_SELECTOR_CODE3 | 3;
+    regs.ds = GDT_SELECTOR_DATA3 | 3;
+    regs.es = GDT_SELECTOR_DATA3 | 3;
+    regs.ss = GDT_SELECTOR_DATA3 | 3;
+    regs.fs = GDT_SELECTOR_DATA3 | 3;
+    regs.gs = GDT_SELECTOR_TLS | 3;
+    regs.eip = load_result.entry_eip;
+    regs.esp = new_userspace_sp;
+#else
+    regs.rip = load_result.entry_eip;
+    regs.rsp = new_userspace_sp;
+#endif
+    regs.cr3 = address_space().page_directory().cr3();
 
-    // Throw away any recorded performance events in this process.
-    if (m_perf_event_buffer)
-        m_perf_event_buffer->clear();
+    {
+        TemporaryChange profiling_disabler(m_profiling, was_profiling);
+        PerformanceManager::add_process_exec_event(*this);
+    }
 
     {
         ScopedSpinLock lock(g_scheduler_lock);
@@ -651,7 +688,7 @@ KResult Process::do_exec(NonnullRefPtr<FileDescription> main_program_description
     u32 lock_count_to_restore;
     [[maybe_unused]] auto rc = big_lock().force_unlock_if_locked(lock_count_to_restore);
     VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(Processor::current().in_critical());
+    VERIFY(Processor::in_critical());
     return KSuccess;
 }
 
@@ -727,9 +764,8 @@ static KResultOr<Vector<String>> find_shebang_interpreter_for_executable(const c
     return ENOEXEC;
 }
 
-KResultOr<RefPtr<FileDescription>> Process::find_elf_interpreter_for_executable(const String& path, const Elf32_Ehdr& main_program_header, int nread, size_t file_size)
+KResultOr<RefPtr<FileDescription>> Process::find_elf_interpreter_for_executable(const String& path, const ElfW(Ehdr) & main_program_header, int nread, size_t file_size)
 {
-
     // Not using KResultOr here because we'll want to do the same thing in userspace in the RTLD
     String interpreter_path;
     if (!ELF::validate_program_headers(main_program_header, file_size, (const u8*)&main_program_header, nread, &interpreter_path)) {
@@ -739,7 +775,7 @@ KResultOr<RefPtr<FileDescription>> Process::find_elf_interpreter_for_executable(
 
     if (!interpreter_path.is_empty()) {
         dbgln_if(EXEC_DEBUG, "exec({}): Using program interpreter {}", path, interpreter_path);
-        auto interp_result = VFS::the().open(interpreter_path, O_EXEC, 0, current_directory());
+        auto interp_result = VirtualFileSystem::the().open(interpreter_path, O_EXEC, 0, current_directory());
         if (interp_result.is_error()) {
             dbgln("exec({}): Unable to open program interpreter {}", path, interpreter_path);
             return interp_result.error();
@@ -751,7 +787,7 @@ KResultOr<RefPtr<FileDescription>> Process::find_elf_interpreter_for_executable(
 
         // Validate the program interpreter as a valid elf binary.
         // If your program interpreter is a #! file or something, it's time to stop playing games :)
-        if (interp_metadata.size < (int)sizeof(Elf32_Ehdr))
+        if (interp_metadata.size < (int)sizeof(ElfW(Ehdr)))
             return ENOEXEC;
 
         char first_page[PAGE_SIZE] = {};
@@ -761,10 +797,10 @@ KResultOr<RefPtr<FileDescription>> Process::find_elf_interpreter_for_executable(
             return ENOEXEC;
         nread = nread_or_error.value();
 
-        if (nread < (int)sizeof(Elf32_Ehdr))
+        if (nread < (int)sizeof(ElfW(Ehdr)))
             return ENOEXEC;
 
-        auto elf_header = (Elf32_Ehdr*)first_page;
+        auto elf_header = (ElfW(Ehdr)*)first_page;
         if (!ELF::validate_elf_header(*elf_header, interp_metadata.size)) {
             dbgln("exec({}): Interpreter ({}) has invalid ELF header", path, interpreter_description->absolute_path());
             return ENOEXEC;
@@ -815,11 +851,14 @@ KResult Process::exec(String path, Vector<String> arguments, Vector<String> envi
     //        * ET_EXEC binary that just gets loaded
     //        * ET_DYN binary that requires a program interpreter
     //
-    auto file_or_error = VFS::the().open(path, O_EXEC, 0, current_directory());
+    auto file_or_error = VirtualFileSystem::the().open(path, O_EXEC, 0, current_directory());
     if (file_or_error.is_error())
         return file_or_error.error();
     auto description = file_or_error.release_value();
     auto metadata = description->metadata();
+
+    if (!metadata.is_regular_file())
+        return EACCES;
 
     // Always gonna need at least 3 bytes. these are for #!X
     if (metadata.size < 3)
@@ -837,21 +876,19 @@ KResult Process::exec(String path, Vector<String> arguments, Vector<String> envi
     // 1) #! interpreted file
     auto shebang_result = find_shebang_interpreter_for_executable(first_page, nread_or_error.value());
     if (!shebang_result.is_error()) {
-        Vector<String> new_arguments(shebang_result.value());
-
-        new_arguments.append(path);
-
-        arguments.remove(0);
-        new_arguments.append(move(arguments));
-
-        return exec(shebang_result.value().first(), move(new_arguments), move(environment), ++recursion_depth);
+        auto shebang_words = shebang_result.release_value();
+        auto shebang_path = shebang_words.first();
+        arguments[0] = move(path);
+        if (!arguments.try_prepend(move(shebang_words)))
+            return ENOMEM;
+        return exec(move(shebang_path), move(arguments), move(environment), ++recursion_depth);
     }
 
     // #2) ELF32 for i386
 
-    if (nread_or_error.value() < (int)sizeof(Elf32_Ehdr))
+    if (nread_or_error.value() < (int)sizeof(ElfW(Ehdr)))
         return ENOEXEC;
-    auto main_program_header = (Elf32_Ehdr*)first_page;
+    auto main_program_header = (ElfW(Ehdr)*)first_page;
 
     if (!ELF::validate_elf_header(*main_program_header, metadata.size)) {
         dbgln("exec({}): File has invalid ELF header", path);
@@ -877,7 +914,7 @@ KResult Process::exec(String path, Vector<String> arguments, Vector<String> envi
         return result;
 
     VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(Processor::current().in_critical());
+    VERIFY(Processor::in_critical());
 
     auto current_thread = Thread::current();
     if (current_thread == new_main_thread) {
@@ -885,19 +922,22 @@ KResult Process::exec(String path, Vector<String> arguments, Vector<String> envi
         // and it will be released after the context switch into that
         // thread. We should also still be in our critical section
         VERIFY(!g_scheduler_lock.own_lock());
-        VERIFY(Processor::current().in_critical() == 1);
+        VERIFY(Processor::in_critical() == 1);
         g_scheduler_lock.lock();
         current_thread->set_state(Thread::State::Running);
         Processor::assume_context(*current_thread, prev_flags);
         VERIFY_NOT_REACHED();
     }
 
-    Processor::current().leave_critical(prev_flags);
+    if (prev_flags & 0x200)
+        sti();
+    Processor::leave_critical();
     return KSuccess;
 }
 
-KResultOr<int> Process::sys$execve(Userspace<const Syscall::SC_execve_params*> user_params)
+KResultOr<FlatPtr> Process::sys$execve(Userspace<const Syscall::SC_execve_params*> user_params)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     REQUIRE_PROMISE(exec);
 
     // NOTE: Be extremely careful with allocating any kernel memory in exec().
@@ -914,25 +954,27 @@ KResultOr<int> Process::sys$execve(Userspace<const Syscall::SC_execve_params*> u
         auto path_arg = get_syscall_path_argument(params.path);
         if (path_arg.is_error())
             return path_arg.error();
-        path = path_arg.value();
+        path = path_arg.value()->view();
     }
 
     auto copy_user_strings = [](const auto& list, auto& output) {
         if (!list.length)
             return true;
-        Checked size = sizeof(*list.strings);
+        Checked<size_t> size = sizeof(*list.strings);
         size *= list.length;
         if (size.has_overflow())
             return false;
         Vector<Syscall::StringArgument, 32> strings;
-        strings.resize(list.length);
-        if (!copy_from_user(strings.data(), list.strings, list.length * sizeof(*list.strings)))
+        if (!strings.try_resize(list.length))
+            return false;
+        if (!copy_from_user(strings.data(), list.strings, size.value()))
             return false;
         for (size_t i = 0; i < list.length; ++i) {
             auto string = copy_string_from_user(strings[i]);
             if (string.is_null())
                 return false;
-            output.append(move(string));
+            if (!output.try_append(move(string)))
+                return false;
         }
         return true;
     };

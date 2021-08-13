@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Spreadsheet.h"
@@ -38,7 +18,7 @@
 #include <AK/URL.h>
 #include <LibCore/File.h>
 #include <LibJS/Parser.h>
-#include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <ctype.h>
 #include <unistd.h>
 
@@ -62,11 +42,11 @@ Sheet::Sheet(Workbook& workbook)
     JS::DeferGC defer_gc(m_workbook.interpreter().heap());
     m_global_object = m_workbook.interpreter().heap().allocate_without_global_object<SheetGlobalObject>(*this);
     global_object().initialize_global_object();
-    global_object().put("workbook", m_workbook.workbook_object());
-    global_object().put("thisSheet", &global_object()); // Self-reference is unfortunate, but required.
+    global_object().define_direct_property("workbook", m_workbook.workbook_object(), JS::default_attributes);
+    global_object().define_direct_property("thisSheet", &global_object(), JS::default_attributes); // Self-reference is unfortunate, but required.
 
     // Sadly, these have to be evaluated once per sheet.
-    auto file_or_error = Core::File::open("/res/js/Spreadsheet/runtime.js", Core::IODevice::OpenMode::ReadOnly);
+    auto file_or_error = Core::File::open("/res/js/Spreadsheet/runtime.js", Core::OpenMode::ReadOnly);
     if (!file_or_error.is_error()) {
         auto buffer = file_or_error.value()->read_all();
         JS::Parser parser { JS::Lexer(buffer) };
@@ -75,10 +55,13 @@ Sheet::Sheet(Workbook& workbook)
             parser.print_errors();
         } else {
             interpreter().run(global_object(), parser.parse_program());
-            if (auto exc = interpreter().exception()) {
-                warnln("Spreadsheet: Failed to run runtime code: ");
-                for (auto& t : exc->trace())
-                    warnln("{}", t);
+            if (auto* exception = interpreter().exception()) {
+                warnln("Spreadsheet: Failed to run runtime code:");
+                for (auto& traceback_frame : exception->traceback()) {
+                    auto& function_name = traceback_frame.function_name;
+                    auto& source_range = traceback_frame.source_range;
+                    dbgln("  {} at {}:{}:{}", function_name, source_range.filename, source_range.start.line, source_range.start.column);
+                }
                 interpreter().vm().clear_exception();
             }
         }
@@ -99,34 +82,7 @@ size_t Sheet::add_row()
     return m_rows++;
 }
 
-static String convert_to_string(size_t value, unsigned base = 26, StringView map = {})
-{
-    if (map.is_null())
-        map = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-    VERIFY(base >= 2 && base <= map.length());
-
-    // The '8 bits per byte' assumption may need to go?
-    Array<char, round_up_to_power_of_two(sizeof(size_t) * 8 + 1, 2)> buffer;
-    size_t i = 0;
-    do {
-        buffer[i++] = map[value % base];
-        value /= base;
-    } while (value > 0);
-
-    // NOTE: Weird as this may seem, the thing that comes after 'Z' is 'AA', which as a number would be '00'
-    //       to make this work, only the most significant digit has to be in a range of (1..25) as opposed to (0..25),
-    //       but only if it's not the only digit in the string.
-    if (i > 1)
-        --buffer[i - 1];
-
-    for (size_t j = 0; j < i / 2; ++j)
-        swap(buffer[j], buffer[i - j - 1]);
-
-    return String { ReadonlyBytes(buffer.data(), i) };
-}
-
-static size_t convert_from_string(StringView str, unsigned base = 26, StringView map = {})
+static Optional<size_t> convert_from_string(StringView str, unsigned base = 26, StringView map = {})
 {
     if (map.is_null())
         map = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -134,12 +90,16 @@ static size_t convert_from_string(StringView str, unsigned base = 26, StringView
     VERIFY(base >= 2 && base <= map.length());
 
     size_t value = 0;
-    for (size_t i = str.length(); i > 0; --i) {
-        auto digit_value = map.find_first_of(str[i - 1]).value_or(0);
-        // NOTE: Refer to the note in `convert_to_string()'.
-        if (i == str.length() && str.length() > 1)
+    auto const len = str.length();
+    for (auto i = 0u; i < len; i++) {
+        auto maybe_index = map.find(str[i]);
+        if (!maybe_index.has_value())
+            return {};
+        size_t digit_value = maybe_index.value();
+        // NOTE: Refer to the note in `String::bijective_base_from()'.
+        if (i == 0 && len > 1)
             ++digit_value;
-        value = value * base + digit_value;
+        value += digit_value * AK::pow<float>(base, len - 1 - i);
     }
 
     return value;
@@ -147,7 +107,7 @@ static size_t convert_from_string(StringView str, unsigned base = 26, StringView
 
 String Sheet::add_column()
 {
-    auto next_column = convert_to_string(m_columns.size());
+    auto next_column = String::bijective_base_from(m_columns.size());
     m_columns.append(next_column);
     return next_column;
 }
@@ -159,18 +119,18 @@ void Sheet::update()
         return;
     }
     m_visited_cells_in_update.clear();
-    Vector<Cell*> cells_copy;
+    Vector<Cell&> cells_copy;
 
     // Grab a copy as updates might insert cells into the table.
     for (auto& it : m_cells) {
         if (it.value->dirty()) {
-            cells_copy.append(it.value);
+            cells_copy.append(*it.value);
             m_workbook.set_dirty(true);
         }
     }
 
     for (auto& cell : cells_copy)
-        update(*cell);
+        update(cell);
 
     m_visited_cells_in_update.clear();
 }
@@ -252,9 +212,17 @@ Optional<Position> Sheet::parse_cell_name(const StringView& name) const
 
 Optional<size_t> Sheet::column_index(const StringView& column_name) const
 {
-    auto index = convert_from_string(column_name);
-    if (m_columns.size() <= index || m_columns[index] != column_name)
+    auto maybe_index = convert_from_string(column_name);
+    if (!maybe_index.has_value())
         return {};
+
+    auto index = maybe_index.value();
+    if (m_columns.size() <= index || m_columns[index] != column_name) {
+        auto it = m_columns.find(column_name);
+        if (it == m_columns.end())
+            return {};
+        index = it.index();
+    }
 
     return index;
 }
@@ -379,14 +347,12 @@ void Sheet::copy_cells(Vector<Position> from, Vector<Position> to, Optional<Posi
 
 RefPtr<Sheet> Sheet::from_json(const JsonObject& object, Workbook& workbook)
 {
-    auto sheet = adopt(*new Sheet(workbook));
+    auto sheet = adopt_ref(*new Sheet(workbook));
     auto rows = object.get("rows").to_u32(default_row_count);
     auto columns = object.get("columns");
     auto name = object.get("name").as_string_or("Sheet");
-    auto cells_value = object.get_or("cells", JsonObject {});
-    if (!cells_value.is_object())
-        return nullptr;
-    auto& cells = cells_value.as_object();
+    if (object.has("cells") && !object.has_object("cells"))
+        return {};
 
     sheet->set_name(name);
 
@@ -416,77 +382,79 @@ RefPtr<Sheet> Sheet::from_json(const JsonObject& object, Workbook& workbook)
             format.background_color = Color::from_string(value.as_string());
     };
 
-    cells.for_each_member([&](auto& name, JsonValue& value) {
-        auto position_option = sheet->parse_cell_name(name);
-        if (!position_option.has_value())
-            return IterationDecision::Continue;
-
-        auto position = position_option.value();
-        auto& obj = value.as_object();
-        auto kind = obj.get("kind").as_string_or("LiteralString") == "LiteralString" ? Cell::LiteralString : Cell::Formula;
-
-        OwnPtr<Cell> cell;
-        switch (kind) {
-        case Cell::LiteralString:
-            cell = make<Cell>(obj.get("value").to_string(), position, *sheet);
-            break;
-        case Cell::Formula: {
-            auto& interpreter = sheet->interpreter();
-            auto value = interpreter.vm().call(parse_function, json, JS::js_string(interpreter.heap(), obj.get("value").as_string()));
-            cell = make<Cell>(obj.get("source").to_string(), move(value), position, *sheet);
-            break;
-        }
-        }
-
-        auto type_name = obj.get_or("type", "Numeric").to_string();
-        cell->set_type(type_name);
-
-        auto type_meta = obj.get("type_metadata");
-        if (type_meta.is_object()) {
-            auto& meta_obj = type_meta.as_object();
-            auto meta = cell->type_metadata();
-            if (auto value = meta_obj.get("length"); value.is_number())
-                meta.length = value.to_i32();
-            if (auto value = meta_obj.get("format"); value.is_string())
-                meta.format = value.as_string();
-            read_format(meta.static_format, meta_obj);
-
-            cell->set_type_metadata(move(meta));
-        }
-
-        auto conditional_formats = obj.get("conditional_formats");
-        auto cformats = cell->conditional_formats();
-        if (conditional_formats.is_array()) {
-            conditional_formats.as_array().for_each([&](const auto& fmt_val) {
-                if (!fmt_val.is_object())
-                    return IterationDecision::Continue;
-
-                auto& fmt_obj = fmt_val.as_object();
-                auto fmt_cond = fmt_obj.get("condition").to_string();
-                if (fmt_cond.is_empty())
-                    return IterationDecision::Continue;
-
-                ConditionalFormat fmt;
-                fmt.condition = move(fmt_cond);
-                read_format(fmt, fmt_obj);
-                cformats.append(move(fmt));
-
+    if (object.has_object("cells")) {
+        object.get("cells").as_object().for_each_member([&](auto& name, JsonValue const& value) {
+            auto position_option = sheet->parse_cell_name(name);
+            if (!position_option.has_value())
                 return IterationDecision::Continue;
-            });
-            cell->set_conditional_formats(move(cformats));
-        }
 
-        auto evaluated_format = obj.get("evaluated_formats");
-        if (evaluated_format.is_object()) {
-            auto& evaluated_format_obj = evaluated_format.as_object();
-            auto& evaluated_fmts = cell->evaluated_formats();
+            auto position = position_option.value();
+            auto& obj = value.as_object();
+            auto kind = obj.get("kind").as_string_or("LiteralString") == "LiteralString" ? Cell::LiteralString : Cell::Formula;
 
-            read_format(evaluated_fmts, evaluated_format_obj);
-        }
+            OwnPtr<Cell> cell;
+            switch (kind) {
+            case Cell::LiteralString:
+                cell = make<Cell>(obj.get("value").to_string(), position, *sheet);
+                break;
+            case Cell::Formula: {
+                auto& interpreter = sheet->interpreter();
+                auto value = interpreter.vm().call(parse_function, json, JS::js_string(interpreter.heap(), obj.get("value").as_string()));
+                cell = make<Cell>(obj.get("source").to_string(), move(value), position, *sheet);
+                break;
+            }
+            }
 
-        sheet->m_cells.set(position, cell.release_nonnull());
-        return IterationDecision::Continue;
-    });
+            auto type_name = obj.has("type") ? obj.get("type").to_string() : "Numeric";
+            cell->set_type(type_name);
+
+            auto type_meta = obj.get("type_metadata");
+            if (type_meta.is_object()) {
+                auto& meta_obj = type_meta.as_object();
+                auto meta = cell->type_metadata();
+                if (auto value = meta_obj.get("length"); value.is_number())
+                    meta.length = value.to_i32();
+                if (auto value = meta_obj.get("format"); value.is_string())
+                    meta.format = value.as_string();
+                read_format(meta.static_format, meta_obj);
+
+                cell->set_type_metadata(move(meta));
+            }
+
+            auto conditional_formats = obj.get("conditional_formats");
+            auto cformats = cell->conditional_formats();
+            if (conditional_formats.is_array()) {
+                conditional_formats.as_array().for_each([&](const auto& fmt_val) {
+                    if (!fmt_val.is_object())
+                        return IterationDecision::Continue;
+
+                    auto& fmt_obj = fmt_val.as_object();
+                    auto fmt_cond = fmt_obj.get("condition").to_string();
+                    if (fmt_cond.is_empty())
+                        return IterationDecision::Continue;
+
+                    ConditionalFormat fmt;
+                    fmt.condition = move(fmt_cond);
+                    read_format(fmt, fmt_obj);
+                    cformats.append(move(fmt));
+
+                    return IterationDecision::Continue;
+                });
+                cell->set_conditional_formats(move(cformats));
+            }
+
+            auto evaluated_format = obj.get("evaluated_formats");
+            if (evaluated_format.is_object()) {
+                auto& evaluated_format_obj = evaluated_format.as_object();
+                auto& evaluated_fmts = cell->evaluated_formats();
+
+                read_format(evaluated_fmts, evaluated_format_obj);
+            }
+
+            sheet->m_cells.set(position, cell.release_nonnull());
+            return IterationDecision::Continue;
+        });
+    }
 
     return sheet;
 }
@@ -508,11 +476,11 @@ Position Sheet::written_data_bounds() const
 
 /// The sheet is allowed to have nonstandard column names
 /// this checks whether all existing columns are 'standard'
-/// (i.e. as generated by 'convert_to_string()'
+/// (i.e. as generated by 'String::bijective_base_from()'
 bool Sheet::columns_are_standard() const
 {
     for (size_t i = 0; i < m_columns.size(); ++i) {
-        if (m_columns[i] != convert_to_string(i))
+        if (m_columns[i] != String::bijective_base_from(i))
             return false;
     }
 
@@ -637,13 +605,13 @@ RefPtr<Sheet> Sheet::from_xsv(const Reader::XSV& xsv, Workbook& workbook)
     auto cols = xsv.headers();
     auto rows = xsv.size();
 
-    auto sheet = adopt(*new Sheet(workbook));
+    auto sheet = adopt_ref(*new Sheet(workbook));
     if (xsv.has_explicit_headers()) {
         sheet->m_columns = cols;
     } else {
         sheet->m_columns.ensure_capacity(cols.size());
         for (size_t i = 0; i < cols.size(); ++i)
-            sheet->m_columns.append(convert_to_string(i));
+            sheet->m_columns.append(String::bijective_base_from(i));
     }
     for (size_t i = 0; i < max(rows, Sheet::default_row_count); ++i)
         sheet->add_row();
@@ -750,7 +718,7 @@ URL Position::to_url(const Sheet& sheet) const
     URL url;
     url.set_protocol("spreadsheet");
     url.set_host("cell");
-    url.set_path(String::formatted("/{}", getpid()));
+    url.set_paths({ String::number(getpid()) });
     url.set_fragment(to_cell_identifier(sheet));
     return url;
 }

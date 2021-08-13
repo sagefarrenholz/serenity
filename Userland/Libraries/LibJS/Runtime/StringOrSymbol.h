@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,33 +15,19 @@ namespace JS {
 
 class StringOrSymbol {
 public:
-    static StringOrSymbol from_value(GlobalObject& global_object, Value value)
-    {
-        if (value.is_empty())
-            return {};
-        if (value.is_symbol())
-            return &value.as_symbol();
-        auto string = value.to_string(global_object);
-        if (string.is_null())
-            return {};
-        return string;
-    }
-
     StringOrSymbol() = default;
 
-    StringOrSymbol(const char* chars)
-        : m_ptr(StringImpl::create(chars).leak_ref())
+    StringOrSymbol(char const* chars)
+        : StringOrSymbol(FlyString(chars))
     {
     }
 
-    StringOrSymbol(const String& string)
-        : m_ptr(string.impl())
+    StringOrSymbol(String const& string)
+        : StringOrSymbol(FlyString(string))
     {
-        VERIFY(!string.is_null());
-        as_string_impl().ref();
     }
 
-    StringOrSymbol(const FlyString& string)
+    StringOrSymbol(FlyString const& string)
         : m_ptr(string.impl())
     {
         VERIFY(!string.is_null());
@@ -74,13 +40,13 @@ public:
             as_string_impl().unref();
     }
 
-    StringOrSymbol(const Symbol* symbol)
+    StringOrSymbol(Symbol const* symbol)
         : m_ptr(symbol)
     {
         set_symbol_flag();
     }
 
-    StringOrSymbol(const StringOrSymbol& other)
+    StringOrSymbol(StringOrSymbol const& other)
     {
         m_ptr = other.m_ptr;
         if (is_string())
@@ -96,16 +62,16 @@ public:
     ALWAYS_INLINE bool is_symbol() const { return is_valid() && (bits() & 1ul); }
     ALWAYS_INLINE bool is_string() const { return is_valid() && !(bits() & 1ul); }
 
-    ALWAYS_INLINE String as_string() const
+    ALWAYS_INLINE FlyString as_string() const
     {
         VERIFY(is_string());
-        return as_string_impl();
+        return FlyString::from_fly_impl(as_string_impl());
     }
 
-    ALWAYS_INLINE const Symbol* as_symbol() const
+    ALWAYS_INLINE Symbol const* as_symbol() const
     {
         VERIFY(is_symbol());
-        return reinterpret_cast<const Symbol*>(bits() & ~1ul);
+        return reinterpret_cast<Symbol const*>(bits() & ~1ul);
     }
 
     String to_display_string() const
@@ -132,16 +98,16 @@ public:
             visitor.visit(const_cast<Symbol*>(as_symbol()));
     }
 
-    ALWAYS_INLINE bool operator==(const StringOrSymbol& other) const
+    ALWAYS_INLINE bool operator==(StringOrSymbol const& other) const
     {
         if (is_string())
-            return other.is_string() && as_string_impl() == other.as_string_impl();
+            return other.is_string() && &as_string_impl() == &other.as_string_impl();
         if (is_symbol())
             return other.is_symbol() && as_symbol() == other.as_symbol();
         return true;
     }
 
-    StringOrSymbol& operator=(const StringOrSymbol& other)
+    StringOrSymbol& operator=(StringOrSymbol const& other)
     {
         if (this == &other)
             return *this;
@@ -173,23 +139,23 @@ private:
 
     ALWAYS_INLINE void set_symbol_flag()
     {
-        m_ptr = reinterpret_cast<const void*>(bits() | 1ul);
+        m_ptr = reinterpret_cast<void const*>(bits() | 1ul);
     }
 
-    ALWAYS_INLINE const StringImpl& as_string_impl() const
+    ALWAYS_INLINE StringImpl const& as_string_impl() const
     {
         VERIFY(is_string());
-        return *reinterpret_cast<const StringImpl*>(m_ptr);
+        return *reinterpret_cast<StringImpl const*>(m_ptr);
     }
 
-    const void* m_ptr { nullptr };
+    void const* m_ptr { nullptr };
 };
 
 }
 
 template<>
 struct AK::Traits<JS::StringOrSymbol> : public GenericTraits<JS::StringOrSymbol> {
-    static unsigned hash(const JS::StringOrSymbol& key)
+    static unsigned hash(JS::StringOrSymbol const& key)
     {
         return key.hash();
     }

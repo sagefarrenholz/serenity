@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -40,7 +20,8 @@ public:
     Variant(float);
     Variant(i32);
     Variant(i64);
-    Variant(unsigned);
+    Variant(u32);
+    Variant(u64);
     Variant(const char*);
     Variant(const StringView&);
     Variant(const String&);
@@ -69,7 +50,8 @@ public:
         Bool,
         Int32,
         Int64,
-        UnsignedInt,
+        UnsignedInt32,
+        UnsignedInt64,
         Float,
         String,
         Bitmap,
@@ -86,7 +68,8 @@ public:
     bool is_bool() const { return m_type == Type::Bool; }
     bool is_i32() const { return m_type == Type::Int32; }
     bool is_i64() const { return m_type == Type::Int64; }
-    bool is_uint() const { return m_type == Type::UnsignedInt; }
+    bool is_u32() const { return m_type == Type::UnsignedInt32; }
+    bool is_u64() const { return m_type == Type::UnsignedInt64; }
     bool is_float() const { return m_type == Type::Float; }
     bool is_string() const { return m_type == Type::String; }
     bool is_bitmap() const { return m_type == Type::Bitmap; }
@@ -115,8 +98,10 @@ public:
             return m_value.as_i32 != 0;
         if (type() == Type::Int64)
             return m_value.as_i64 != 0;
-        if (type() == Type::UnsignedInt)
-            return m_value.as_uint != 0;
+        if (type() == Type::UnsignedInt32)
+            return m_value.as_u32 != 0;
+        if (type() == Type::UnsignedInt64)
+            return m_value.as_u64 != 0;
         if (type() == Type::Rect)
             return !as_rect().is_null();
         if (type() == Type::Size)
@@ -138,10 +123,16 @@ public:
         return m_value.as_i64;
     }
 
-    unsigned as_uint() const
+    u32 as_u32() const
     {
-        VERIFY(type() == Type::UnsignedInt);
-        return m_value.as_uint;
+        VERIFY(type() == Type::UnsignedInt32);
+        return m_value.as_u32;
+    }
+
+    u64 as_u64() const
+    {
+        VERIFY(type() == Type::UnsignedInt64);
+        return m_value.as_u64;
     }
 
     template<typename T>
@@ -155,9 +146,13 @@ public:
             return as_bool() ? 1 : 0;
         if (is_float())
             return (int)as_float();
-        if (is_uint()) {
-            VERIFY(as_uint() <= INT32_MAX);
-            return (int)as_uint();
+        if (is_u32()) {
+            VERIFY(as_u32() <= INT32_MAX);
+            return static_cast<i32>(as_u32());
+        }
+        if (is_u64()) {
+            VERIFY(as_u64() <= INT64_MAX);
+            return static_cast<i64>(as_u64());
         }
         if (is_string())
             return as_string().to_int().value_or(0);
@@ -178,6 +173,13 @@ public:
     {
         VERIFY(type() == Type::Float);
         return m_value.as_float;
+    }
+
+    float as_float_or(float fallback) const
+    {
+        if (is_float())
+            return as_float();
+        return fallback;
     }
 
     Gfx::IntPoint as_point() const
@@ -276,7 +278,8 @@ private:
         bool as_bool;
         i32 as_i32;
         i64 as_i64;
-        unsigned as_uint;
+        u32 as_u32;
+        u64 as_u64;
         float as_float;
         Gfx::RGBA32 as_color;
         Gfx::TextAlignment as_text_alignment;

@@ -1,6 +1,11 @@
+serenity_component(
+    CppLanguageServer
+    TARGETS CppLanguageServer
+)
+
 set(SOURCES
-    LexerAutoComplete.cpp
-    ParserAutoComplete.cpp
+    CppComprehensionEngine.cpp
+    Tests.cpp
     main.cpp
 )
 

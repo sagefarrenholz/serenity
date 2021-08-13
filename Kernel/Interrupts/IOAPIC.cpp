@@ -1,38 +1,16 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Optional.h>
-#include <AK/StringView.h>
-#include <Kernel/ACPI/MultiProcessorParser.h>
-#include <Kernel/Arch/x86/CPU.h>
+#include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Interrupts/APIC.h>
 #include <Kernel/Interrupts/IOAPIC.h>
 #include <Kernel/Interrupts/InterruptManagement.h>
-#include <Kernel/VM/MemoryManager.h>
+#include <Kernel/Sections.h>
 
 #define IOAPIC_REDIRECTION_ENTRY_OFFSET 0x10
 namespace Kernel {
@@ -47,7 +25,7 @@ enum DeliveryMode {
 
 UNMAP_AFTER_INIT IOAPIC::IOAPIC(PhysicalAddress address, u32 gsi_base)
     : m_address(address)
-    , m_regs(map_typed_writable<ioapic_mmio_regs>(m_address))
+    , m_regs(Memory::map_typed_writable<ioapic_mmio_regs>(m_address))
     , m_gsi_base(gsi_base)
     , m_id((read_register(0x0) >> 24) & 0xFF)
     , m_version(read_register(0x1) & 0xFF)
@@ -70,7 +48,7 @@ void IOAPIC::map_interrupt_redirection(u8 interrupt_vector)
     for (auto redirection_override : InterruptManagement::the().isa_overrides()) {
         if (redirection_override.source() != interrupt_vector)
             continue;
-        bool active_low;
+        bool active_low = false;
         // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
         switch ((redirection_override.flags() & 0b11)) {
         case 0:
@@ -86,7 +64,7 @@ void IOAPIC::map_interrupt_redirection(u8 interrupt_vector)
             break;
         }
 
-        bool trigger_level_mode;
+        bool trigger_level_mode = false;
         // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
         switch (((redirection_override.flags() >> 2) & 0b11)) {
         case 0:
@@ -138,7 +116,7 @@ void IOAPIC::map_isa_interrupts()
     for (auto redirection_override : InterruptManagement::the().isa_overrides()) {
         if ((redirection_override.gsi() < gsi_base()) || (redirection_override.gsi() >= (gsi_base() + m_redirection_entries_count)))
             continue;
-        bool active_low;
+        bool active_low = false;
         // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
         switch ((redirection_override.flags() & 0b11)) {
         case 0:
@@ -154,7 +132,7 @@ void IOAPIC::map_isa_interrupts()
             break;
         }
 
-        bool trigger_level_mode;
+        bool trigger_level_mode = false;
         // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
         switch (((redirection_override.flags() >> 2) & 0b11)) {
         case 0:

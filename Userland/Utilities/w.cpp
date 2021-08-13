@@ -1,30 +1,9 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/ByteBuffer.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <LibCore/DateTime.h>
@@ -64,7 +43,7 @@ int main()
 
     unveil(nullptr, nullptr);
 
-    auto file_or_error = Core::File::open("/var/run/utmp", Core::IODevice::ReadOnly);
+    auto file_or_error = Core::File::open("/var/run/utmp", Core::OpenMode::ReadOnly);
     if (file_or_error.is_error()) {
         warnln("Error: {}", file_or_error.error());
         return 1;
@@ -84,8 +63,7 @@ int main()
 
     auto now = time(nullptr);
 
-    printf("\033[1m%-10s %-12s %-16s %-6s %s\033[0m\n",
-        "USER", "TTY", "LOGIN@", "IDLE", "WHAT");
+    outln("\033[1m{:10} {:12} {:16} {:6} {}\033[0m", "USER", "TTY", "LOGIN@", "IDLE", "WHAT");
     json.value().as_object().for_each_member([&](auto& tty, auto& value) {
         const JsonObject& entry = value.as_object();
         auto uid = entry.get("uid").to_u32();
@@ -107,24 +85,19 @@ int main()
         if (stat(tty.characters(), &st) == 0) {
             auto idle_time = now - st.st_mtime;
             if (idle_time >= 0) {
-                builder.appendf("%llds", idle_time);
+                builder.appendff("{}s", idle_time);
                 idle_string = builder.to_string();
             }
         }
 
         String what = "n/a";
 
-        for (auto& it : process_statistics.value()) {
-            if (it.value.tty == tty && it.value.pid == it.value.pgid)
-                what = it.value.name;
+        for (auto& process : process_statistics.value().processes) {
+            if (process.tty == tty && process.pid == process.pgid)
+                what = process.name;
         }
 
-        printf("%-10s %-12s %-16s %-6s %s\n",
-            username.characters(),
-            tty.characters(),
-            login_at.characters(),
-            idle_string.characters(),
-            what.characters());
+        outln("{:10} {:12} {:16} {:6} {}", username, tty, login_at, idle_string, what);
     });
     return 0;
 }

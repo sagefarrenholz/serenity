@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Runtime/Error.h>
@@ -29,34 +10,61 @@
 
 namespace JS {
 
-Error* Error::create(GlobalObject& global_object, const FlyString& name, const String& message)
+Error* Error::create(GlobalObject& global_object)
 {
-    return global_object.heap().allocate<Error>(global_object, name, message, *global_object.error_prototype());
+    return global_object.heap().allocate<Error>(global_object, *global_object.error_prototype());
 }
 
-Error::Error(const FlyString& name, const String& message, Object& prototype)
+Error* Error::create(GlobalObject& global_object, String const& message)
+{
+    auto& vm = global_object.vm();
+    auto* error = Error::create(global_object);
+    u8 attr = Attribute::Writable | Attribute::Configurable;
+    error->define_direct_property(vm.names.message, js_string(vm, message), attr);
+    return error;
+}
+
+Error::Error(Object& prototype)
     : Object(prototype)
-    , m_name(name)
-    , m_message(message)
 {
 }
 
-Error::~Error()
+// 20.5.8.1 InstallErrorCause ( O, options ), https://tc39.es/proposal-error-cause/#sec-errorobjects-install-error-cause
+void Error::install_error_cause(Value options)
 {
+    auto& vm = this->vm();
+    if (!options.is_object())
+        return;
+    auto& options_object = options.as_object();
+    if (!options_object.has_property(vm.names.cause))
+        return;
+    auto cause = options_object.get(vm.names.cause);
+    if (vm.exception())
+        return;
+    create_non_enumerable_data_property_or_throw(vm.names.cause, cause);
 }
 
-#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType)                                  \
-    ClassName* ClassName::create(GlobalObject& global_object, const String& message)                                      \
-    {                                                                                                                     \
-        return global_object.heap().allocate<ClassName>(global_object, message, *global_object.snake_name##_prototype()); \
-    }                                                                                                                     \
-    ClassName::ClassName(const String& message, Object& prototype)                                                        \
-        : Error(vm().names.ClassName, message, prototype)                                                                 \
-    {                                                                                                                     \
-    }                                                                                                                     \
-    ClassName::~ClassName() { }
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType)                         \
+    ClassName* ClassName::create(GlobalObject& global_object)                                                    \
+    {                                                                                                            \
+        return global_object.heap().allocate<ClassName>(global_object, *global_object.snake_name##_prototype()); \
+    }                                                                                                            \
+                                                                                                                 \
+    ClassName* ClassName::create(GlobalObject& global_object, String const& message)                             \
+    {                                                                                                            \
+        auto& vm = global_object.vm();                                                                           \
+        auto* error = ClassName::create(global_object);                                                          \
+        u8 attr = Attribute::Writable | Attribute::Configurable;                                                 \
+        error->define_direct_property(vm.names.message, js_string(vm, message), attr);                           \
+        return error;                                                                                            \
+    }                                                                                                            \
+                                                                                                                 \
+    ClassName::ClassName(Object& prototype)                                                                      \
+        : Error(prototype)                                                                                       \
+    {                                                                                                            \
+    }
 
-JS_ENUMERATE_ERROR_SUBCLASSES
+JS_ENUMERATE_NATIVE_ERRORS
 #undef __JS_ENUMERATE
 
 }

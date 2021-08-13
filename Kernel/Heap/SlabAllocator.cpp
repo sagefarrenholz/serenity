@@ -1,35 +1,15 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
 #include <AK/Memory.h>
 #include <Kernel/Heap/SlabAllocator.h>
 #include <Kernel/Heap/kmalloc.h>
-#include <Kernel/SpinLock.h>
-#include <Kernel/VM/Region.h>
+#include <Kernel/Memory/Region.h>
+#include <Kernel/Sections.h>
 
 #define SANITIZE_SLABS
 
@@ -117,7 +97,7 @@ private:
     };
 
     Atomic<FreeSlab*> m_freelist { nullptr };
-    Atomic<ssize_t, AK::MemoryOrder::memory_order_relaxed> m_num_allocated;
+    Atomic<size_t, AK::MemoryOrder::memory_order_relaxed> m_num_allocated;
     size_t m_slab_count;
     void* m_base { nullptr };
     void* m_end { nullptr };
@@ -129,9 +109,10 @@ static SlabAllocator<16> s_slab_allocator_16;
 static SlabAllocator<32> s_slab_allocator_32;
 static SlabAllocator<64> s_slab_allocator_64;
 static SlabAllocator<128> s_slab_allocator_128;
+static SlabAllocator<256> s_slab_allocator_256;
 
 #if ARCH(I386)
-static_assert(sizeof(Region) <= s_slab_allocator_128.slab_size());
+static_assert(sizeof(Memory::Region) <= s_slab_allocator_128.slab_size());
 #endif
 
 template<typename Callback>
@@ -141,6 +122,7 @@ void for_each_allocator(Callback callback)
     callback(s_slab_allocator_32);
     callback(s_slab_allocator_64);
     callback(s_slab_allocator_128);
+    callback(s_slab_allocator_256);
 }
 
 UNMAP_AFTER_INIT void slab_alloc_init()
@@ -149,6 +131,7 @@ UNMAP_AFTER_INIT void slab_alloc_init()
     s_slab_allocator_32.init(128 * KiB);
     s_slab_allocator_64.init(512 * KiB);
     s_slab_allocator_128.init(512 * KiB);
+    s_slab_allocator_256.init(128 * KiB);
 }
 
 void* slab_alloc(size_t slab_size)
@@ -161,6 +144,8 @@ void* slab_alloc(size_t slab_size)
         return s_slab_allocator_64.alloc();
     if (slab_size <= 128)
         return s_slab_allocator_128.alloc();
+    if (slab_size <= 256)
+        return s_slab_allocator_256.alloc();
     VERIFY_NOT_REACHED();
 }
 
@@ -174,6 +159,8 @@ void slab_dealloc(void* ptr, size_t slab_size)
         return s_slab_allocator_64.dealloc(ptr);
     if (slab_size <= 128)
         return s_slab_allocator_128.dealloc(ptr);
+    if (slab_size <= 256)
+        return s_slab_allocator_256.dealloc(ptr);
     VERIFY_NOT_REACHED();
 }
 

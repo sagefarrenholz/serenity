@@ -1,35 +1,20 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/CharacterTypes.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
-#include <ctype.h>
 
 namespace AK {
+
+constexpr bool is_space(int ch)
+{
+    return ch == '\t' || ch == '\n' || ch == '\r' || ch == ' ';
+}
 
 String JsonParser::consume_and_unescape_string()
 {
@@ -46,6 +31,8 @@ String JsonParser::consume_and_unescape_string()
             ch = m_input[peek_index];
             if (ch == '"' || ch == '\\')
                 break;
+            if (is_ascii_c0_control(ch))
+                return {};
             ++peek_index;
         }
 
@@ -63,34 +50,69 @@ String JsonParser::consume_and_unescape_string()
             continue;
         }
         ignore();
-        char escaped_ch = consume();
-        switch (escaped_ch) {
-        case 'n':
-            final_sb.append('\n');
-            break;
-        case 'r':
-            final_sb.append('\r');
-            break;
-        case 't':
-            final_sb.append('\t');
-            break;
-        case 'b':
-            final_sb.append('\b');
-            break;
-        case 'f':
-            final_sb.append('\f');
-            break;
-        case 'u': {
-            auto code_point = AK::StringUtils::convert_to_uint_from_hex(consume(4));
-            if (code_point.has_value())
-                final_sb.append_code_point(code_point.value());
-            else
-                final_sb.append('?');
-        } break;
-        default:
-            final_sb.append(escaped_ch);
-            break;
+        if (next_is('"')) {
+            ignore();
+            final_sb.append('"');
+            continue;
         }
+
+        if (next_is('\\')) {
+            ignore();
+            final_sb.append('\\');
+            continue;
+        }
+
+        if (next_is('/')) {
+            ignore();
+            final_sb.append('/');
+            continue;
+        }
+
+        if (next_is('n')) {
+            ignore();
+            final_sb.append('\n');
+            continue;
+        }
+
+        if (next_is('r')) {
+            ignore();
+            final_sb.append('\r');
+            continue;
+        }
+
+        if (next_is('t')) {
+            ignore();
+            final_sb.append('\t');
+            continue;
+        }
+
+        if (next_is('b')) {
+            ignore();
+            final_sb.append('\b');
+            continue;
+        }
+
+        if (next_is('f')) {
+            ignore();
+            final_sb.append('\f');
+            continue;
+        }
+
+        if (next_is('u')) {
+            ignore();
+            if (tell_remaining() < 4)
+                return {};
+
+            auto code_point = AK::StringUtils::convert_to_uint_from_hex(consume(4));
+            if (code_point.has_value()) {
+                final_sb.append_code_point(code_point.value());
+                continue;
+            } else {
+                return {};
+            }
+        }
+
+        return {};
     }
     if (!consume_specific('"'))
         return {};
@@ -104,33 +126,33 @@ Optional<JsonValue> JsonParser::parse_object()
     if (!consume_specific('{'))
         return {};
     for (;;) {
-        ignore_while(isspace);
+        ignore_while(is_space);
         if (peek() == '}')
             break;
-        ignore_while(isspace);
+        ignore_while(is_space);
         auto name = consume_and_unescape_string();
         if (name.is_null())
             return {};
-        ignore_while(isspace);
+        ignore_while(is_space);
         if (!consume_specific(':'))
             return {};
-        ignore_while(isspace);
+        ignore_while(is_space);
         auto value = parse_helper();
         if (!value.has_value())
             return {};
-        object.set(name, move(value.value()));
-        ignore_while(isspace);
+        object.set(name, value.release_value());
+        ignore_while(is_space);
         if (peek() == '}')
             break;
         if (!consume_specific(','))
             return {};
-        ignore_while(isspace);
+        ignore_while(is_space);
         if (peek() == '}')
             return {};
     }
     if (!consume_specific('}'))
         return {};
-    return object;
+    return JsonValue { move(object) };
 }
 
 Optional<JsonValue> JsonParser::parse_array()
@@ -139,26 +161,26 @@ Optional<JsonValue> JsonParser::parse_array()
     if (!consume_specific('['))
         return {};
     for (;;) {
-        ignore_while(isspace);
+        ignore_while(is_space);
         if (peek() == ']')
             break;
         auto element = parse_helper();
         if (!element.has_value())
             return {};
-        array.append(element.value());
-        ignore_while(isspace);
+        array.append(element.release_value());
+        ignore_while(is_space);
         if (peek() == ']')
             break;
         if (!consume_specific(','))
             return {};
-        ignore_while(isspace);
+        ignore_while(is_space);
         if (peek() == ']')
             return {};
     }
-    ignore_while(isspace);
+    ignore_while(is_space);
     if (!consume_specific(']'))
         return {};
-    return array;
+    return JsonValue { move(array) };
 }
 
 Optional<JsonValue> JsonParser::parse_string()
@@ -179,15 +201,32 @@ Optional<JsonValue> JsonParser::parse_number()
     for (;;) {
         char ch = peek();
         if (ch == '.') {
+            if (is_double)
+                return {};
+
             is_double = true;
             ++m_index;
             continue;
         }
         if (ch == '-' || (ch >= '0' && ch <= '9')) {
-            if (is_double)
+            if (is_double) {
+                if (ch == '-')
+                    return {};
+
                 fraction_buffer.append(ch);
-            else
+            } else {
+                if (number_buffer.size() > 0) {
+                    if (number_buffer.at(0) == '0')
+                        return {};
+                }
+
+                if (number_buffer.size() > 1) {
+                    if (number_buffer.at(0) == '-' && number_buffer.at(1) == '0')
+                        return {};
+                }
+
                 number_buffer.append(ch);
+            }
             ++m_index;
             continue;
         }
@@ -224,9 +263,13 @@ Optional<JsonValue> JsonParser::parse_number()
         value = JsonValue((double)whole + ((double)fraction / divider));
     } else {
 #endif
-        auto to_unsigned_result = number_string.to_uint();
+        auto to_unsigned_result = number_string.to_uint<u64>();
         if (to_unsigned_result.has_value()) {
-            value = JsonValue(to_unsigned_result.value());
+            auto number = *to_unsigned_result;
+            if (number <= NumericLimits<u32>::max())
+                value = JsonValue((u32)number);
+            else
+                value = JsonValue(number);
         } else {
             auto number = number_string.to_int<i64>();
             if (!number.has_value())
@@ -267,7 +310,7 @@ Optional<JsonValue> JsonParser::parse_null()
 
 Optional<JsonValue> JsonParser::parse_helper()
 {
-    ignore_while(isspace);
+    ignore_while(is_space);
     auto type_hint = peek();
     switch (type_hint) {
     case '{':
@@ -304,7 +347,7 @@ Optional<JsonValue> JsonParser::parse()
     auto result = parse_helper();
     if (!result.has_value())
         return {};
-    ignore_while(isspace);
+    ignore_while(is_space);
     if (!is_eof())
         return {};
     return result;

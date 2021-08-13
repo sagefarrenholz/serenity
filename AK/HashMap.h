@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -39,7 +19,7 @@
 
 namespace AK {
 
-template<typename K, typename V, typename KeyTraits>
+template<typename K, typename V, typename KeyTraits, bool IsOrdered>
 class HashMap {
 private:
     struct Entry {
@@ -53,6 +33,9 @@ private:
     };
 
 public:
+    using KeyType = K;
+    using ValueType = V;
+
     HashMap() = default;
 
 #ifndef SERENITY_LIBC_BUILD
@@ -64,12 +47,12 @@ public:
     }
 #endif
 
-    bool is_empty() const
+    [[nodiscard]] bool is_empty() const
     {
         return m_table.is_empty();
     }
-    size_t size() const { return m_table.size(); }
-    size_t capacity() const { return m_table.capacity(); }
+    [[nodiscard]] size_t size() const { return m_table.size(); }
+    [[nodiscard]] size_t capacity() const { return m_table.capacity(); }
     void clear() { m_table.clear(); }
 
     HashSetResult set(const K& key, const V& value) { return m_table.set({ key, value }); }
@@ -83,39 +66,38 @@ public:
         }
         return false;
     }
-    void remove_one_randomly() { m_table.remove(m_table.begin()); }
 
-    using HashTableType = HashTable<Entry, EntryTraits>;
+    using HashTableType = HashTable<Entry, EntryTraits, IsOrdered>;
     using IteratorType = typename HashTableType::Iterator;
     using ConstIteratorType = typename HashTableType::ConstIterator;
 
-    IteratorType begin() { return m_table.begin(); }
-    IteratorType end() { return m_table.end(); }
-    IteratorType find(const K& key)
+    [[nodiscard]] IteratorType begin() { return m_table.begin(); }
+    [[nodiscard]] IteratorType end() { return m_table.end(); }
+    [[nodiscard]] IteratorType find(const K& key)
     {
         return m_table.find(KeyTraits::hash(key), [&](auto& entry) { return KeyTraits::equals(key, entry.key); });
     }
-    template<typename Finder>
-    IteratorType find(unsigned hash, Finder finder)
+    template<typename TUnaryPredicate>
+    [[nodiscard]] IteratorType find(unsigned hash, TUnaryPredicate predicate)
     {
-        return m_table.find(hash, finder);
+        return m_table.find(hash, predicate);
     }
 
-    ConstIteratorType begin() const { return m_table.begin(); }
-    ConstIteratorType end() const { return m_table.end(); }
-    ConstIteratorType find(const K& key) const
+    [[nodiscard]] ConstIteratorType begin() const { return m_table.begin(); }
+    [[nodiscard]] ConstIteratorType end() const { return m_table.end(); }
+    [[nodiscard]] ConstIteratorType find(const K& key) const
     {
         return m_table.find(KeyTraits::hash(key), [&](auto& entry) { return KeyTraits::equals(key, entry.key); });
     }
-    template<typename Finder>
-    ConstIteratorType find(unsigned hash, Finder finder) const
+    template<typename TUnaryPredicate>
+    [[nodiscard]] ConstIteratorType find(unsigned hash, TUnaryPredicate predicate) const
     {
-        return m_table.find(hash, finder);
+        return m_table.find(hash, predicate);
     }
 
     void ensure_capacity(size_t capacity) { m_table.ensure_capacity(capacity); }
 
-    Optional<typename Traits<V>::PeekType> get(const K& key) const
+    Optional<typename Traits<V>::PeekType> get(const K& key) const requires(!IsPointer<typename Traits<V>::PeekType>)
     {
         auto it = find(key);
         if (it == end())
@@ -123,7 +105,23 @@ public:
         return (*it).value;
     }
 
-    bool contains(const K& key) const
+    Optional<typename Traits<V>::ConstPeekType> get(const K& key) const requires(IsPointer<typename Traits<V>::PeekType>)
+    {
+        auto it = find(key);
+        if (it == end())
+            return {};
+        return (*it).value;
+    }
+
+    Optional<typename Traits<V>::PeekType> get(const K& key) requires(!IsConst<typename Traits<V>::PeekType>)
+    {
+        auto it = find(key);
+        if (it == end())
+            return {};
+        return (*it).value;
+    }
+
+    [[nodiscard]] bool contains(const K& key) const
     {
         return find(key) != end();
     }
@@ -141,7 +139,7 @@ public:
         return find(key)->value;
     }
 
-    Vector<K> keys() const
+    [[nodiscard]] Vector<K> keys() const
     {
         Vector<K> list;
         list.ensure_capacity(size());
@@ -157,3 +155,4 @@ private:
 }
 
 using AK::HashMap;
+using AK::OrderedHashMap;

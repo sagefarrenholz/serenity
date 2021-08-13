@@ -1,5 +1,10 @@
+serenity_component(
+    ShellLanguageServer
+    TARGETS ShellLanguageServer
+)
+
 set(SOURCES
-    AutoComplete.cpp
+    ShellComprehensionEngine.cpp
     main.cpp
 )
 

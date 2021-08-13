@@ -15,12 +15,12 @@ test("basic functionality", () => {
 });
 
 test("casts |this| to string", () => {
-    const it = String.prototype[Symbol.iterator].call(45);
+    let it = String.prototype[Symbol.iterator].call(45);
     expect(it.next()).toEqual({ value: "4", done: false });
     expect(it.next()).toEqual({ value: "5", done: false });
     expect(it.next()).toEqual({ value: undefined, done: true });
 
-    const it = String.prototype[Symbol.iterator].call(false);
+    it = String.prototype[Symbol.iterator].call(false);
     expect(it.next()).toEqual({ value: "f", done: false });
     expect(it.next()).toEqual({ value: "a", done: false });
     expect(it.next()).toEqual({ value: "l", done: false });
@@ -30,10 +30,10 @@ test("casts |this| to string", () => {
 
     expect(() => {
         String.prototype[Symbol.iterator].call(null);
-    }).toThrowWithMessage(TypeError, "ToObject on null or undefined");
+    }).toThrowWithMessage(TypeError, "null cannot be converted to an object");
     expect(() => {
         String.prototype[Symbol.iterator].call(undefined);
-    }).toThrowWithMessage(TypeError, "ToObject on null or undefined");
+    }).toThrowWithMessage(TypeError, "undefined cannot be converted to an object");
 });
 
 test("utf8 compatible", () => {

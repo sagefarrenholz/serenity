@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/AnyOf.h>
@@ -31,20 +11,17 @@
 #include <AK/Memory.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
-#include <AK/Vector.h>
 
 namespace AK {
 
 StringView::StringView(const String& string)
-    : m_impl(string.impl())
-    , m_characters(string.characters())
+    : m_characters(string.characters())
     , m_length(string.length())
 {
 }
 
 StringView::StringView(const FlyString& string)
-    : m_impl(string.impl())
-    , m_characters(string.characters())
+    : m_characters(string.characters())
     , m_length(string.length())
 {
 }
@@ -122,12 +99,13 @@ Vector<StringView> StringView::lines(bool consider_cr) const
             if (last_ch_was_cr) {
                 substart = i + 1;
                 split_view = false;
-                last_ch_was_cr = false;
             }
         }
         if (ch == '\r') {
             split_view = true;
             last_ch_was_cr = true;
+        } else {
+            last_ch_was_cr = false;
         }
         if (split_view) {
             size_t sublen = i - substart;
@@ -195,15 +173,14 @@ bool StringView::equals_ignoring_case(const StringView& other) const
     return StringUtils::equals_ignoring_case(*this, other);
 }
 
-StringView StringView::substring_view(size_t start, size_t length) const
+String StringView::to_lowercase_string() const
 {
-    VERIFY(start + length <= m_length);
-    return { m_characters + start, length };
+    return StringImpl::create_lowercased(characters_without_null_termination(), length());
 }
-StringView StringView::substring_view(size_t start) const
+
+String StringView::to_uppercase_string() const
 {
-    VERIFY(start <= m_length);
-    return { m_characters + start, length() - start };
+    return StringImpl::create_uppercased(characters_without_null_termination(), length());
 }
 
 StringView StringView::substring_view_starting_from_substring(const StringView& substring) const
@@ -248,15 +225,6 @@ template Optional<u64> StringView::to_uint() const;
 template Optional<long> StringView::to_uint() const;
 template Optional<long long> StringView::to_uint() const;
 
-unsigned StringView::hash() const
-{
-    if (is_empty())
-        return 0;
-    if (m_impl)
-        return m_impl->hash();
-    return string_hash(characters_without_null_termination(), length());
-}
-
 bool StringView::operator==(const String& string) const
 {
     if (string.is_null())
@@ -268,60 +236,6 @@ bool StringView::operator==(const String& string) const
     if (m_characters == string.characters())
         return true;
     return !__builtin_memcmp(m_characters, string.characters(), m_length);
-}
-
-Optional<size_t> StringView::find_first_of(char c) const
-{
-    if (const auto location = AK::find(begin(), end(), c); location != end()) {
-        return location.index();
-    }
-    return {};
-}
-
-Optional<size_t> StringView::find_first_of(const StringView& view) const
-{
-    if (const auto location = AK::find_if(begin(), end(),
-            [&](const auto c) {
-                return any_of(view.begin(), view.end(),
-                    [&](const auto view_char) {
-                        return c == view_char;
-                    });
-            });
-        location != end()) {
-        return location.index();
-    }
-    return {};
-}
-
-Optional<size_t> StringView::find_last_of(char c) const
-{
-    for (size_t pos = m_length; --pos > 0;) {
-        if (m_characters[pos] == c)
-            return pos;
-    }
-    return {};
-}
-
-Optional<size_t> StringView::find_last_of(const StringView& view) const
-{
-    for (size_t pos = m_length - 1; --pos > 0;) {
-        char c = m_characters[pos];
-        for (char view_char : view) {
-            if (c == view_char)
-                return pos;
-        }
-    }
-    return {};
-}
-
-Optional<size_t> StringView::find(char c) const
-{
-    return find(StringView { &c, 1 });
-}
-
-Optional<size_t> StringView::find(const StringView& view) const
-{
-    return StringUtils::find(*this, view);
 }
 
 String StringView::to_string() const { return String { *this }; }

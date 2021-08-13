@@ -1,34 +1,17 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2019-2020, Shannon Booth <shannon.ml.booth@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Assertions.h>
 #include <AK/Function.h>
 #include <AK/String.h>
 #include <Kernel/IO.h>
 #include <LibCore/ArgsParser.h>
+#include <LibCore/Object.h>
+#include <LibTest/CrashTest.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -36,72 +19,13 @@
 #include <syscall.h>
 #include <unistd.h>
 
-#pragma GCC optimize("O0")
+using Test::Crash;
 
-class Crash {
-public:
-    enum class RunType {
-        UsingChildProcess,
-        UsingCurrentProcess,
-    };
-
-    enum class Failure {
-        DidNotCrash,
-        UnexpectedError,
-    };
-
-    Crash(String test_type, Function<Crash::Failure()> crash_function)
-        : m_type(test_type)
-        , m_crash_function(move(crash_function))
-    {
-    }
-
-    void run(RunType run_type)
-    {
-        printf("\x1B[33mTesting\x1B[0m: \"%s\"\n", m_type.characters());
-
-        auto run_crash_and_print_if_error = [this]() {
-            auto failure = m_crash_function();
-
-            // If we got here something went wrong
-            printf("\x1B[31mFAIL\x1B[0m: ");
-            switch (failure) {
-            case Failure::DidNotCrash:
-                printf("Did not crash!\n");
-                break;
-            case Failure::UnexpectedError:
-                printf("Unexpected error!\n");
-                break;
-            default:
-                VERIFY_NOT_REACHED();
-            }
-        };
-
-        if (run_type == RunType::UsingCurrentProcess) {
-            run_crash_and_print_if_error();
-        } else {
-
-            // Run the test in a child process so that we do not crash the crash program :^)
-            pid_t pid = fork();
-            if (pid < 0) {
-                perror("fork");
-                VERIFY_NOT_REACHED();
-            } else if (pid == 0) {
-                run_crash_and_print_if_error();
-                exit(0);
-            }
-
-            int status;
-            waitpid(pid, &status, 0);
-            if (WIFSIGNALED(status))
-                printf("\x1B[32mPASS\x1B[0m: Terminated with signal %d\n", WTERMSIG(status));
-        }
-    }
-
-private:
-    String m_type;
-    Function<Crash::Failure()> m_crash_function;
-};
+#ifdef __clang__
+#    pragma clang optimize off
+#else
+#    pragma GCC optimize("O0")
+#endif
 
 int main(int argc, char** argv)
 {
@@ -124,6 +48,7 @@ int main(int argc, char** argv)
     bool do_read_cpu_counter = false;
     bool do_pledge_violation = false;
     bool do_failing_assertion = false;
+    bool do_deref_null_refptr = false;
 
     auto args_parser = Core::ArgsParser();
     args_parser.set_general_help(
@@ -148,6 +73,7 @@ int main(int argc, char** argv)
     args_parser.add_option(do_read_cpu_counter, "Read the x86 TSC (Time Stamp Counter) directly", nullptr, 'c');
     args_parser.add_option(do_pledge_violation, "Violate pledge()'d promises", nullptr, 'p');
     args_parser.add_option(do_failing_assertion, "Perform a failing assertion", nullptr, 'n');
+    args_parser.add_option(do_deref_null_refptr, "Dereference a null RefPtr", nullptr, 'R');
 
     if (argc != 2) {
         args_parser.print_usage(stderr, argv[0]);
@@ -281,8 +207,14 @@ int main(int argc, char** argv)
                 return Crash::Failure::UnexpectedError;
 
             u8* bad_esp = bad_stack + 2048;
+#if ARCH(I386)
             asm volatile("mov %%eax, %%esp" ::"a"(bad_esp));
             asm volatile("pushl $0");
+#else
+            asm volatile("movq %%rax, %%rsp" ::"a"(bad_esp));
+            asm volatile("pushq $0");
+#endif
+
             return Crash::Failure::DidNotCrash;
         }).run(run_type);
     }
@@ -318,7 +250,7 @@ int main(int argc, char** argv)
     if (do_use_io_instruction || do_all_crash_types) {
         Crash("Attempt to use an I/O instruction", [] {
             u8 keyboard_status = IO::in8(0x64);
-            printf("Keyboard status: %#02x\n", keyboard_status);
+            outln("Keyboard status: {:#02x}", keyboard_status);
             return Crash::Failure::DidNotCrash;
         }).run(run_type);
     }
@@ -336,7 +268,7 @@ int main(int argc, char** argv)
                 perror("pledge");
                 return Crash::Failure::DidNotCrash;
             }
-            printf("Didn't pledge 'stdio', this should fail!\n");
+            outln("Didn't pledge 'stdio', this should fail!");
             return Crash::Failure::DidNotCrash;
         }).run(run_type);
     }
@@ -344,6 +276,14 @@ int main(int argc, char** argv)
     if (do_failing_assertion || do_all_crash_types) {
         Crash("Perform a failing assertion", [] {
             VERIFY(1 == 2);
+            return Crash::Failure::DidNotCrash;
+        }).run(run_type);
+    }
+
+    if (do_deref_null_refptr || do_all_crash_types) {
+        Crash("Dereference a null RefPtr", [] {
+            RefPtr<Core::Object> p;
+            *p;
             return Crash::Failure::DidNotCrash;
         }).run(run_type);
     }

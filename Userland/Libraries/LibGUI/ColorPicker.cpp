@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/BoxLayout.h>
@@ -149,7 +129,7 @@ ColorPicker::ColorPicker(Color color, Window* parent_window, String title)
     : Dialog(parent_window)
     , m_color(color)
 {
-    set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/color-chooser.png"));
+    set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/color-chooser.png"));
     set_title(title);
     set_resizable(false);
     resize(458, 326);
@@ -382,8 +362,8 @@ void ColorPicker::create_color_button(Widget& container, unsigned rgb)
     auto& widget = container.add<ColorButton>(*this, color);
     widget.on_click = [this](Color color) {
         for (auto& value : m_color_widgets) {
-            value->set_selected(false);
-            value->update();
+            value.set_selected(false);
+            value.update();
         }
 
         m_color = color;
@@ -395,7 +375,7 @@ void ColorPicker::create_color_button(Widget& container, unsigned rgb)
         widget.set_selected(true);
     }
 
-    m_color_widgets.append(&widget);
+    m_color_widgets.append(widget);
 }
 
 ColorButton::ColorButton(ColorPicker& picker, Color color)
@@ -479,15 +459,15 @@ ColorField::ColorField(Color color)
 
 void ColorField::create_color_bitmap()
 {
-    m_color_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, { 256, 256 });
+    m_color_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, { 256, 256 });
     auto painter = Gfx::Painter(*m_color_bitmap);
 
     Gfx::HSV hsv;
     hsv.hue = m_hue;
     for (int x = 0; x < 256; x++) {
-        hsv.saturation = x / 255.0f;
+        hsv.saturation = x / 255.0;
         for (int y = 0; y < 256; y++) {
-            hsv.value = (255 - y) / 255.0f;
+            hsv.value = (255 - y) / 255.0;
             Color color = Color::from_hsv(hsv);
             painter.set_pixel({ x, y }, color);
         }
@@ -605,7 +585,7 @@ void ColorField::resize_event(ResizeEvent&)
 ColorSlider::ColorSlider(double value)
     : m_value(value)
 {
-    m_color_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, { 32, 360 });
+    m_color_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, { 32, 360 });
     auto painter = Gfx::Painter(*m_color_bitmap);
 
     for (int h = 0; h < 360; h++) {

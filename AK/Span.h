@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -119,11 +99,11 @@ public:
     {
     }
 
-    ALWAYS_INLINE constexpr const T* data() const { return this->m_values; }
-    ALWAYS_INLINE constexpr T* data() { return this->m_values; }
+    [[nodiscard]] ALWAYS_INLINE constexpr const T* data() const { return this->m_values; }
+    [[nodiscard]] ALWAYS_INLINE constexpr T* data() { return this->m_values; }
 
-    ALWAYS_INLINE constexpr const T* offset_pointer(size_t offset) const { return this->m_values + offset; }
-    ALWAYS_INLINE constexpr T* offset_pointer(size_t offset) { return this->m_values + offset; }
+    [[nodiscard]] ALWAYS_INLINE constexpr const T* offset_pointer(size_t offset) const { return this->m_values + offset; }
+    [[nodiscard]] ALWAYS_INLINE constexpr T* offset_pointer(size_t offset) { return this->m_values + offset; }
 
     using ConstIterator = SimpleIterator<const Span, const T>;
     using Iterator = SimpleIterator<Span, T>;
@@ -134,9 +114,9 @@ public:
     constexpr ConstIterator end() const { return ConstIterator::end(*this); }
     constexpr Iterator end() { return Iterator::end(*this); }
 
-    ALWAYS_INLINE constexpr size_t size() const { return this->m_size; }
-    ALWAYS_INLINE constexpr bool is_null() const { return this->m_values == nullptr; }
-    ALWAYS_INLINE constexpr bool is_empty() const { return this->m_size == 0; }
+    [[nodiscard]] ALWAYS_INLINE constexpr size_t size() const { return this->m_size; }
+    [[nodiscard]] ALWAYS_INLINE constexpr bool is_null() const { return this->m_values == nullptr; }
+    [[nodiscard]] ALWAYS_INLINE constexpr bool is_empty() const { return this->m_size == 0; }
 
     [[nodiscard]] ALWAYS_INLINE constexpr Span slice(size_t start, size_t length) const
     {
@@ -148,13 +128,18 @@ public:
         VERIFY(start <= size());
         return { this->m_values + start, size() - start };
     }
+    [[nodiscard]] ALWAYS_INLINE constexpr Span slice_from_end(size_t count) const
+    {
+        VERIFY(count <= size());
+        return { this->m_values + size() - count, count };
+    }
 
     [[nodiscard]] ALWAYS_INLINE constexpr Span trim(size_t length) const
     {
         return { this->m_values, min(size(), length) };
     }
 
-    ALWAYS_INLINE constexpr T* offset(size_t start) const
+    [[nodiscard]] ALWAYS_INLINE constexpr T* offset(size_t start) const
     {
         VERIFY(start < this->m_size);
         return this->m_values + start;
@@ -167,16 +152,16 @@ public:
         __builtin_memcpy(this->data() + offset, data, data_size);
     }
 
-    ALWAYS_INLINE constexpr size_t copy_to(Span<typename RemoveConst<T>::Type> other) const
+    ALWAYS_INLINE constexpr size_t copy_to(Span<RemoveConst<T>> other) const
     {
         VERIFY(other.size() >= size());
-        return TypedTransfer<typename RemoveConst<T>::Type>::copy(other.data(), data(), size());
+        return TypedTransfer<RemoveConst<T>>::copy(other.data(), data(), size());
     }
 
-    ALWAYS_INLINE constexpr size_t copy_trimmed_to(Span<typename RemoveConst<T>::Type> other) const
+    ALWAYS_INLINE constexpr size_t copy_trimmed_to(Span<RemoveConst<T>> other) const
     {
         const auto count = min(size(), other.size());
-        return TypedTransfer<typename RemoveConst<T>::Type>::copy(other.data(), data(), count);
+        return TypedTransfer<RemoveConst<T>>::copy(other.data(), data(), count);
     }
 
     ALWAYS_INLINE constexpr size_t fill(const T& value)
@@ -187,7 +172,7 @@ public:
         return size();
     }
 
-    bool constexpr contains_slow(const T& value) const
+    [[nodiscard]] bool constexpr contains_slow(const T& value) const
     {
         for (size_t i = 0; i < size(); ++i) {
             if (at(i) == value)
@@ -196,22 +181,32 @@ public:
         return false;
     }
 
-    ALWAYS_INLINE constexpr const T& at(size_t index) const
+    [[nodiscard]] bool constexpr starts_with(Span<const T> other) const
     {
-        VERIFY(index < this->m_size);
-        return this->m_values[index];
+        if (size() < other.size())
+            return false;
+
+        return TypedTransfer<T>::compare(data(), other.data(), other.size());
     }
-    ALWAYS_INLINE constexpr T& at(size_t index)
+
+    [[nodiscard]] ALWAYS_INLINE constexpr const T& at(size_t index) const
     {
         VERIFY(index < this->m_size);
         return this->m_values[index];
     }
 
-    ALWAYS_INLINE constexpr T& operator[](size_t index) const
+    [[nodiscard]] ALWAYS_INLINE constexpr T& at(size_t index)
+    {
+        VERIFY(index < this->m_size);
+        return this->m_values[index];
+    }
+
+    [[nodiscard]] ALWAYS_INLINE constexpr const T& operator[](size_t index) const
     {
         return at(index);
     }
-    ALWAYS_INLINE constexpr T& operator[](size_t index)
+
+    [[nodiscard]] ALWAYS_INLINE constexpr T& operator[](size_t index)
     {
         return at(index);
     }

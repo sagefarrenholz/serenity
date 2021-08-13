@@ -1,4 +1,6 @@
-endpoint ImageDecoderClient = 7002
+#include <LibCore/AnonymousBuffer.h>
+#include <LibGfx/ShareableBitmap.h>
+
+endpoint ImageDecoderClient
 {
-    Dummy() =|
 }

@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Ali Mohammad Pur <ali.mpfard@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -45,7 +25,7 @@ public:
     using HashType = HashT;
     using TagType = typename HashType::DigestType;
 
-    size_t digest_size() const { return m_inner_hasher.digest_size(); }
+    constexpr size_t digest_size() const { return m_inner_hasher.digest_size(); }
 
     template<typename KeyBufferType, typename... Args>
     HMAC(KeyBufferType key, Args... args)
@@ -102,9 +82,11 @@ private:
     void derive_key(const u8* key, size_t length)
     {
         auto block_size = m_inner_hasher.block_size();
-        u8 v_key[block_size];
-        __builtin_memset(v_key, 0, block_size);
-        auto key_buffer = Bytes { v_key, block_size };
+        // Note: The block size of all the current hash functions is 512 bits.
+        Vector<u8, 64> v_key;
+        v_key.resize(block_size);
+        __builtin_memset(v_key.data(), 0, block_size);
+        auto key_buffer = v_key.span();
         // m_key_data is zero'd, so copying the data in
         // the first few bytes leaves the rest zero, which
         // is exactly what we want (zero padding)

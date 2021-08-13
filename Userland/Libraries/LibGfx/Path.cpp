@@ -1,37 +1,117 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Function.h>
 #include <AK/HashTable.h>
+#include <AK/Math.h>
 #include <AK/QuickSort.h>
 #include <AK/StringBuilder.h>
 #include <LibGfx/Painter.h>
 #include <LibGfx/Path.h>
 
 namespace Gfx {
+
+void Path::elliptical_arc_to(const FloatPoint& point, const FloatPoint& radii, double x_axis_rotation, bool large_arc, bool sweep)
+{
+    auto next_point = point;
+
+    double rx = radii.x();
+    double ry = radii.y();
+
+    double x_axis_rotation_c = AK::cos(x_axis_rotation);
+    double x_axis_rotation_s = AK::sin(x_axis_rotation);
+
+    // Find the last point
+    FloatPoint last_point { 0, 0 };
+    if (!m_segments.is_empty())
+        last_point = m_segments.last().point();
+
+    // Step 1 of out-of-range radii correction
+    if (rx == 0.0 || ry == 0.0) {
+        append_segment<LineSegment>(next_point);
+        return;
+    }
+
+    // Step 2 of out-of-range radii correction
+    if (rx < 0)
+        rx *= -1.0;
+    if (ry < 0)
+        ry *= -1.0;
+
+    // POSSIBLY HACK: Handle the case where both points are the same.
+    auto same_endpoints = next_point == last_point;
+    if (same_endpoints) {
+        if (!large_arc) {
+            // Nothing is going to be drawn anyway.
+            return;
+        }
+
+        // Move the endpoint by a small amount to avoid division by zero.
+        next_point.translate_by(0.01f, 0.01f);
+    }
+
+    // Find (cx, cy), theta_1, theta_delta
+    // Step 1: Compute (x1', y1')
+    auto x_avg = static_cast<double>(last_point.x() - next_point.x()) / 2.0;
+    auto y_avg = static_cast<double>(last_point.y() - next_point.y()) / 2.0;
+    auto x1p = x_axis_rotation_c * x_avg + x_axis_rotation_s * y_avg;
+    auto y1p = -x_axis_rotation_s * x_avg + x_axis_rotation_c * y_avg;
+
+    // Step 2: Compute (cx', cy')
+    double x1p_sq = x1p * x1p;
+    double y1p_sq = y1p * y1p;
+    double rx_sq = rx * rx;
+    double ry_sq = ry * ry;
+
+    // Step 3 of out-of-range radii correction
+    double lambda = x1p_sq / rx_sq + y1p_sq / ry_sq;
+    double multiplier;
+
+    if (lambda > 1.0) {
+        auto lambda_sqrt = AK::sqrt(lambda);
+        rx *= lambda_sqrt;
+        ry *= lambda_sqrt;
+        multiplier = 0.0;
+    } else {
+        double numerator = rx_sq * ry_sq - rx_sq * y1p_sq - ry_sq * x1p_sq;
+        double denominator = rx_sq * y1p_sq + ry_sq * x1p_sq;
+        multiplier = AK::sqrt(numerator / denominator);
+    }
+
+    if (large_arc == sweep)
+        multiplier *= -1.0;
+
+    double cxp = multiplier * rx * y1p / ry;
+    double cyp = multiplier * -ry * x1p / rx;
+
+    // Step 3: Compute (cx, cy) from (cx', cy')
+    x_avg = (last_point.x() + next_point.x()) / 2.0f;
+    y_avg = (last_point.y() + next_point.y()) / 2.0f;
+    double cx = x_axis_rotation_c * cxp - x_axis_rotation_s * cyp + x_avg;
+    double cy = x_axis_rotation_s * cxp + x_axis_rotation_c * cyp + y_avg;
+
+    double theta_1 = AK::atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
+    double theta_2 = AK::atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
+
+    auto theta_delta = theta_2 - theta_1;
+
+    if (!sweep && theta_delta > 0.0) {
+        theta_delta -= 2 * M_PI;
+    } else if (sweep && theta_delta < 0) {
+        theta_delta += 2 * M_PI;
+    }
+
+    elliptical_arc_to(
+        next_point,
+        { cx, cy },
+        { rx, ry },
+        x_axis_rotation,
+        theta_1,
+        theta_delta);
+}
 
 void Path::close()
 {
@@ -117,7 +197,7 @@ String Path::to_string() const
             builder.append("Invalid");
             break;
         }
-        builder.appendf("(%s", segment.point().to_string().characters());
+        builder.appendff("({}", segment.point());
 
         switch (segment.type()) {
         case Segment::Type::QuadraticBezierCurveTo:
@@ -126,7 +206,7 @@ String Path::to_string() const
             break;
         case Segment::Type::EllipticalArcTo: {
             auto& arc = static_cast<const EllipticalArcSegment&>(segment);
-            builder.appendf(", %s, %s, %f, %f, %f",
+            builder.appendff(", {}, {}, {}, {}, {}",
                 arc.radii().to_string().characters(),
                 arc.center().to_string().characters(),
                 arc.x_axis_rotation(),

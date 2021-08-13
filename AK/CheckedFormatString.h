@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -99,6 +79,7 @@ consteval auto count_fmt_params(const char (&fmt)[N])
 
         size_t unclosed_braces { 0 };
         size_t extra_closed_braces { 0 };
+        size_t nesting_level { 0 };
 
         Array<size_t, 4> last_format_specifier_start { 0 };
         size_t total_used_last_format_specifier_start_count { 0 };
@@ -120,13 +101,17 @@ consteval auto count_fmt_params(const char (&fmt)[N])
             result.last_format_specifier_start[result.total_used_last_format_specifier_start_count++] = i + 1;
 
             ++result.unclosed_braces;
+            ++result.nesting_level;
             break;
         case '}':
-            if (i + 1 < N && fmt[i + 1] == '}') {
-                ++i;
-                continue;
+            if (result.nesting_level == 0) {
+                if (i + 1 < N && fmt[i + 1] == '}') {
+                    ++i;
+                    continue;
+                }
             }
             if (result.unclosed_braces) {
+                --result.nesting_level;
                 --result.unclosed_braces;
 
                 if (result.total_used_last_format_specifier_start_count == 0)
@@ -214,8 +199,7 @@ private:
                 return false;
             };
             auto references_all_arguments = AK::all_of(
-                all_parameters.begin(),
-                all_parameters.end(),
+                all_parameters,
                 [&](auto& entry) {
                     return contains(
                         check.used_arguments.begin(),
@@ -237,6 +221,6 @@ private:
 namespace AK {
 
 template<typename... Args>
-using CheckedFormatString = Format::Detail::CheckedFormatString<typename IdentityType<Args>::Type...>;
+using CheckedFormatString = Format::Detail::CheckedFormatString<IdentityType<Args>...>;
 
 }

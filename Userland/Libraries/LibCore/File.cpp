@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #ifdef __serenity__
@@ -46,27 +26,27 @@
 
 namespace Core {
 
-Result<NonnullRefPtr<File>, String> File::open(const String& filename, IODevice::OpenMode mode, mode_t permissions)
+Result<NonnullRefPtr<File>, String> File::open(String filename, OpenMode mode, mode_t permissions)
 {
-    auto file = File::construct(filename);
+    auto file = File::construct(move(filename));
     if (!file->open_impl(mode, permissions))
         return String(file->error_string());
     return file;
 }
 
-File::File(const StringView& filename, Object* parent)
+File::File(String filename, Object* parent)
     : IODevice(parent)
-    , m_filename(filename)
+    , m_filename(move(filename))
 {
 }
 
 File::~File()
 {
-    if (m_should_close_file_descriptor == ShouldCloseFileDescriptor::Yes && mode() != NotOpen)
+    if (m_should_close_file_descriptor == ShouldCloseFileDescriptor::Yes && mode() != OpenMode::NotOpen)
         close();
 }
 
-bool File::open(int fd, IODevice::OpenMode mode, ShouldCloseFileDescriptor should_close)
+bool File::open(int fd, OpenMode mode, ShouldCloseFileDescriptor should_close)
 {
     set_fd(fd);
     set_mode(mode);
@@ -74,31 +54,33 @@ bool File::open(int fd, IODevice::OpenMode mode, ShouldCloseFileDescriptor shoul
     return true;
 }
 
-bool File::open(IODevice::OpenMode mode)
+bool File::open(OpenMode mode)
 {
     return open_impl(mode, 0666);
 }
 
-bool File::open_impl(IODevice::OpenMode mode, mode_t permissions)
+bool File::open_impl(OpenMode mode, mode_t permissions)
 {
     VERIFY(!m_filename.is_null());
     int flags = 0;
-    if ((mode & IODevice::ReadWrite) == IODevice::ReadWrite) {
+    if (has_flag(mode, OpenMode::ReadOnly) && has_flag(mode, OpenMode::WriteOnly)) {
         flags |= O_RDWR | O_CREAT;
-    } else if (mode & IODevice::ReadOnly) {
+    } else if (has_flag(mode, OpenMode::ReadOnly)) {
         flags |= O_RDONLY;
-    } else if (mode & IODevice::WriteOnly) {
+    } else if (has_flag(mode, OpenMode::WriteOnly)) {
         flags |= O_WRONLY | O_CREAT;
-        bool should_truncate = !((mode & IODevice::Append) || (mode & IODevice::MustBeNew));
+        bool should_truncate = !(has_flag(mode, OpenMode::Append) || has_flag(mode, OpenMode::MustBeNew));
         if (should_truncate)
             flags |= O_TRUNC;
     }
-    if (mode & IODevice::Append)
+    if (has_flag(mode, OpenMode::Append))
         flags |= O_APPEND;
-    if (mode & IODevice::Truncate)
+    if (has_flag(mode, OpenMode::Truncate))
         flags |= O_TRUNC;
-    if (mode & IODevice::MustBeNew)
+    if (has_flag(mode, OpenMode::MustBeNew))
         flags |= O_EXCL;
+    if (!has_flag(mode, OpenMode::KeepOnExec))
+        flags |= O_CLOEXEC;
     int fd = ::open(m_filename.characters(), flags, permissions);
     if (fd < 0) {
         set_error(errno);
@@ -110,6 +92,28 @@ bool File::open_impl(IODevice::OpenMode mode, mode_t permissions)
     return true;
 }
 
+int File::leak_fd()
+{
+    m_should_close_file_descriptor = ShouldCloseFileDescriptor::No;
+    return fd();
+}
+
+bool File::is_device() const
+{
+    struct stat stat;
+    if (fstat(fd(), &stat) < 0)
+        return false;
+    return S_ISBLK(stat.st_mode) || S_ISCHR(stat.st_mode);
+}
+
+bool File::is_device(String const& filename)
+{
+    struct stat st;
+    if (stat(filename.characters(), &st) < 0)
+        return false;
+    return S_ISBLK(st.st_mode) || S_ISCHR(st.st_mode);
+}
+
 bool File::is_directory() const
 {
     struct stat stat;
@@ -118,7 +122,7 @@ bool File::is_directory() const
     return S_ISDIR(stat.st_mode);
 }
 
-bool File::is_directory(const String& filename)
+bool File::is_directory(String const& filename)
 {
     struct stat st;
     if (stat(filename.characters(), &st) < 0)
@@ -126,13 +130,29 @@ bool File::is_directory(const String& filename)
     return S_ISDIR(st.st_mode);
 }
 
-bool File::exists(const String& filename)
+bool File::is_link() const
+{
+    struct stat stat;
+    if (fstat(fd(), &stat) < 0)
+        return false;
+    return S_ISLNK(stat.st_mode);
+}
+
+bool File::is_link(String const& filename)
+{
+    struct stat st;
+    if (lstat(filename.characters(), &st) < 0)
+        return false;
+    return S_ISLNK(st.st_mode);
+}
+
+bool File::exists(String const& filename)
 {
     struct stat st;
     return stat(filename.characters(), &st) == 0;
 }
 
-String File::real_path_for(const String& filename)
+String File::real_path_for(String const& filename)
 {
     if (filename.is_null())
         return {};
@@ -142,7 +162,7 @@ String File::real_path_for(const String& filename)
     return real_path;
 }
 
-bool File::ensure_parent_directories(const String& path)
+bool File::ensure_parent_directories(String const& path)
 {
     VERIFY(path.starts_with("/"));
 
@@ -152,7 +172,7 @@ bool File::ensure_parent_directories(const String& path)
     char* parent_buffer = strdup(path.characters());
     ScopeGuard free_buffer = [parent_buffer] { free(parent_buffer); };
 
-    const char* parent = dirname(parent_buffer);
+    char const* parent = dirname(parent_buffer);
 
     int rc = mkdir(parent, 0755);
     saved_errno = errno;
@@ -173,14 +193,42 @@ bool File::ensure_parent_directories(const String& path)
     return rc == 0;
 }
 
+String File::current_working_directory()
+{
+    char* cwd = getcwd(nullptr, 0);
+    if (!cwd) {
+        perror("getcwd");
+        return {};
+    }
+
+    auto cwd_as_string = String(cwd);
+    free(cwd);
+
+    return cwd_as_string;
+}
+
+String File::absolute_path(String const& path)
+{
+    if (File::exists(path))
+        return File::real_path_for(path);
+
+    if (path.starts_with("/"sv))
+        return LexicalPath::canonicalized_path(path);
+
+    auto working_directory = File::current_working_directory();
+    auto full_path = LexicalPath::join(working_directory, path);
+
+    return LexicalPath::canonicalized_path(full_path.string());
+}
+
 #ifdef __serenity__
 
-String File::read_link(const StringView& link_path)
+String File::read_link(String const& link_path)
 {
     // First, try using a 64-byte buffer, that ought to be enough for anybody.
     char small_buffer[64];
 
-    int rc = serenity_readlink(link_path.characters_without_null_termination(), link_path.length(), small_buffer, sizeof(small_buffer));
+    int rc = serenity_readlink(link_path.characters(), link_path.length(), small_buffer, sizeof(small_buffer));
     if (rc < 0)
         return {};
 
@@ -194,7 +242,7 @@ String File::read_link(const StringView& link_path)
     char* large_buffer_ptr;
     auto large_buffer = StringImpl::create_uninitialized(size, large_buffer_ptr);
 
-    rc = serenity_readlink(link_path.characters_without_null_termination(), link_path.length(), large_buffer_ptr, size);
+    rc = serenity_readlink(link_path.characters(), link_path.length(), large_buffer_ptr, size);
     if (rc < 0)
         return {};
 
@@ -216,17 +264,15 @@ String File::read_link(const StringView& link_path)
 
 // This is a sad version for other systems. It has to always make a copy of the
 // link path, and to always make two syscalls to get the right size first.
-String File::read_link(const StringView& link_path)
+String File::read_link(String const& link_path)
 {
-    String link_path_str = link_path;
-    struct stat statbuf;
-    int rc = lstat(link_path_str.characters(), &statbuf);
+    struct stat statbuf = {};
+    int rc = lstat(link_path.characters(), &statbuf);
     if (rc < 0)
         return {};
     char* buffer_ptr;
     auto buffer = StringImpl::create_uninitialized(statbuf.st_size, buffer_ptr);
-    rc = readlink(link_path_str.characters(), buffer_ptr, statbuf.st_size);
-    if (rc < 0)
+    if (readlink(link_path.characters(), buffer_ptr, statbuf.st_size) < 0)
         return {};
     // (See above.)
     if (rc == statbuf.st_size)
@@ -244,7 +290,7 @@ NonnullRefPtr<File> File::standard_input()
 {
     if (!stdin_file) {
         stdin_file = File::construct();
-        stdin_file->open(STDIN_FILENO, IODevice::ReadOnly, ShouldCloseFileDescriptor::No);
+        stdin_file->open(STDIN_FILENO, OpenMode::ReadOnly, ShouldCloseFileDescriptor::No);
     }
     return *stdin_file;
 }
@@ -253,7 +299,7 @@ NonnullRefPtr<File> File::standard_output()
 {
     if (!stdout_file) {
         stdout_file = File::construct();
-        stdout_file->open(STDOUT_FILENO, IODevice::WriteOnly, ShouldCloseFileDescriptor::No);
+        stdout_file->open(STDOUT_FILENO, OpenMode::WriteOnly, ShouldCloseFileDescriptor::No);
     }
     return *stdout_file;
 }
@@ -262,12 +308,12 @@ NonnullRefPtr<File> File::standard_error()
 {
     if (!stderr_file) {
         stderr_file = File::construct();
-        stderr_file->open(STDERR_FILENO, IODevice::WriteOnly, ShouldCloseFileDescriptor::No);
+        stderr_file->open(STDERR_FILENO, OpenMode::WriteOnly, ShouldCloseFileDescriptor::No);
     }
     return *stderr_file;
 }
 
-static String get_duplicate_name(const String& path, int duplicate_count)
+static String get_duplicate_name(String const& path, int duplicate_count)
 {
     if (duplicate_count == 0) {
         return path;
@@ -275,23 +321,24 @@ static String get_duplicate_name(const String& path, int duplicate_count)
     LexicalPath lexical_path(path);
     StringBuilder duplicated_name;
     duplicated_name.append('/');
-    for (size_t i = 0; i < lexical_path.parts().size() - 1; ++i) {
-        duplicated_name.appendff("{}/", lexical_path.parts()[i]);
+    auto& parts = lexical_path.parts_view();
+    for (size_t i = 0; i < parts.size() - 1; ++i) {
+        duplicated_name.appendff("{}/", parts[i]);
     }
     auto prev_duplicate_tag = String::formatted("({})", duplicate_count);
     auto title = lexical_path.title();
     if (title.ends_with(prev_duplicate_tag)) {
         // remove the previous duplicate tag "(n)" so we can add a new tag.
-        title = title.substring(0, title.length() - prev_duplicate_tag.length());
+        title = title.substring_view(0, title.length() - prev_duplicate_tag.length());
     }
-    duplicated_name.appendff("{} ({})", lexical_path.title(), duplicate_count);
+    duplicated_name.appendff("{} ({})", title, duplicate_count);
     if (!lexical_path.extension().is_empty()) {
         duplicated_name.appendff(".{}", lexical_path.extension());
     }
     return duplicated_name.build();
 }
 
-Result<void, File::CopyError> File::copy_file_or_directory(const String& dst_path, const String& src_path, RecursionMode recursion_mode, LinkMode link_mode, AddDuplicateFileMarker add_duplicate_file_marker)
+Result<void, File::CopyError> File::copy_file_or_directory(String const& dst_path, String const& src_path, RecursionMode recursion_mode, LinkMode link_mode, AddDuplicateFileMarker add_duplicate_file_marker)
 {
     if (add_duplicate_file_marker == AddDuplicateFileMarker::Yes) {
         int duplicate_count = 0;
@@ -303,7 +350,7 @@ Result<void, File::CopyError> File::copy_file_or_directory(const String& dst_pat
         }
     }
 
-    auto source_or_error = File::open(src_path, IODevice::ReadOnly);
+    auto source_or_error = File::open(src_path, OpenMode::ReadOnly);
     if (source_or_error.is_error())
         return CopyError { OSError(errno), false };
 
@@ -329,15 +376,14 @@ Result<void, File::CopyError> File::copy_file_or_directory(const String& dst_pat
     return copy_file(dst_path, src_stat, source);
 }
 
-Result<void, File::CopyError> File::copy_file(const String& dst_path, const struct stat& src_stat, File& source)
+Result<void, File::CopyError> File::copy_file(String const& dst_path, struct stat const& src_stat, File& source)
 {
-
     int dst_fd = creat(dst_path.characters(), 0666);
     if (dst_fd < 0) {
         if (errno != EISDIR)
             return CopyError { OSError(errno), false };
 
-        auto dst_dir_path = String::formatted("{}/{}", dst_path, LexicalPath(source.filename()).basename());
+        auto dst_dir_path = String::formatted("{}/{}", dst_path, LexicalPath::basename(source.filename()));
         dst_fd = creat(dst_dir_path.characters(), 0666);
         if (dst_fd < 0)
             return CopyError { OSError(errno), false };
@@ -380,7 +426,7 @@ Result<void, File::CopyError> File::copy_file(const String& dst_path, const stru
     return {};
 }
 
-Result<void, File::CopyError> File::copy_directory(const String& dst_path, const String& src_path, const struct stat& src_stat, LinkMode link)
+Result<void, File::CopyError> File::copy_directory(String const& dst_path, String const& src_path, struct stat const& src_stat, LinkMode link)
 {
     if (mkdir(dst_path.characters(), 0755) < 0)
         return CopyError { OSError(errno), false };
@@ -415,7 +461,7 @@ Result<void, File::CopyError> File::copy_directory(const String& dst_path, const
     return {};
 }
 
-Result<void, OSError> File::link_file(const String& dst_path, const String& src_path)
+Result<void, OSError> File::link_file(String const& dst_path, String const& src_path)
 {
     int duplicate_count = 0;
     while (access(get_duplicate_name(dst_path, duplicate_count).characters(), F_OK) == 0) {
@@ -432,7 +478,7 @@ Result<void, OSError> File::link_file(const String& dst_path, const String& src_
     return {};
 }
 
-Result<void, File::RemoveError> File::remove(const String& path, RecursionMode mode, bool force)
+Result<void, File::RemoveError> File::remove(String const& path, RecursionMode mode, bool force)
 {
     struct stat path_stat;
     if (lstat(path.characters(), &path_stat) < 0) {

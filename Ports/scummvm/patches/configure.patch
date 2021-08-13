@@ -1,0 +1,20 @@
+--- scummvm-2.2.0/configure	2020-09-13 23:05:37.000000000 +0200
++++ scummvm-2.2.0-patched/configure	2021-06-07 14:15:33.369406722 +0200
+@@ -3917,7 +3917,7 @@
+ 	amigaos* | cygwin* | dreamcast | ds | gamecube | mingw* | morphos | n64 | ps3 | psp2 | psp | riscos | wii)
+ 		_posix=no
+ 		;;
+-	3ds | android | androidsdl | beos* | bsd* | darwin* | freebsd* | gnu* | gph-linux | haiku* | hpux* | iphone | ios7 | irix*| k*bsd*-gnu* | linux* | maemo | mint* | netbsd* | openbsd* | solaris* | sunos* | switch | uclinux*)
++	3ds | android | androidsdl | beos* | bsd* | darwin* | freebsd* | gnu* | gph-linux | haiku* | hpux* | iphone | ios7 | irix*| k*bsd*-gnu* | linux* | maemo | mint* | netbsd* | openbsd* | serenity* | solaris* | sunos* | switch | uclinux*)
+ 		_posix=yes
+ 		;;
+ 	os2-emx*)
+@@ -5073,6 +5073,8 @@
+ # Check for FreeType2 to be present
+ #
+ find_freetype() {
++    _freetype_found="true"
++    return
+         # Wrapper function which tries to find freetype
+         # either by calling freetype-config or by using
+         # pkg-config.

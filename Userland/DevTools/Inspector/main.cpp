@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "RemoteObject.h"
@@ -29,12 +9,12 @@
 #include "RemoteObjectPropertyModel.h"
 #include "RemoteProcess.h"
 #include <AK/URL.h>
-#include <LibCore/ProcessStatisticsReader.h>
 #include <LibDesktop/Launcher.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
+#include <LibGUI/Clipboard.h>
 #include <LibGUI/Menu.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/ModelEditingDelegate.h>
 #include <LibGUI/ProcessChooser.h>
@@ -42,6 +22,7 @@
 #include <LibGUI/TreeView.h>
 #include <LibGUI/Window.h>
 #include <stdio.h>
+#include <unistd.h>
 
 using namespace Inspector;
 
@@ -53,7 +34,7 @@ using namespace Inspector;
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio recvfd sendfd rpath accept unix cpath fattr", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd rpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -85,11 +66,13 @@ int main(int argc, char** argv)
 
     unveil(nullptr, nullptr);
 
+    bool gui_mode = argc != 2;
     pid_t pid;
 
     auto app = GUI::Application::construct(argc, argv);
     auto app_icon = GUI::Icon::default_icon("app-inspector");
-    if (argc != 2) {
+    if (gui_mode) {
+    choose_pid:
         auto process_chooser = GUI::ProcessChooser::construct("Inspector", "Inspect", app_icon.bitmap_for_size(16));
         if (process_chooser->exec() == GUI::Dialog::ExecCancel)
             return 0;
@@ -103,6 +86,21 @@ int main(int argc, char** argv)
 
     auto window = GUI::Window::construct();
 
+    if (pid == getpid()) {
+        GUI::MessageBox::show(window, "Cannot inspect Inspector itself!", "Error", GUI::MessageBox::Type::Error);
+        return 1;
+    }
+
+    RemoteProcess remote_process(pid);
+    if (!remote_process.is_inspectable()) {
+        GUI::MessageBox::show(window, String::formatted("Process pid={} is not inspectable", remote_process.pid()), "Error", GUI::MessageBox::Type::Error);
+        if (gui_mode) {
+            goto choose_pid;
+        } else {
+            return 1;
+        }
+    }
+
     if (!Desktop::Launcher::add_allowed_handler_with_only_specific_urls(
             "/bin/Help",
             { URL::create_with_file_protocol("/usr/share/man/man1/Inspector.md") })
@@ -111,28 +109,14 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    auto all_processes = Core::ProcessStatisticsReader::get_all();
-    for (auto& it : all_processes.value()) {
-        if (it.value.pid != pid)
-            continue;
-        if (it.value.pledge.is_empty())
-            break;
-        if (!it.value.pledge.contains("accept")) {
-            GUI::MessageBox::show(window, String::formatted("{} ({}) has not pledged accept!", it.value.name, pid), "Error", GUI::MessageBox::Type::Error);
-            return 1;
-        }
-        break;
-    }
-
     window->set_title("Inspector");
     window->resize(685, 500);
     window->set_icon(app_icon.bitmap_for_size(16));
 
-    auto menubar = GUI::MenuBar::construct();
-    auto& app_menu = menubar->add_menu("Inspector");
-    app_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
 
-    auto& help_menu = menubar->add_menu("Help");
+    auto& help_menu = window->add_menu("&Help");
     help_menu.add_action(GUI::CommonActions::make_help_action([](auto&) {
         Desktop::Launcher::open(URL::create_with_file_protocol("/usr/share/man/man1/Inspector.md"), "/bin/Help");
     }));
@@ -143,8 +127,6 @@ int main(int argc, char** argv)
     widget.set_layout<GUI::VerticalBoxLayout>();
 
     auto& splitter = widget.add<GUI::HorizontalSplitter>();
-
-    RemoteProcess remote_process(pid);
 
     remote_process.on_update = [&] {
         if (!remote_process.process_name().is_null())
@@ -157,6 +139,7 @@ int main(int argc, char** argv)
     tree_view.set_fixed_width(286);
 
     auto& properties_tree_view = splitter.add<GUI::TreeView>();
+    properties_tree_view.set_should_fill_selected_rows(true);
     properties_tree_view.set_editable(true);
     properties_tree_view.aid_create_editing_delegate = [](auto&) {
         return make<GUI::StringModelEditingDelegate>();
@@ -168,11 +151,29 @@ int main(int argc, char** argv)
         remote_process.set_inspected_object(remote_object->address);
     };
 
-    app->set_menubar(move(menubar));
+    auto properties_tree_view_context_menu = GUI::Menu::construct("Properties Tree View");
+
+    auto copy_bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/edit-copy.png");
+    auto copy_property_name_action = GUI::Action::create("Copy Property Name", copy_bitmap, [&](auto&) {
+        GUI::Clipboard::the().set_plain_text(properties_tree_view.selection().first().data().to_string());
+    });
+    auto copy_property_value_action = GUI::Action::create("Copy Property Value", copy_bitmap, [&](auto&) {
+        GUI::Clipboard::the().set_plain_text(properties_tree_view.selection().first().sibling_at_column(1).data().to_string());
+    });
+
+    properties_tree_view_context_menu->add_action(copy_property_name_action);
+    properties_tree_view_context_menu->add_action(copy_property_value_action);
+
+    properties_tree_view.on_context_menu_request = [&](const GUI::ModelIndex& index, const GUI::ContextMenuEvent& event) {
+        if (index.is_valid()) {
+            properties_tree_view_context_menu->popup(event.screen_position());
+        }
+    };
+
     window->show();
     remote_process.update();
 
-    if (pledge("stdio recvfd sendfd rpath accept unix", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd rpath", nullptr) < 0) {
         perror("pledge");
         return 1;
     }

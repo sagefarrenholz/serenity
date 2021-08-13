@@ -1,3 +1,8 @@
+serenity_component(
+    Spreadsheet
+    TARGETS Spreadsheet
+)
+
 compile_gml(CondFormatting.gml CondFormattingGML.h cond_fmt_gml)
 compile_gml(CondView.gml CondFormattingViewGML.h cond_fmt_view_gml)
 compile_gml(csv_import.gml CSVImportGML.h csv_import_gml)
@@ -37,3 +42,8 @@ set(GENERATED_SOURCES
 
 serenity_app(Spreadsheet ICON app-spreadsheet)
 target_link_libraries(Spreadsheet LibGUI LibJS LibWeb)
+
+serenity_test(Writers/Test/TestXSVWriter.cpp Spreadsheet)
+
+serenity_test(Readers/Test/TestXSV.cpp Spreadsheet)
+target_sources(TestXSV PRIVATE Readers/XSV.cpp)

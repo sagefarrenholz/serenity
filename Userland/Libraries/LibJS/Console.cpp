@@ -1,28 +1,8 @@
 /*
  * Copyright (c) 2020, Emanuele Torre <torreemanuele6@gmail.com>
- * Copyright (c) 2020, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Console.h>
@@ -118,6 +98,13 @@ Value Console::count_reset()
     return js_undefined();
 }
 
+Value Console::assert_()
+{
+    if (m_client)
+        return m_client->assert_();
+    return js_undefined();
+}
+
 unsigned Console::counter_increment(String label)
 {
     auto value = m_counters.get(label);
@@ -148,10 +135,10 @@ VM& ConsoleClient::vm()
 Vector<String> ConsoleClient::get_trace() const
 {
     Vector<String> trace;
-    auto& call_stack = m_console.global_object().vm().call_stack();
-    // -2 to skip the console.trace() call frame
-    for (ssize_t i = call_stack.size() - 2; i >= 0; --i)
-        trace.append(call_stack[i]->function_name);
+    auto& execution_context_stack = m_console.global_object().vm().execution_context_stack();
+    // NOTE: -2 to skip the console.trace() execution context
+    for (ssize_t i = execution_context_stack.size() - 2; i >= 0; --i)
+        trace.append(execution_context_stack[i]->function_name);
     return trace;
 }
 

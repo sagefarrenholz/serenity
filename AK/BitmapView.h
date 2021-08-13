@@ -1,39 +1,21 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/Noncopyable.h>
+#include <AK/Array.h>
 #include <AK/Optional.h>
 #include <AK/Platform.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Types.h>
-#include <AK/kmalloc.h>
 
 namespace AK {
+
+static constexpr Array bitmask_first_byte = { 0xFF, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80 };
+static constexpr Array bitmask_last_byte = { 0x00, 0x1, 0x3, 0x7, 0xF, 0x1F, 0x3F, 0x7F };
 
 class BitmapView {
 public:
@@ -71,9 +53,6 @@ public:
         if (len == 0)
             return 0;
 
-        static const u8 bitmask_first_byte[8] = { 0xFF, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80 };
-        static const u8 bitmask_last_byte[8] = { 0x0, 0x1, 0x3, 0x7, 0xF, 0x1F, 0x3F, 0x7F };
-
         size_t count;
         const u8* first = &m_data[start / 8];
         const u8* last = &m_data[(start + len) / 8];
@@ -84,9 +63,12 @@ public:
             count = __builtin_popcount(byte);
         } else {
             count = __builtin_popcount(byte);
-            byte = *last;
-            byte &= bitmask_last_byte[(start + len) % 8];
-            count += __builtin_popcount(byte);
+            // Don't access *last if it's out of bounds
+            if (last < &m_data[size_in_bytes()]) {
+                byte = *last;
+                byte &= bitmask_last_byte[(start + len) % 8];
+                count += __builtin_popcount(byte);
+            }
             if (++first < last) {
                 const u32* ptr32 = (const u32*)(((FlatPtr)first + sizeof(u32) - 1) & ~(sizeof(u32) - 1));
                 if ((const u8*)ptr32 > last)
@@ -112,60 +94,7 @@ public:
 
     bool is_null() const { return !m_data; }
 
-    u8* data() { return m_data; }
     const u8* data() const { return m_data; }
-
-    template<bool VALUE>
-    void set_range(size_t start, size_t len)
-    {
-        VERIFY(start < m_size);
-        VERIFY(start + len <= m_size);
-        if (len == 0)
-            return;
-
-        static const u8 bitmask_first_byte[8] = { 0xFF, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80 };
-        static const u8 bitmask_last_byte[8] = { 0x0, 0x1, 0x3, 0x7, 0xF, 0x1F, 0x3F, 0x7F };
-
-        u8* first = &m_data[start / 8];
-        u8* last = &m_data[(start + len) / 8];
-        u8 byte_mask = bitmask_first_byte[start % 8];
-        if (first == last) {
-            byte_mask &= bitmask_last_byte[(start + len) % 8];
-            if constexpr (VALUE)
-                *first |= byte_mask;
-            else
-                *first &= ~byte_mask;
-        } else {
-            if constexpr (VALUE)
-                *first |= byte_mask;
-            else
-                *first &= ~byte_mask;
-            byte_mask = bitmask_last_byte[(start + len) % 8];
-            if constexpr (VALUE)
-                *last |= byte_mask;
-            else
-                *last &= ~byte_mask;
-            if (++first < last) {
-                if constexpr (VALUE)
-                    __builtin_memset(first, 0xFF, last - first);
-                else
-                    __builtin_memset(first, 0x0, last - first);
-            }
-        }
-    }
-
-    void set_range(size_t start, size_t len, bool value)
-    {
-        if (value)
-            set_range<true>(start, len);
-        else
-            set_range<false>(start, len);
-    }
-
-    void fill(bool value)
-    {
-        __builtin_memset(m_data, value ? 0xff : 0x00, size_in_bytes());
-    }
 
     template<bool VALUE>
     Optional<size_t> find_one_anywhere(size_t hint = 0) const

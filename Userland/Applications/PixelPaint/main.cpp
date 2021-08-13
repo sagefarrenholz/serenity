@@ -1,32 +1,14 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "CreateNewGuideDialog.h"
 #include "CreateNewImageDialog.h"
 #include "CreateNewLayerDialog.h"
 #include "FilterParams.h"
+#include "Guide.h"
 #include "Image.h"
 #include "ImageEditor.h"
 #include "Layer.h"
@@ -36,384 +18,761 @@
 #include "Tool.h"
 #include "ToolPropertiesWidget.h"
 #include "ToolboxWidget.h"
+#include <Applications/PixelPaint/PixelPaintWindowGML.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
+#include <LibFileSystemAccessClient/Client.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
-#include <LibGUI/BoxLayout.h>
 #include <LibGUI/Clipboard.h>
-#include <LibGUI/FilePicker.h>
 #include <LibGUI/Icon.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/MessageBox.h>
+#include <LibGUI/Statusbar.h>
+#include <LibGUI/TabWidget.h>
+#include <LibGUI/Toolbar.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/Matrix4x4.h>
 #include <stdio.h>
 #include <unistd.h>
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio thread recvfd sendfd accept rpath unix wpath cpath fattr", nullptr) < 0) {
+    if (pledge("stdio thread recvfd sendfd rpath unix wpath cpath", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     auto app = GUI::Application::construct(argc, argv);
 
-    if (pledge("stdio thread recvfd sendfd accept rpath wpath cpath", nullptr) < 0) {
-        perror("pledge");
+    const char* image_file = nullptr;
+    Core::ArgsParser args_parser;
+    args_parser.add_positional_argument(image_file, "Image file to open", "path", Core::ArgsParser::Required::No);
+    args_parser.parse(argc, argv);
+
+    String file_to_edit_full_path;
+
+    if (image_file) {
+        file_to_edit_full_path = Core::File::absolute_path(image_file);
+        VERIFY(!file_to_edit_full_path.is_empty());
+        if (Core::File::exists(file_to_edit_full_path)) {
+            dbgln("unveil for: {}", file_to_edit_full_path);
+            if (unveil(file_to_edit_full_path.characters(), "r") < 0) {
+                perror("unveil");
+                return 1;
+            }
+        }
+    }
+
+    if (unveil("/res", "r") < 0) {
+        perror("unveil");
         return 1;
     }
 
-    const char* image_file = nullptr;
-    Core::ArgsParser args_parser;
-    args_parser.add_positional_argument(image_file, "PixelPaint image file (*.pp) to open", "path", Core::ArgsParser::Required::No);
-    args_parser.parse(argc, argv);
+    if (unveil("/tmp/portal/clipboard", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/filesystemaccess", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/image", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil(nullptr, nullptr) < 0) {
+        perror("unveil");
+        return 1;
+    }
 
     auto app_icon = GUI::Icon::default_icon("app-pixel-paint");
 
     auto window = GUI::Window::construct();
-    window->set_title("PixelPaint");
-    window->resize(950, 570);
+    window->set_title("Pixel Paint");
+    window->resize(800, 510);
     window->set_icon(app_icon.bitmap_for_size(16));
 
-    auto& horizontal_container = window->set_main_widget<GUI::Widget>();
-    horizontal_container.set_layout<GUI::HorizontalBoxLayout>();
-    horizontal_container.layout()->set_spacing(0);
+    auto& main_widget = window->set_main_widget<GUI::Widget>();
+    main_widget.load_from_gml(pixel_paint_window_gml);
 
-    auto& toolbox = horizontal_container.add<PixelPaint::ToolboxWidget>();
+    auto& toolbox = *main_widget.find_descendant_of_type_named<PixelPaint::ToolboxWidget>("toolbox");
+    auto& tab_widget = *main_widget.find_descendant_of_type_named<GUI::TabWidget>("tab_widget");
+    tab_widget.set_container_margins({ 4, 4, 5, 5 });
+    tab_widget.set_close_button_enabled(true);
 
-    auto& vertical_container = horizontal_container.add<GUI::Widget>();
-    vertical_container.set_layout<GUI::VerticalBoxLayout>();
-    vertical_container.layout()->set_spacing(0);
+    auto& palette_widget = *main_widget.find_descendant_of_type_named<PixelPaint::PaletteWidget>("palette_widget");
 
-    auto& image_editor = vertical_container.add<PixelPaint::ImageEditor>();
-    image_editor.set_focus(true);
-
-    vertical_container.add<PixelPaint::PaletteWidget>(image_editor);
-
-    auto& right_panel = horizontal_container.add<GUI::Widget>();
-    right_panel.set_fill_with_background_color(true);
-    right_panel.set_fixed_width(230);
-    right_panel.set_layout<GUI::VerticalBoxLayout>();
-
-    auto& layer_list_widget = right_panel.add<PixelPaint::LayerListWidget>();
-    layer_list_widget.on_layer_select = [&](auto* layer) {
-        image_editor.set_active_layer(layer);
+    auto current_image_editor = [&]() -> PixelPaint::ImageEditor* {
+        if (!tab_widget.active_widget())
+            return nullptr;
+        return verify_cast<PixelPaint::ImageEditor>(tab_widget.active_widget());
     };
 
-    auto& layer_properties_widget = right_panel.add<PixelPaint::LayerPropertiesWidget>();
+    Function<PixelPaint::ImageEditor&(NonnullRefPtr<PixelPaint::Image>)> create_new_editor;
 
-    auto& tool_properties_widget = right_panel.add<PixelPaint::ToolPropertiesWidget>();
+    auto& layer_list_widget = *main_widget.find_descendant_of_type_named<PixelPaint::LayerListWidget>("layer_list_widget");
+    layer_list_widget.on_layer_select = [&](auto* layer) {
+        if (auto* editor = current_image_editor())
+            editor->set_active_layer(layer);
+    };
+
+    auto& layer_properties_widget = *main_widget.find_descendant_of_type_named<PixelPaint::LayerPropertiesWidget>("layer_properties_widget");
+
+    auto& tool_properties_widget = *main_widget.find_descendant_of_type_named<PixelPaint::ToolPropertiesWidget>("tool_properties_widget");
 
     toolbox.on_tool_selection = [&](auto* tool) {
-        image_editor.set_active_tool(tool);
+        if (auto* editor = current_image_editor())
+            editor->set_active_tool(tool);
         tool_properties_widget.set_active_tool(tool);
     };
 
-    window->show();
+    auto new_image_action = GUI::Action::create(
+        "&New Image...", { Mod_Ctrl, Key_N }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/new.png"), [&](auto&) {
+            auto dialog = PixelPaint::CreateNewImageDialog::construct(window);
+            if (dialog->exec() == GUI::Dialog::ExecOK) {
+                auto image = PixelPaint::Image::try_create_with_size(dialog->image_size());
+                auto bg_layer = PixelPaint::Layer::try_create_with_size(*image, image->size(), "Background");
+                VERIFY(bg_layer);
+                image->add_layer(*bg_layer);
+                bg_layer->bitmap().fill(Color::White);
+                auto image_title = dialog->image_name().trim_whitespace();
+                image->set_title(image_title.is_empty() ? "Untitled" : image_title);
 
-    auto menubar = GUI::MenuBar::construct();
-    auto& app_menu = menubar->add_menu("PixelPaint");
+                create_new_editor(*image);
+                layer_list_widget.set_image(image);
+                layer_list_widget.set_selected_layer(bg_layer);
+            }
+        },
+        window);
 
     auto open_image_file = [&](auto& path) {
-        auto image = PixelPaint::Image::create_from_file(path);
-        if (!image) {
-            GUI::MessageBox::show_error(window, String::formatted("Invalid image file: {}", path));
+        auto image_or_error = PixelPaint::Image::try_create_from_path(path);
+        if (image_or_error.is_error()) {
+            GUI::MessageBox::show_error(window, String::formatted("Unable to open file: {}", path));
             return;
         }
-        image_editor.set_image(image);
-        layer_list_widget.set_image(image);
+        auto& image = *image_or_error.value();
+        create_new_editor(image);
+        layer_list_widget.set_image(&image);
     };
 
-    app_menu.add_action(
-        GUI::Action::create(
-            "New", [&](auto&) {
-                auto dialog = PixelPaint::CreateNewImageDialog::construct(window);
-                if (dialog->exec() == GUI::Dialog::ExecOK) {
-                    auto image = PixelPaint::Image::create_with_size(dialog->image_size());
-                    auto bg_layer = PixelPaint::Layer::create_with_size(*image, image->size(), "Background");
-                    image->add_layer(*bg_layer);
-                    bg_layer->bitmap().fill(Color::White);
+    auto open_image_fd = [&](int fd, auto& path) {
+        auto image_or_error = PixelPaint::Image::try_create_from_fd_and_close(fd, path);
+        if (image_or_error.is_error()) {
+            GUI::MessageBox::show_error(window, String::formatted("Unable to open file: {}, {}", path, image_or_error.error()));
+            return;
+        }
+        auto& image = *image_or_error.value();
+        create_new_editor(image);
+        layer_list_widget.set_image(&image);
+    };
 
-                    image_editor.set_image(image);
-                    layer_list_widget.set_image(image);
-                    image_editor.set_active_layer(bg_layer);
-                }
-            },
-            window));
-    app_menu.add_action(GUI::CommonActions::make_open_action([&](auto&) {
-        Optional<String> open_path = GUI::FilePicker::get_open_filepath(window);
-
-        if (!open_path.has_value())
+    auto open_image_action = GUI::CommonActions::make_open_action([&](auto&) {
+        auto result = FileSystemAccessClient::Client::the().open_file(window->window_id());
+        if (result.error != 0)
             return;
 
-        open_image_file(open_path.value());
-    }));
-    app_menu.add_action(GUI::CommonActions::make_save_as_action([&](auto&) {
-        if (!image_editor.image())
+        open_image_fd(*result.fd, *result.chosen_file);
+    });
+
+    auto save_image_as_action = GUI::CommonActions::make_save_as_action([&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
             return;
-
-        Optional<String> save_path = GUI::FilePicker::get_save_filepath(window, "untitled", "pp");
-
-        if (!save_path.has_value())
+        auto save_result = FileSystemAccessClient::Client::the().save_file(window->window_id(), "untitled", "pp");
+        if (save_result.error != 0)
             return;
+        auto result = editor->image().write_to_fd_and_close(*save_result.fd);
+        if (result.is_error()) {
+            GUI::MessageBox::show_error(window, String::formatted("Could not save {}: {}", *save_result.chosen_file, result.error()));
+            return;
+        }
+        editor->image().set_path(*save_result.chosen_file);
+    });
 
-        image_editor.image()->save(save_path.value());
-    }));
-    auto& export_submenu = app_menu.add_submenu("Export");
+    auto& file_menu = window->add_menu("&File");
+
+    file_menu.add_action(new_image_action);
+    file_menu.add_action(open_image_action);
+    file_menu.add_action(save_image_as_action);
+    auto& export_submenu = file_menu.add_submenu("&Export");
     export_submenu.add_action(
         GUI::Action::create(
-            "As BMP", [&](auto&) {
-                if (!image_editor.image())
+            "As &BMP", [&](auto&) {
+                auto* editor = current_image_editor();
+                if (!editor)
                     return;
-
-                Optional<String> save_path = GUI::FilePicker::get_save_filepath(window, "untitled", "bmp");
-
-                if (!save_path.has_value())
+                auto save_result = FileSystemAccessClient::Client::the().save_file(window->window_id(), "untitled", "bmp");
+                if (save_result.error != 0)
                     return;
-
-                image_editor.image()->export_bmp(save_path.value());
+                auto preserve_alpha_channel = GUI::MessageBox::show(window, "Do you wish to preserve transparency?", "Preserve transparency?", GUI::MessageBox::Type::Question, GUI::MessageBox::InputType::YesNo);
+                auto result = editor->image().export_bmp_to_fd_and_close(*save_result.fd, preserve_alpha_channel == GUI::MessageBox::ExecYes);
+                if (result.is_error())
+                    GUI::MessageBox::show_error(window, String::formatted("Export to BMP failed: {}", result.error()));
             },
             window));
     export_submenu.add_action(
         GUI::Action::create(
-            "As PNG", [&](auto&) {
-                if (!image_editor.image())
+            "As &PNG", [&](auto&) {
+                auto* editor = current_image_editor();
+                auto save_result = FileSystemAccessClient::Client::the().save_file(window->window_id(), "untitled", "png");
+                if (save_result.error != 0)
                     return;
-
-                Optional<String> save_path = GUI::FilePicker::get_save_filepath(window, "untitled", "png");
-
-                if (!save_path.has_value())
-                    return;
-
-                image_editor.image()->export_png(save_path.value());
+                auto preserve_alpha_channel = GUI::MessageBox::show(window, "Do you wish to preserve transparency?", "Preserve transparency?", GUI::MessageBox::Type::Question, GUI::MessageBox::InputType::YesNo);
+                auto result = editor->image().export_png_to_fd_and_close(*save_result.fd, preserve_alpha_channel == GUI::MessageBox::ExecYes);
+                if (result.is_error())
+                    GUI::MessageBox::show_error(window, String::formatted("Export to PNG failed: {}", result.error()));
             },
             window));
 
-    app_menu.add_separator();
-    app_menu.add_action(GUI::CommonActions::make_quit_action([](auto&) {
+    file_menu.add_separator();
+    file_menu.add_action(GUI::CommonActions::make_quit_action([](auto&) {
         GUI::Application::the()->quit();
-        return;
     }));
 
-    auto& edit_menu = menubar->add_menu("Edit");
+    auto& edit_menu = window->add_menu("&Edit");
+
+    auto copy_action = GUI::CommonActions::make_copy_action([&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (!editor->active_layer()) {
+            dbgln("Cannot copy with no active layer selected");
+            return;
+        }
+        auto bitmap = editor->active_layer()->try_copy_bitmap(editor->selection());
+        if (!bitmap) {
+            dbgln("try_copy_bitmap() from Layer failed");
+            return;
+        }
+        GUI::Clipboard::the().set_bitmap(*bitmap);
+    });
+
     auto paste_action = GUI::CommonActions::make_paste_action([&](auto&) {
-        VERIFY(image_editor.image());
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
         auto bitmap = GUI::Clipboard::the().bitmap();
         if (!bitmap)
             return;
 
-        auto layer = PixelPaint::Layer::create_with_bitmap(*image_editor.image(), *bitmap, "Pasted layer");
-        image_editor.image()->add_layer(layer.release_nonnull());
+        auto layer = PixelPaint::Layer::try_create_with_bitmap(editor->image(), *bitmap, "Pasted layer");
+        VERIFY(layer);
+        editor->image().add_layer(*layer);
+        editor->set_active_layer(layer);
+        editor->selection().clear();
     });
     GUI::Clipboard::the().on_change = [&](auto& mime_type) {
         paste_action->set_enabled(mime_type == "image/x-serenityos");
     };
     paste_action->set_enabled(GUI::Clipboard::the().mime_type() == "image/x-serenityos");
 
+    edit_menu.add_action(copy_action);
     edit_menu.add_action(paste_action);
 
     auto undo_action = GUI::CommonActions::make_undo_action([&](auto&) {
-        VERIFY(image_editor.image());
-        image_editor.undo();
+        if (auto* editor = current_image_editor())
+            editor->undo();
     });
     edit_menu.add_action(undo_action);
 
     auto redo_action = GUI::CommonActions::make_redo_action([&](auto&) {
-        VERIFY(image_editor.image());
-        image_editor.redo();
+        if (auto* editor = current_image_editor())
+            editor->redo();
     });
     edit_menu.add_action(redo_action);
 
-    auto& tool_menu = menubar->add_menu("Tool");
+    edit_menu.add_separator();
+    edit_menu.add_action(GUI::CommonActions::make_select_all_action([&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor->active_layer())
+            return;
+        editor->selection().merge(editor->active_layer()->relative_rect(), PixelPaint::Selection::MergeMode::Set);
+    }));
+    edit_menu.add_action(GUI::Action::create(
+        "Clear &Selection", { Mod_Ctrl | Mod_Shift, Key_A }, [&](auto&) {
+            if (auto* editor = current_image_editor())
+                editor->selection().clear();
+        },
+        window));
+
+    edit_menu.add_separator();
+    edit_menu.add_action(GUI::Action::create(
+        "&Swap Colors", { Mod_None, Key_X }, [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto old_primary_color = editor->primary_color();
+            editor->set_primary_color(editor->secondary_color());
+            editor->set_secondary_color(old_primary_color);
+        },
+        window));
+    edit_menu.add_action(GUI::Action::create(
+        "&Default Colors", { Mod_None, Key_D }, [&](auto&) {
+            if (auto* editor = current_image_editor()) {
+                editor->set_primary_color(Color::Black);
+                editor->set_secondary_color(Color::White);
+            }
+        },
+        window));
+    edit_menu.add_action(GUI::Action::create(
+        "&Load Color Palette", [&](auto&) {
+            auto open_result = FileSystemAccessClient::Client::the().open_file(window->window_id(), "Load Color Palette");
+            if (open_result.error != 0)
+                return;
+
+            auto result = PixelPaint::PaletteWidget::load_palette_fd_and_close(*open_result.fd);
+            if (result.is_error()) {
+                GUI::MessageBox::show_error(window, String::formatted("Loading color palette failed: {}", result.error()));
+                return;
+            }
+
+            palette_widget.display_color_list(result.value());
+        },
+        window));
+    edit_menu.add_action(GUI::Action::create(
+        "Sa&ve Color Palette", [&](auto&) {
+            auto save_result = FileSystemAccessClient::Client::the().save_file(window->window_id(), "untitled", "palette");
+            if (save_result.error != 0)
+                return;
+
+            auto result = PixelPaint::PaletteWidget::save_palette_fd_and_close(palette_widget.colors(), *save_result.fd);
+            if (result.is_error())
+                GUI::MessageBox::show_error(window, String::formatted("Writing color palette failed: {}", result.error()));
+        },
+        window));
+
+    auto& view_menu = window->add_menu("&View");
+
+    auto zoom_in_action = GUI::CommonActions::make_zoom_in_action(
+        [&](auto&) {
+            if (auto* editor = current_image_editor())
+                editor->scale_by(0.1f);
+        },
+        window);
+
+    auto zoom_out_action = GUI::CommonActions::make_zoom_out_action(
+        [&](auto&) {
+            if (auto* editor = current_image_editor())
+                editor->scale_by(-0.1f);
+        },
+        window);
+
+    auto reset_zoom_action = GUI::CommonActions::make_reset_zoom_action(
+        [&](auto&) {
+            if (auto* editor = current_image_editor())
+                editor->reset_scale_and_position();
+        },
+        window);
+
+    auto add_guide_action = GUI::Action::create(
+        "Add Guide", [&](auto&) {
+            auto dialog = PixelPaint::CreateNewGuideDialog::construct(window);
+            if (dialog->exec() == GUI::Dialog::ExecOK) {
+                if (auto* editor = current_image_editor()) {
+                    auto specified_offset = dialog->offset();
+                    float offset = 0;
+                    if (specified_offset.ends_with('%')) {
+                        auto percentage = specified_offset.substring_view(0, specified_offset.length() - 1).to_int();
+                        if (!percentage.has_value())
+                            return;
+                        if (dialog->orientation() == PixelPaint::Guide::Orientation::Horizontal)
+                            offset = editor->image().size().height() * ((double)percentage.value() / 100.0);
+                        else if (dialog->orientation() == PixelPaint::Guide::Orientation::Vertical)
+                            offset = editor->image().size().width() * ((double)percentage.value() / 100.0);
+                        else
+                            VERIFY_NOT_REACHED();
+                    } else {
+                        auto parsed_int = dialog->offset().to_int();
+                        if (!parsed_int.has_value())
+                            return;
+                        offset = parsed_int.value();
+                    }
+                    editor->add_guide(PixelPaint::Guide::construct(dialog->orientation(), offset));
+                }
+            }
+        },
+        window);
+
+    auto show_guides_action = GUI::Action::create_checkable(
+        "Show Guides", [&](auto&) {
+            if (auto* editor = current_image_editor()) {
+                editor->toggle_guide_visibility();
+            }
+        },
+        window);
+    show_guides_action->set_checked(true);
+
+    view_menu.add_action(zoom_in_action);
+    view_menu.add_action(zoom_out_action);
+    view_menu.add_action(reset_zoom_action);
+    view_menu.add_separator();
+    view_menu.add_action(add_guide_action);
+    view_menu.add_action(show_guides_action);
+
+    auto& tool_menu = window->add_menu("&Tool");
     toolbox.for_each_tool([&](auto& tool) {
         if (tool.action())
             tool_menu.add_action(*tool.action());
         return IterationDecision::Continue;
     });
 
-    auto& layer_menu = menubar->add_menu("Layer");
+    auto& layer_menu = window->add_menu("&Layer");
     layer_menu.add_action(GUI::Action::create(
-        "Create new layer...", { Mod_Ctrl | Mod_Shift, Key_N }, [&](auto&) {
-            auto dialog = PixelPaint::CreateNewLayerDialog::construct(image_editor.image()->size(), window);
+        "New &Layer...", { Mod_Ctrl | Mod_Shift, Key_N }, [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto dialog = PixelPaint::CreateNewLayerDialog::construct(editor->image().size(), window);
             if (dialog->exec() == GUI::Dialog::ExecOK) {
-                auto layer = PixelPaint::Layer::create_with_size(*image_editor.image(), dialog->layer_size(), dialog->layer_name());
+                auto layer = PixelPaint::Layer::try_create_with_size(editor->image(), dialog->layer_size(), dialog->layer_name());
                 if (!layer) {
                     GUI::MessageBox::show_error(window, String::formatted("Unable to create layer with size {}", dialog->size().to_string()));
                     return;
                 }
-                image_editor.image()->add_layer(layer.release_nonnull());
-                image_editor.layers_did_change();
+                editor->image().add_layer(layer.release_nonnull());
+                editor->layers_did_change();
+                layer_list_widget.select_top_layer();
             }
         },
         window));
 
     layer_menu.add_separator();
     layer_menu.add_action(GUI::Action::create(
-        "Select previous layer", { 0, Key_PageUp }, [&](auto&) {
-            layer_list_widget.move_selection(1);
+        "Select &Previous Layer", { 0, Key_PageUp }, [&](auto&) {
+            layer_list_widget.cycle_through_selection(1);
         },
         window));
     layer_menu.add_action(GUI::Action::create(
-        "Select next layer", { 0, Key_PageDown }, [&](auto&) {
-            layer_list_widget.move_selection(-1);
+        "Select &Next Layer", { 0, Key_PageDown }, [&](auto&) {
+            layer_list_widget.cycle_through_selection(-1);
         },
         window));
     layer_menu.add_action(GUI::Action::create(
-        "Select top layer", { 0, Key_Home }, [&](auto&) {
+        "Select &Top Layer", { 0, Key_Home }, [&](auto&) {
             layer_list_widget.select_top_layer();
         },
         window));
     layer_menu.add_action(GUI::Action::create(
-        "Select bottom layer", { 0, Key_End }, [&](auto&) {
+        "Select &Bottom Layer", { 0, Key_End }, [&](auto&) {
             layer_list_widget.select_bottom_layer();
         },
         window));
     layer_menu.add_separator();
-    layer_menu.add_action(GUI::Action::create(
-        "Move active layer up", { Mod_Ctrl, Key_PageUp }, [&](auto&) {
-            auto active_layer = image_editor.active_layer();
+    layer_menu.add_action(GUI::CommonActions::make_move_to_front_action(
+        [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto active_layer = editor->active_layer();
             if (!active_layer)
                 return;
-            image_editor.image()->move_layer_up(*active_layer);
+            editor->image().move_layer_to_front(*active_layer);
+            editor->layers_did_change();
         },
         window));
-    layer_menu.add_action(GUI::Action::create(
-        "Move active layer down", { Mod_Ctrl, Key_PageDown }, [&](auto&) {
-            auto active_layer = image_editor.active_layer();
+    layer_menu.add_action(GUI::CommonActions::make_move_to_back_action(
+        [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto active_layer = editor->active_layer();
             if (!active_layer)
                 return;
-            image_editor.image()->move_layer_down(*active_layer);
+            editor->image().move_layer_to_back(*active_layer);
+            editor->layers_did_change();
         },
         window));
     layer_menu.add_separator();
     layer_menu.add_action(GUI::Action::create(
-        "Remove active layer", { Mod_Ctrl, Key_D }, [&](auto&) {
-            auto active_layer = image_editor.active_layer();
+        "Move Active Layer &Up", { Mod_Ctrl, Key_PageUp }, [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto active_layer = editor->active_layer();
             if (!active_layer)
                 return;
-            image_editor.image()->remove_layer(*active_layer);
-            image_editor.set_active_layer(nullptr);
+            editor->image().move_layer_up(*active_layer);
+        },
+        window));
+    layer_menu.add_action(GUI::Action::create(
+        "Move Active Layer &Down", { Mod_Ctrl, Key_PageDown }, [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto active_layer = editor->active_layer();
+            if (!active_layer)
+                return;
+            editor->image().move_layer_down(*active_layer);
+        },
+        window));
+    layer_menu.add_separator();
+    layer_menu.add_action(GUI::Action::create(
+        "&Remove Active Layer", { Mod_Ctrl, Key_D }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/delete.png"), [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            auto active_layer = editor->active_layer();
+            if (!active_layer)
+                return;
+
+            auto active_layer_index = editor->image().index_of(*active_layer);
+            editor->image().remove_layer(*active_layer);
+
+            if (editor->image().layer_count()) {
+                auto& next_active_layer = editor->image().layer(active_layer_index > 0 ? active_layer_index - 1 : 0);
+                editor->set_active_layer(&next_active_layer);
+            } else {
+                editor->set_active_layer(nullptr);
+            }
         },
         window));
 
-    auto& filter_menu = menubar->add_menu("Filter");
-    auto& spatial_filters_menu = filter_menu.add_submenu("Spatial");
+    layer_list_widget.on_context_menu_request = [&](auto& event) {
+        layer_menu.popup(event.screen_position());
+    };
+    layer_menu.add_separator();
+    layer_menu.add_action(GUI::Action::create(
+        "&Flatten Image", { Mod_Ctrl, Key_F }, [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            editor->image().flatten_all_layers();
+            editor->did_complete_action();
+        },
+        window));
 
-    auto& edge_detect_submenu = spatial_filters_menu.add_submenu("Edge Detect");
-    edge_detect_submenu.add_action(GUI::Action::create("Laplacian (cardinal)", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    layer_menu.add_action(GUI::Action::create(
+        "&Merge Visible", { Mod_Ctrl, Key_M }, [&](auto&) {
+            auto* editor = current_image_editor();
+            if (!editor)
+                return;
+            editor->image().merge_visible_layers();
+            editor->did_complete_action();
+        },
+        window));
+
+    auto& filter_menu = window->add_menu("&Filter");
+    auto& spatial_filters_menu = filter_menu.add_submenu("&Spatial");
+
+    auto& edge_detect_submenu = spatial_filters_menu.add_submenu("&Edge Detect");
+    edge_detect_submenu.add_action(GUI::Action::create("Laplacian (&Cardinal)", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::LaplacianFilter filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::LaplacianFilter>::get(false)) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
-    edge_detect_submenu.add_action(GUI::Action::create("Laplacian (diagonal)", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    edge_detect_submenu.add_action(GUI::Action::create("Laplacian (&Diagonal)", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::LaplacianFilter filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::LaplacianFilter>::get(true)) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
-    auto& blur_submenu = spatial_filters_menu.add_submenu("Blur and Sharpen");
-    blur_submenu.add_action(GUI::Action::create("Gaussian Blur (3x3)", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    auto& blur_submenu = spatial_filters_menu.add_submenu("&Blur and Sharpen");
+    blur_submenu.add_action(GUI::Action::create("&Gaussian Blur (3x3)", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::SpatialGaussianBlurFilter<3> filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::SpatialGaussianBlurFilter<3>>::get()) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
-    blur_submenu.add_action(GUI::Action::create("Gaussian Blur (5x5)", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    blur_submenu.add_action(GUI::Action::create("G&aussian Blur (5x5)", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::SpatialGaussianBlurFilter<5> filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::SpatialGaussianBlurFilter<5>>::get()) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
-    blur_submenu.add_action(GUI::Action::create("Box Blur (3x3)", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    blur_submenu.add_action(GUI::Action::create("&Box Blur (3x3)", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::BoxBlurFilter<3> filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::BoxBlurFilter<3>>::get()) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
-    blur_submenu.add_action(GUI::Action::create("Box Blur (5x5)", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    blur_submenu.add_action(GUI::Action::create("B&ox Blur (5x5)", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::BoxBlurFilter<5> filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::BoxBlurFilter<5>>::get()) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
-    blur_submenu.add_action(GUI::Action::create("Sharpen", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    blur_submenu.add_action(GUI::Action::create("&Sharpen", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::SharpenFilter filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::SharpenFilter>::get()) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
 
     spatial_filters_menu.add_separator();
-    spatial_filters_menu.add_action(GUI::Action::create("Generic 5x5 Convolution", [&](auto&) {
-        if (auto* layer = image_editor.active_layer()) {
+    spatial_filters_menu.add_action(GUI::Action::create("Generic 5x5 &Convolution", [&](auto&) {
+        auto* editor = current_image_editor();
+        if (!editor)
+            return;
+        if (auto* layer = editor->active_layer()) {
             Gfx::GenericConvolutionFilter<5> filter;
             if (auto parameters = PixelPaint::FilterParameters<Gfx::GenericConvolutionFilter<5>>::get(window)) {
                 filter.apply(layer->bitmap(), layer->rect(), layer->bitmap(), layer->rect(), *parameters);
-                image_editor.did_complete_action();
+                editor->did_complete_action();
             }
         }
     }));
 
-    auto& help_menu = menubar->add_menu("Help");
-    help_menu.add_action(GUI::CommonActions::make_about_action("PixelPaint", app_icon, window));
+    auto& help_menu = window->add_menu("&Help");
+    help_menu.add_action(GUI::CommonActions::make_about_action("Pixel Paint", app_icon, window));
 
-    app->set_menubar(move(menubar));
+    auto& toolbar = *main_widget.find_descendant_of_type_named<GUI::Toolbar>("toolbar");
+    toolbar.add_action(new_image_action);
+    toolbar.add_action(open_image_action);
+    toolbar.add_action(save_image_as_action);
+    toolbar.add_separator();
+    toolbar.add_action(copy_action);
+    toolbar.add_action(paste_action);
+    toolbar.add_action(undo_action);
+    toolbar.add_action(redo_action);
+    toolbar.add_separator();
+    toolbar.add_action(zoom_in_action);
+    toolbar.add_action(zoom_out_action);
+    toolbar.add_action(reset_zoom_action);
 
-    image_editor.on_active_layer_change = [&](auto* layer) {
-        layer_list_widget.set_selected_layer(layer);
-        layer_properties_widget.set_layer(layer);
+    create_new_editor = [&](NonnullRefPtr<PixelPaint::Image> image) -> PixelPaint::ImageEditor& {
+        auto& image_editor = tab_widget.add_tab<PixelPaint::ImageEditor>("Untitled", image);
+
+        image_editor.on_active_layer_change = [&](auto* layer) {
+            if (current_image_editor() != &image_editor)
+                return;
+            layer_list_widget.set_selected_layer(layer);
+            layer_properties_widget.set_layer(layer);
+        };
+
+        image_editor.on_image_title_change = [&](auto const& title) {
+            tab_widget.set_tab_title(image_editor, title);
+        };
+
+        auto& statusbar = *main_widget.find_descendant_of_type_named<GUI::Statusbar>("statusbar");
+        image_editor.on_image_mouse_position_change = [&](auto const& mouse_position) {
+            auto const& image_size = current_image_editor()->image().size();
+            auto image_rectangle = Gfx::IntRect { 0, 0, image_size.width(), image_size.height() };
+            if (image_rectangle.contains(mouse_position)) {
+                statusbar.set_override_text(mouse_position.to_string());
+            } else {
+                statusbar.set_override_text({});
+            }
+        };
+
+        image_editor.on_leave = [&]() {
+            statusbar.set_override_text({});
+        };
+
+        // NOTE: We invoke the above hook directly here to make sure the tab title is set up.
+        image_editor.on_image_title_change(image->title());
+
+        if (image->layer_count())
+            image_editor.set_active_layer(&image->layer(0));
+
+        tab_widget.set_active_widget(&image_editor);
+        image_editor.set_focus(true);
+        return image_editor;
     };
 
-    auto image_file_real_path = Core::File::real_path_for(image_file);
-    if (Core::File::exists(image_file_real_path)) {
-        open_image_file(image_file_real_path);
-    } else {
-        auto image = PixelPaint::Image::create_with_size({ 640, 480 });
+    tab_widget.on_tab_close_click = [&](auto& widget) {
+        auto& image_editor = verify_cast<PixelPaint::ImageEditor>(widget);
 
-        auto bg_layer = PixelPaint::Layer::create_with_size(*image, { 640, 480 }, "Background");
+        if (tab_widget.children().size() == 1) {
+            layer_list_widget.set_image(nullptr);
+            layer_properties_widget.set_layer(nullptr);
+        }
+
+        tab_widget.deferred_invoke([&](auto&) {
+            tab_widget.remove_tab(image_editor);
+        });
+    };
+
+    tab_widget.on_change = [&](auto& widget) {
+        auto& image_editor = verify_cast<PixelPaint::ImageEditor>(widget);
+        palette_widget.set_image_editor(image_editor);
+        layer_list_widget.set_image(&image_editor.image());
+        layer_properties_widget.set_layer(image_editor.active_layer());
+        // FIXME: This is badly factored. It transfers tools from the previously active editor to the new one.
+        toolbox.template for_each_tool([&](auto& tool) {
+            if (tool.editor()) {
+                tool.editor()->set_active_tool(nullptr);
+                image_editor.set_active_tool(&tool);
+            }
+        });
+    };
+
+    if (Core::File::exists(file_to_edit_full_path)) {
+        open_image_file(file_to_edit_full_path);
+    } else {
+        auto image = PixelPaint::Image::try_create_with_size({ 480, 360 });
+
+        auto bg_layer = PixelPaint::Layer::try_create_with_size(*image, image->size(), "Background");
+        VERIFY(bg_layer);
         image->add_layer(*bg_layer);
         bg_layer->bitmap().fill(Color::White);
 
-        auto fg_layer1 = PixelPaint::Layer::create_with_size(*image, { 200, 200 }, "FG Layer 1");
-        fg_layer1->set_location({ 50, 50 });
-        image->add_layer(*fg_layer1);
-        fg_layer1->bitmap().fill(Color::Yellow);
-
-        auto fg_layer2 = PixelPaint::Layer::create_with_size(*image, { 100, 100 }, "FG Layer 2");
-        fg_layer2->set_location({ 300, 300 });
-        image->add_layer(*fg_layer2);
-        fg_layer2->bitmap().fill(Color::Blue);
-
         layer_list_widget.set_image(image);
 
-        image_editor.set_image(image);
-        image_editor.set_active_layer(bg_layer);
+        auto& editor = create_new_editor(*image);
+        editor.set_active_layer(bg_layer);
     }
 
+    auto& statusbar = *main_widget.find_descendant_of_type_named<GUI::Statusbar>("statusbar");
+
+    app->on_action_enter = [&statusbar](GUI::Action& action) {
+        auto text = action.status_tip();
+        if (text.is_empty())
+            text = Gfx::parse_ampersand_string(action.text());
+        statusbar.set_override_text(move(text));
+    };
+
+    app->on_action_leave = [&statusbar](GUI::Action&) {
+        statusbar.set_override_text({});
+    };
+
+    window->show();
     return app->exec();
 }

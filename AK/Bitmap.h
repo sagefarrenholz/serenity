@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -50,14 +30,15 @@ public:
         fill(default_value);
     }
 
-    Bitmap(u8* data, size_t size)
+    Bitmap(u8* data, size_t size, bool is_owning = false)
         : m_data(data)
         , m_size(size)
+        , m_is_owning(is_owning)
     {
     }
 
-    BitmapView view() { return { m_data, m_size }; }
-    const BitmapView view() const { return { m_data, m_size }; }
+    [[nodiscard]] BitmapView view() { return { m_data, m_size }; }
+    [[nodiscard]] BitmapView const view() const { return { m_data, m_size }; }
 
     Bitmap(Bitmap&& other)
         : m_data(exchange(other.m_data, nullptr))
@@ -68,7 +49,7 @@ public:
     Bitmap& operator=(Bitmap&& other)
     {
         if (this != &other) {
-            kfree(m_data);
+            kfree_sized(m_data, size_in_bytes());
             m_data = exchange(other.m_data, nullptr);
             m_size = exchange(other.m_size, 0);
         }
@@ -77,20 +58,22 @@ public:
 
     ~Bitmap()
     {
-        kfree(m_data);
+        if (m_is_owning) {
+            kfree_sized(m_data, size_in_bytes());
+        }
         m_data = nullptr;
     }
 
-    size_t size() const { return m_size; }
-    size_t size_in_bytes() const { return ceil_div(m_size, static_cast<size_t>(8)); }
+    [[nodiscard]] size_t size() const { return m_size; }
+    [[nodiscard]] size_t size_in_bytes() const { return ceil_div(m_size, static_cast<size_t>(8)); }
 
-    bool get(size_t index) const
+    [[nodiscard]] bool get(size_t index) const
     {
         VERIFY(index < m_size);
         return 0 != (m_data[index / 8] & (1u << (index % 8)));
     }
 
-    void set(size_t index, bool value) const
+    void set(size_t index, bool value)
     {
         VERIFY(index < m_size);
         if (value)
@@ -99,13 +82,13 @@ public:
             m_data[index / 8] &= static_cast<u8>(~(1u << (index % 8)));
     }
 
-    size_t count_slow(bool value) const { return count_in_range(0, m_size, value); }
-    size_t count_in_range(size_t start, size_t len, bool value) const { return view().count_in_range(start, len, value); }
+    [[nodiscard]] size_t count_slow(bool value) const { return count_in_range(0, m_size, value); }
+    [[nodiscard]] size_t count_in_range(size_t start, size_t len, bool value) const { return view().count_in_range(start, len, value); }
 
-    bool is_null() const { return !m_data; }
+    [[nodiscard]] bool is_null() const { return !m_data; }
 
-    u8* data() { return m_data; }
-    const u8* data() const { return m_data; }
+    [[nodiscard]] u8* data() { return m_data; }
+    [[nodiscard]] u8 const* data() const { return m_data; }
 
     void grow(size_t size, bool default_value)
     {
@@ -124,15 +107,87 @@ public:
             __builtin_memcpy(m_data, previous_data, previous_size_bytes);
             if (previous_size % 8)
                 set_range(previous_size, 8 - previous_size % 8, default_value);
-            kfree(previous_data);
+            kfree_sized(previous_data, previous_size_bytes);
         }
     }
 
-    template<bool VALUE>
-    void set_range(size_t start, size_t len) { return view().set_range<VALUE>(start, len); }
-    void set_range(size_t start, size_t len, bool value) { return view().set_range(start, len, value); }
+    template<bool VALUE, bool verify_that_all_bits_flip = false>
+    void set_range(size_t start, size_t len)
+    {
+        VERIFY(start < m_size);
+        VERIFY(start + len <= m_size);
+        if (len == 0)
+            return;
 
-    void fill(bool value) { view().fill(value); }
+        u8* first = &m_data[start / 8];
+        u8* last = &m_data[(start + len) / 8];
+        u8 byte_mask = bitmask_first_byte[start % 8];
+        if (first == last) {
+            byte_mask &= bitmask_last_byte[(start + len) % 8];
+            if constexpr (verify_that_all_bits_flip) {
+                if constexpr (VALUE) {
+                    VERIFY((*first & byte_mask) == 0);
+                } else {
+                    VERIFY((*first & byte_mask) == byte_mask);
+                }
+            }
+            if constexpr (VALUE)
+                *first |= byte_mask;
+            else
+                *first &= ~byte_mask;
+        } else {
+            if constexpr (verify_that_all_bits_flip) {
+                if constexpr (VALUE) {
+                    VERIFY((*first & byte_mask) == 0);
+                } else {
+                    VERIFY((*first & byte_mask) == byte_mask);
+                }
+            }
+            if constexpr (VALUE)
+                *first |= byte_mask;
+            else
+                *first &= ~byte_mask;
+            byte_mask = bitmask_last_byte[(start + len) % 8];
+            if constexpr (verify_that_all_bits_flip) {
+                if constexpr (VALUE) {
+                    VERIFY((*last & byte_mask) == 0);
+                } else {
+                    VERIFY((*last & byte_mask) == byte_mask);
+                }
+            }
+            if constexpr (VALUE)
+                *last |= byte_mask;
+            else
+                *last &= ~byte_mask;
+            if (++first < last) {
+                if constexpr (VALUE)
+                    __builtin_memset(first, 0xFF, last - first);
+                else
+                    __builtin_memset(first, 0x0, last - first);
+            }
+        }
+    }
+
+    void set_range(size_t start, size_t len, bool value)
+    {
+        if (value)
+            set_range<true, false>(start, len);
+        else
+            set_range<false, false>(start, len);
+    }
+
+    void set_range_and_verify_that_all_bits_flip(size_t start, size_t len, bool value)
+    {
+        if (value)
+            set_range<true, true>(start, len);
+        else
+            set_range<false, true>(start, len);
+    }
+
+    void fill(bool value)
+    {
+        __builtin_memset(m_data, value ? 0xff : 0x00, size_in_bytes());
+    }
 
     Optional<size_t> find_one_anywhere_set(size_t hint = 0) const { return view().find_one_anywhere<true>(hint); }
     Optional<size_t> find_one_anywhere_unset(size_t hint = 0) const { return view().find_one_anywhere<false>(hint); }
@@ -158,6 +213,7 @@ public:
 private:
     u8* m_data { nullptr };
     size_t m_size { 0 };
+    bool m_is_owning { true };
 };
 
 }

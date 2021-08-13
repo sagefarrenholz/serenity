@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -71,12 +51,16 @@ public:
     KResultOr<size_t> write(const UserOrKernelBuffer& data, size_t);
     KResult stat(::stat&);
 
+    // NOTE: These ignore the current offset of this file description.
+    KResultOr<size_t> read(UserOrKernelBuffer&, u64 offset, size_t);
+    KResultOr<size_t> write(u64 offset, UserOrKernelBuffer const&, size_t);
+
     KResult chmod(mode_t);
 
     bool can_read() const;
     bool can_write() const;
 
-    ssize_t get_dir_entries(UserOrKernelBuffer& buffer, ssize_t);
+    KResultOr<size_t> get_dir_entries(UserOrKernelBuffer& buffer, size_t);
 
     KResultOr<NonnullOwnPtr<KBuffer>> read_entire_file();
 
@@ -97,6 +81,10 @@ public:
     const TTY* tty() const;
     TTY* tty();
 
+    bool is_inode_watcher() const;
+    const InodeWatcher* inode_watcher() const;
+    InodeWatcher* inode_watcher();
+
     bool is_master_pty() const;
     const MasterPTY* master_pty() const;
     MasterPTY* master_pty();
@@ -108,7 +96,7 @@ public:
     Custody* custody() { return m_custody.ptr(); }
     const Custody* custody() const { return m_custody.ptr(); }
 
-    KResultOr<Region*> mmap(Process&, const Range&, u64 offset, int prot, bool shared);
+    KResultOr<Memory::Region*> mmap(Process&, Memory::VirtualRange const&, u64 offset, int prot, bool shared);
 
     bool is_blocking() const { return m_is_blocking; }
     void set_blocking(bool b) { m_is_blocking = b; }
@@ -129,7 +117,7 @@ public:
 
     OwnPtr<FileDescriptionData>& data() { return m_data; }
 
-    void set_original_inode(Badge<VFS>, NonnullRefPtr<Inode>&& inode) { m_inode = move(inode); }
+    void set_original_inode(Badge<VirtualFileSystem>, NonnullRefPtr<Inode>&& inode) { m_inode = move(inode); }
 
     KResult truncate(u64);
 
@@ -139,8 +127,11 @@ public:
 
     FileBlockCondition& block_condition();
 
+    KResult apply_flock(Process const&, Userspace<flock const*>);
+    KResult get_flock(Userspace<flock*>) const;
+
 private:
-    friend class VFS;
+    friend class VirtualFileSystem;
     explicit FileDescription(File&);
 
     KResult attach();
@@ -168,7 +159,7 @@ private:
     bool m_direct : 1 { false };
     FIFO::Direction m_fifo_direction { FIFO::Direction::Neither };
 
-    Lock m_lock { "FileDescription" };
+    Mutex m_lock { "FileDescription" };
 };
 
 }

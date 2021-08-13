@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Emanuel Sprung <emanuel.sprung@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/String.h>
@@ -37,14 +17,15 @@
 #    include <LibC/regex.h>
 #endif
 
+#include <AK/Variant.h>
+
 struct internal_regex_t {
     u8 cflags;
     u8 eflags;
-    OwnPtr<Regex<PosixExtended>> re;
+    Optional<Variant<NonnullOwnPtr<Regex<PosixExtended>>, NonnullOwnPtr<Regex<PosixBasic>>>> re;
     size_t re_pat_errpos;
     ReError re_pat_err;
     String re_pat;
-    size_t re_nsub;
 };
 
 static internal_regex_t* impl_from(regex_t* re)
@@ -69,19 +50,21 @@ int regcomp(regex_t* reg, const char* pattern, int cflags)
 
     // Note that subsequent uses of regcomp() without regfree() _will_ leak memory
     // This could've been prevented if libc provided a reginit() or similar, but it does not.
-    reg->__data = new internal_regex_t { 0, 0, {}, 0, ReError::REG_NOERR, {}, 0 };
+    reg->__data = new internal_regex_t { 0, 0, {}, 0, ReError::REG_NOERR, {} };
 
     auto preg = impl_from(reg);
-
-    if (!(cflags & REG_EXTENDED))
-        return REG_ENOSYS;
+    bool is_extended = cflags & REG_EXTENDED;
 
     preg->cflags = cflags;
 
     String pattern_str(pattern);
-    preg->re = make<Regex<PosixExtended>>(pattern_str, PosixOptions {} | (PosixFlags)cflags | PosixFlags::SkipTrimEmptyMatches);
+    if (is_extended)
+        preg->re = make<Regex<PosixExtended>>(pattern_str, PosixOptions {} | (PosixFlags)cflags | PosixFlags::SkipTrimEmptyMatches);
+    else
+        preg->re = make<Regex<PosixBasic>>(pattern_str, PosixOptions {} | (PosixFlags)cflags | PosixFlags::SkipTrimEmptyMatches);
 
-    auto parser_result = preg->re->parser_result;
+    auto parser_result = preg->re->visit([](auto& re) { return re->parser_result; });
+
     if (parser_result.error != regex::Error::NoError) {
         preg->re_pat_errpos = parser_result.error_token.position();
         preg->re_pat_err = (ReError)parser_result.error;
@@ -92,7 +75,7 @@ int regcomp(regex_t* reg, const char* pattern, int cflags)
         return (ReError)parser_result.error;
     }
 
-    preg->re_nsub = parser_result.capture_groups_count;
+    reg->re_nsub = parser_result.capture_groups_count;
 
     return REG_NOERR;
 }
@@ -101,7 +84,7 @@ int regexec(const regex_t* reg, const char* string, size_t nmatch, regmatch_t pm
 {
     auto preg = impl_from(reg);
 
-    if (!preg->re || preg->re_pat_err) {
+    if (!preg->re.has_value() || preg->re_pat_err) {
         if (preg->re_pat_err)
             return preg->re_pat_err;
         return REG_BADPAT;
@@ -109,11 +92,12 @@ int regexec(const regex_t* reg, const char* string, size_t nmatch, regmatch_t pm
 
     RegexResult result;
     if (eflags & REG_SEARCH)
-        result = preg->re->search(string, PosixOptions {} | (PosixFlags)eflags);
+        result = preg->re->visit([&](auto& re) { return re->search(string, PosixOptions {} | (PosixFlags)eflags); });
     else
-        result = preg->re->match(string, PosixOptions {} | (PosixFlags)eflags);
+        result = preg->re->visit([&](auto& re) { return re->match(string, PosixOptions {} | (PosixFlags)eflags); });
 
     if (result.success) {
+        auto capture_groups_count = preg->re->visit([](auto& re) { return re->parser_result.capture_groups_count; });
         auto size = result.matches.size();
         if (size && nmatch && pmatch) {
             pmatch[0].rm_cnt = size;
@@ -131,7 +115,7 @@ int regexec(const regex_t* reg, const char* string, size_t nmatch, regmatch_t pm
 
                 if (i < result.capture_group_matches.size()) {
                     auto capture_groups_size = result.capture_group_matches.at(i).size();
-                    for (size_t j = 0; j < preg->re->parser_result.capture_groups_count; ++j) {
+                    for (size_t j = 0; j < capture_groups_count; ++j) {
                         if (j >= capture_groups_size || !result.capture_group_matches.at(i).at(j).view.length()) {
                             pmatch[match_index].rm_so = -1;
                             pmatch[match_index].rm_eo = -1;
@@ -234,7 +218,7 @@ size_t regerror(int errcode, const regex_t* reg, char* errbuf, size_t errbuf_siz
     if (!preg)
         error = get_error((ReError)errcode);
     else
-        error = preg->re->error_string(get_error(preg->re_pat_err));
+        error = preg->re->visit([&](auto& re) { return re->error_string(get_error(preg->re_pat_err)); });
 
     if (!errbuf_size)
         return error.length();

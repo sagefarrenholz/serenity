@@ -1,80 +1,124 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
  * Copyright (c) 2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/EnumBits.h>
 #include <AK/Function.h>
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefCounted.h>
 #include <AK/Result.h>
 #include <AK/String.h>
+#include <Kernel/API/InodeWatcherEvent.h>
+#include <Kernel/API/InodeWatcherFlags.h>
 #include <LibCore/Notifier.h>
 
 namespace Core {
 
 struct FileWatcherEvent {
     enum class Type {
-        Modified,
-        ChildAdded,
-        ChildRemoved,
+        Invalid = 0,
+        MetadataModified = 1 << 0,
+        ContentModified = 1 << 1,
+        Deleted = 1 << 2,
+        ChildCreated = 1 << 3,
+        ChildDeleted = 1 << 4,
     };
     Type type;
-    String child_path;
+    String event_path;
 };
 
-class BlockingFileWatcher {
+AK_ENUM_BITWISE_OPERATORS(FileWatcherEvent::Type);
+
+class FileWatcherBase {
+public:
+    virtual ~FileWatcherBase() { }
+
+    Result<bool, String> add_watch(String path, FileWatcherEvent::Type event_mask);
+    Result<bool, String> remove_watch(String path);
+    bool is_watching(String const& path) const { return m_path_to_wd.find(path) != m_path_to_wd.end(); }
+
+protected:
+    FileWatcherBase(int watcher_fd)
+        : m_watcher_fd(watcher_fd)
+    {
+    }
+
+    int m_watcher_fd { -1 };
+    HashMap<String, unsigned> m_path_to_wd;
+    HashMap<unsigned, String> m_wd_to_path;
+};
+
+class BlockingFileWatcher final : public FileWatcherBase {
     AK_MAKE_NONCOPYABLE(BlockingFileWatcher);
 
 public:
-    explicit BlockingFileWatcher(const String& path);
+    explicit BlockingFileWatcher(InodeWatcherFlags = InodeWatcherFlags::None);
     ~BlockingFileWatcher();
 
     Optional<FileWatcherEvent> wait_for_event();
-
-private:
-    String m_path;
-    int m_watcher_fd { -1 };
 };
 
-class FileWatcher : public RefCounted<FileWatcher> {
+class FileWatcher final : public FileWatcherBase
+    , public RefCounted<FileWatcher> {
     AK_MAKE_NONCOPYABLE(FileWatcher);
 
 public:
-    static Result<NonnullRefPtr<FileWatcher>, String> watch(const String& path);
+    static Result<NonnullRefPtr<FileWatcher>, String> create(InodeWatcherFlags = InodeWatcherFlags::None);
     ~FileWatcher();
 
-    Function<void(FileWatcherEvent)> on_change;
+    Function<void(FileWatcherEvent const&)> on_change;
 
 private:
-    FileWatcher(NonnullRefPtr<Notifier>, const String& path);
+    FileWatcher(int watcher_fd, NonnullRefPtr<Notifier>);
 
     NonnullRefPtr<Notifier> m_notifier;
-    String m_path;
+};
+
+}
+
+namespace AK {
+
+template<>
+struct Formatter<Core::FileWatcherEvent> : Formatter<FormatString> {
+    void format(FormatBuilder& builder, const Core::FileWatcherEvent& value)
+    {
+        Formatter<FormatString>::format(builder, "FileWatcherEvent(\"{}\", {})", value.event_path, value.type);
+    }
+};
+
+template<>
+struct Formatter<Core::FileWatcherEvent::Type> : Formatter<FormatString> {
+    void format(FormatBuilder& builder, const Core::FileWatcherEvent::Type& value)
+    {
+        char const* type;
+        switch (value) {
+        case Core::FileWatcherEvent::Type::ChildCreated:
+            type = "ChildCreated";
+            break;
+        case Core::FileWatcherEvent::Type::ChildDeleted:
+            type = "ChildDeleted";
+            break;
+        case Core::FileWatcherEvent::Type::Deleted:
+            type = "Deleted";
+            break;
+        case Core::FileWatcherEvent::Type::ContentModified:
+            type = "ContentModified";
+            break;
+        case Core::FileWatcherEvent::Type::MetadataModified:
+            type = "MetadataModified";
+            break;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+
+        builder.put_string(type);
+    }
 };
 
 }

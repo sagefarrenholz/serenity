@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "XSV.h"
@@ -31,12 +11,12 @@ namespace Reader {
 
 ParserBehaviour operator&(ParserBehaviour left, ParserBehaviour right)
 {
-    return static_cast<ParserBehaviour>(static_cast<u32>(left) & static_cast<u32>(right));
+    return static_cast<ParserBehaviour>(to_underlying(left) & to_underlying(right));
 }
 
 ParserBehaviour operator|(ParserBehaviour left, ParserBehaviour right)
 {
-    return static_cast<ParserBehaviour>(static_cast<u32>(left) | static_cast<u32>(right));
+    return static_cast<ParserBehaviour>(to_underlying(left) | to_underlying(right));
 }
 
 void XSV::set_error(ReadError error)
@@ -63,13 +43,33 @@ Vector<String> XSV::headers() const
     return headers;
 }
 
+void XSV::parse_preview()
+{
+    reset();
+    if ((m_behaviours & ParserBehaviour::ReadHeaders) != ParserBehaviour::None)
+        read_headers();
+
+    while (!has_error() && !m_lexer.is_eof()) {
+        if (m_rows.size() >= 10)
+            break;
+        m_rows.append(read_row());
+    }
+}
+
 void XSV::parse()
 {
+    reset();
     if ((m_behaviours & ParserBehaviour::ReadHeaders) != ParserBehaviour::None)
         read_headers();
 
     while (!has_error() && !m_lexer.is_eof())
         m_rows.append(read_row());
+
+    // Read and drop any extra lines at the end.
+    while (!m_lexer.is_eof()) {
+        if (!m_lexer.consume_specific("\r\n") && !m_lexer.consume_specific('\n'))
+            break;
+    }
 
     if (!m_lexer.is_eof())
         set_error(ReadError::DataPastLogicalEnd);
@@ -103,8 +103,29 @@ Vector<XSV::Field> XSV::read_row(bool header_row)
         }
     }
 
-    if (!header_row && (m_behaviours & ParserBehaviour::ReadHeaders) != ParserBehaviour::None && row.size() != m_names.size())
-        set_error(ReadError::NonConformingColumnCount);
+    auto is_lenient = (m_behaviours & ParserBehaviour::Lenient) != ParserBehaviour::None;
+    if (is_lenient) {
+        if (m_rows.is_empty())
+            return row;
+
+        auto& last_row = m_rows.last();
+        if (row.size() < last_row.size()) {
+            if (!m_names.is_empty())
+                row.resize(m_names.size());
+            else
+                row.resize(last_row.size());
+        } else if (row.size() > last_row.size()) {
+            auto new_size = row.size();
+            for (auto& row : m_rows)
+                row.resize(new_size);
+        }
+    } else {
+        auto should_read_headers = (m_behaviours & ParserBehaviour::ReadHeaders) != ParserBehaviour::None;
+        if (!header_row && should_read_headers && row.size() != m_names.size())
+            set_error(ReadError::NonConformingColumnCount);
+        else if (!header_row && !has_explicit_headers() && !m_rows.is_empty() && m_rows.first().size() != row.size())
+            set_error(ReadError::NonConformingColumnCount);
+    }
 
     return row;
 }

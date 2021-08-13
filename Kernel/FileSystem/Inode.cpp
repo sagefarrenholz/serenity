@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/NonnullRefPtrVector.h>
@@ -30,24 +11,21 @@
 #include <AK/StringView.h>
 #include <Kernel/API/InodeWatcherEvent.h>
 #include <Kernel/FileSystem/Custody.h>
+#include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/FileSystem/InodeWatcher.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/KBufferBuilder.h>
+#include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/Net/LocalSocket.h>
-#include <Kernel/VM/SharedInodeVMObject.h>
+#include <Kernel/Process.h>
 
 namespace Kernel {
 
 static SpinLock s_all_inodes_lock;
-static AK::Singleton<InlineLinkedList<Inode>> s_list;
+static Singleton<Inode::List> s_list;
 
-SpinLock<u32>& Inode::all_inodes_lock()
-{
-    return s_all_inodes_lock;
-}
-
-InlineLinkedList<Inode>& Inode::all_with_lock()
+static Inode::List& all_with_lock()
 {
     VERIFY(s_all_inodes_lock.is_locked());
 
@@ -75,25 +53,22 @@ KResultOr<NonnullOwnPtr<KBuffer>> Inode::read_entire(FileDescription* descriptio
 {
     KBufferBuilder builder;
 
-    ssize_t nread;
+    size_t nread;
     u8 buffer[4096];
     off_t offset = 0;
     for (;;) {
         auto buf = UserOrKernelBuffer::for_kernel_buffer(buffer);
-        nread = read_bytes(offset, sizeof(buffer), buf, description);
-        if (nread < 0)
-            return KResult((ErrnoCode)-nread);
-        VERIFY(nread <= (ssize_t)sizeof(buffer));
-        if (nread <= 0)
+        auto result = read_bytes(offset, sizeof(buffer), buf, description);
+        if (result.is_error())
+            return result.error();
+        nread = result.value();
+        VERIFY(nread <= sizeof(buffer));
+        if (nread == 0)
             break;
         builder.append((const char*)buffer, nread);
         offset += nread;
-        if (nread < (ssize_t)sizeof(buffer))
+        if (nread < sizeof(buffer))
             break;
-    }
-    if (nread < 0) {
-        dmesgln("Inode::read_entire: Error: {}", nread);
-        return KResult((ErrnoCode)-nread);
     }
 
     auto entire_file = builder.build();
@@ -113,43 +88,47 @@ KResultOr<NonnullRefPtr<Custody>> Inode::resolve_as_link(Custody& base, RefPtr<C
 
     auto& contents = contents_or.value();
     auto path = StringView(contents->data(), contents->size());
-    return VFS::the().resolve_path(path, base, out_parent, options, symlink_recursion_level);
+    return VirtualFileSystem::the().resolve_path(path, base, out_parent, options, symlink_recursion_level);
 }
 
-Inode::Inode(FS& fs, InodeIndex index)
-    : m_fs(fs)
+Inode::Inode(FileSystem& fs, InodeIndex index)
+    : m_file_system(fs)
     , m_index(index)
 {
     ScopedSpinLock all_inodes_lock(s_all_inodes_lock);
-    all_with_lock().append(this);
+    all_with_lock().append(*this);
 }
 
 Inode::~Inode()
 {
     ScopedSpinLock all_inodes_lock(s_all_inodes_lock);
-    all_with_lock().remove(this);
+    all_with_lock().remove(*this);
+
+    for (auto& watcher : m_watchers) {
+        watcher->unregister_by_inode({}, identifier());
+    }
 }
 
 void Inode::will_be_destroyed()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (m_metadata_dirty)
         flush_metadata();
 }
 
-int Inode::set_atime(time_t)
+KResult Inode::set_atime(time_t)
 {
-    return -ENOTIMPL;
+    return ENOTIMPL;
 }
 
-int Inode::set_ctime(time_t)
+KResult Inode::set_ctime(time_t)
 {
-    return -ENOTIMPL;
+    return ENOTIMPL;
 }
 
-int Inode::set_mtime(time_t)
+KResult Inode::set_mtime(time_t)
 {
-    return -ENOTIMPL;
+    return ENOTIMPL;
 }
 
 KResult Inode::increment_link_count()
@@ -162,15 +141,15 @@ KResult Inode::decrement_link_count()
     return ENOTIMPL;
 }
 
-void Inode::set_shared_vmobject(SharedInodeVMObject& vmobject)
+void Inode::set_shared_vmobject(Memory::SharedInodeVMObject& vmobject)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     m_shared_vmobject = vmobject;
 }
 
 bool Inode::bind_socket(LocalSocket& socket)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (m_socket)
         return false;
     m_socket = socket;
@@ -179,7 +158,7 @@ bool Inode::bind_socket(LocalSocket& socket)
 
 bool Inode::unbind_socket()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (!m_socket)
         return false;
     m_socket = nullptr;
@@ -188,26 +167,29 @@ bool Inode::unbind_socket()
 
 void Inode::register_watcher(Badge<InodeWatcher>, InodeWatcher& watcher)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     VERIFY(!m_watchers.contains(&watcher));
     m_watchers.set(&watcher);
 }
 
 void Inode::unregister_watcher(Badge<InodeWatcher>, InodeWatcher& watcher)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     VERIFY(m_watchers.contains(&watcher));
     m_watchers.remove(&watcher);
 }
 
 NonnullRefPtr<FIFO> Inode::fifo()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     VERIFY(metadata().is_fifo());
 
     // FIXME: Release m_fifo when it is closed by all readers and writers
-    if (!m_fifo)
-        m_fifo = FIFO::create(metadata().uid);
+    if (!m_fifo) {
+        m_fifo = FIFO::try_create(metadata().uid);
+        // FIXME: We need to be able to observe OOM here.
+        VERIFY(!m_fifo.is_null());
+    }
 
     VERIFY(m_fifo);
     return *m_fifo;
@@ -215,7 +197,7 @@ NonnullRefPtr<FIFO> Inode::fifo()
 
 void Inode::set_metadata_dirty(bool metadata_dirty)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
 
     if (metadata_dirty) {
         // Sanity check.
@@ -230,32 +212,55 @@ void Inode::set_metadata_dirty(bool metadata_dirty)
         // FIXME: Maybe we should hook into modification events somewhere else, I'm not sure where.
         //        We don't always end up on this particular code path, for instance when writing to an ext2fs file.
         for (auto& watcher : m_watchers) {
-            watcher->notify_inode_event({}, InodeWatcherEvent::Type::Modified);
+            watcher->notify_inode_event({}, identifier(), InodeWatcherEvent::Type::MetadataModified);
         }
     }
 }
 
-void Inode::did_add_child(const InodeIdentifier& child_id)
+void Inode::did_add_child(InodeIdentifier const&, String const& name)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
+
     for (auto& watcher : m_watchers) {
-        watcher->notify_child_added({}, child_id);
+        watcher->notify_inode_event({}, identifier(), InodeWatcherEvent::Type::ChildCreated, name);
     }
 }
 
-void Inode::did_remove_child(const InodeIdentifier& child_id)
+void Inode::did_remove_child(InodeIdentifier const&, String const& name)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
+
+    if (name == "." || name == "..") {
+        // These are just aliases and are not interesting to userspace.
+        return;
+    }
+
     for (auto& watcher : m_watchers) {
-        watcher->notify_child_removed({}, child_id);
+        watcher->notify_inode_event({}, identifier(), InodeWatcherEvent::Type::ChildDeleted, name);
+    }
+}
+
+void Inode::did_modify_contents()
+{
+    MutexLocker locker(m_inode_lock);
+    for (auto& watcher : m_watchers) {
+        watcher->notify_inode_event({}, identifier(), InodeWatcherEvent::Type::ContentModified);
+    }
+}
+
+void Inode::did_delete_self()
+{
+    MutexLocker locker(m_inode_lock);
+    for (auto& watcher : m_watchers) {
+        watcher->notify_inode_event({}, identifier(), InodeWatcherEvent::Type::Deleted);
     }
 }
 
 KResult Inode::prepare_to_write_data()
 {
     // FIXME: It's a poor design that filesystems are expected to call this before writing out data.
-    //        We should funnel everything through an interface at the VFS layer so this can happen from a single place.
-    LOCKER(m_lock);
+    //        We should funnel everything through an interface at the VirtualFileSystem layer so this can happen from a single place.
+    MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
         return EROFS;
     auto metadata = this->metadata();
@@ -266,16 +271,132 @@ KResult Inode::prepare_to_write_data()
     return KSuccess;
 }
 
-RefPtr<SharedInodeVMObject> Inode::shared_vmobject() const
+RefPtr<Memory::SharedInodeVMObject> Inode::shared_vmobject() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     return m_shared_vmobject.strong_ref();
 }
 
-bool Inode::is_shared_vmobject(const SharedInodeVMObject& other) const
+template<typename T>
+static inline bool range_overlap(T start1, T len1, T start2, T len2)
 {
-    LOCKER(m_lock);
-    return m_shared_vmobject.unsafe_ptr() == &other;
+    return ((start1 < start2 + len2) || len2 == 0) && ((start2 < start1 + len1) || len1 == 0);
 }
 
+static inline KResult normalize_flock(FileDescription const& description, flock& lock)
+{
+    off_t start;
+    switch (lock.l_whence) {
+    case SEEK_SET:
+        start = lock.l_start;
+        break;
+    case SEEK_CUR:
+        start = description.offset() + lock.l_start;
+        break;
+    case SEEK_END:
+        // FIXME: Implement SEEK_END and negative lengths.
+        return ENOTSUP;
+    default:
+        return EINVAL;
+    }
+    lock = { lock.l_type, SEEK_SET, start, lock.l_len, 0 };
+    return KSuccess;
+}
+
+KResult Inode::can_apply_flock(FileDescription const& description, flock const& new_lock) const
+{
+    VERIFY(new_lock.l_whence == SEEK_SET);
+
+    MutexLocker locker(m_inode_lock, Mutex::Mode::Shared);
+
+    if (new_lock.l_type == F_UNLCK) {
+        for (auto& lock : m_flocks) {
+            if (&description == lock.owner && lock.start == new_lock.l_start && lock.len == new_lock.l_len)
+                return KSuccess;
+        }
+        return EINVAL;
+    }
+
+    for (auto& lock : m_flocks) {
+        if (!range_overlap(lock.start, lock.len, new_lock.l_start, new_lock.l_len))
+            continue;
+
+        if (new_lock.l_type == F_RDLCK && lock.type == F_WRLCK)
+            return EAGAIN;
+
+        if (new_lock.l_type == F_WRLCK)
+            return EAGAIN;
+    }
+    return KSuccess;
+}
+
+KResult Inode::apply_flock(Process const& process, FileDescription const& description, Userspace<flock const*> input_lock)
+{
+    flock new_lock;
+    if (!copy_from_user(&new_lock, input_lock))
+        return EFAULT;
+
+    auto rc = normalize_flock(description, new_lock);
+    if (rc.is_error())
+        return rc;
+
+    MutexLocker locker(m_inode_lock);
+
+    rc = can_apply_flock(description, new_lock);
+    if (rc.is_error())
+        return rc;
+
+    if (new_lock.l_type == F_UNLCK) {
+        for (size_t i = 0; i < m_flocks.size(); ++i) {
+            if (&description == m_flocks[i].owner && m_flocks[i].start == new_lock.l_start && m_flocks[i].len == new_lock.l_len) {
+                m_flocks.remove(i);
+                return KSuccess;
+            }
+        }
+        return EINVAL;
+    }
+
+    m_flocks.append(Flock { new_lock.l_type, new_lock.l_start, new_lock.l_len, &description, process.pid().value() });
+    return KSuccess;
+}
+
+KResult Inode::get_flock(FileDescription const& description, Userspace<flock*> reference_lock) const
+{
+    flock lookup;
+    if (!copy_from_user(&lookup, reference_lock))
+        return EFAULT;
+
+    auto rc = normalize_flock(description, lookup);
+    if (rc.is_error())
+        return rc;
+
+    MutexLocker locker(m_inode_lock, Mutex::Mode::Shared);
+
+    for (auto& lock : m_flocks) {
+        if (!range_overlap(lock.start, lock.len, lookup.l_start, lookup.l_len))
+            continue;
+
+        if ((lookup.l_type == F_RDLCK && lock.type == F_WRLCK) || lookup.l_type == F_WRLCK) {
+            lookup = { lock.type, SEEK_SET, lock.start, lock.len, lock.pid };
+            if (!copy_to_user(reference_lock, &lookup))
+                return EFAULT;
+            return KSuccess;
+        }
+    }
+
+    lookup.l_type = F_UNLCK;
+    if (!copy_to_user(reference_lock, &lookup))
+        return EFAULT;
+    return KSuccess;
+}
+
+void Inode::remove_flocks_for_description(FileDescription const& description)
+{
+    MutexLocker locker(m_inode_lock);
+
+    for (size_t i = 0; i < m_flocks.size(); ++i) {
+        if (&description == m_flocks[i].owner)
+            m_flocks.remove(i--);
+    }
+}
 }

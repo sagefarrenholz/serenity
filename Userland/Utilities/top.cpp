@@ -1,43 +1,39 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/HashMap.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
-#include <AK/JsonValue.h>
 #include <AK/QuickSort.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibCore/ArgsParser.h>
 #include <LibCore/ProcessStatisticsReader.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+
+struct TopOption {
+    enum class SortBy {
+        Pid,
+        Tid,
+        Priority,
+        UserName,
+        State,
+        Virt,
+        Phys,
+        Cpu,
+        Name
+    };
+
+    SortBy sort_by { SortBy::Cpu };
+    int delay_time { 1 };
+};
 
 struct ThreadData {
     int tid;
@@ -58,9 +54,9 @@ struct ThreadData {
     unsigned inode_faults;
     unsigned zero_faults;
     unsigned cow_faults;
-    unsigned times_scheduled;
+    u64 time_scheduled;
 
-    unsigned times_scheduled_since_prev { 0 };
+    u64 time_scheduled_since_prev { 0 };
     unsigned cpu_percent { 0 };
     unsigned cpu_percent_decimal { 0 };
 
@@ -87,7 +83,8 @@ struct Traits<PidAndTid> : public GenericTraits<PidAndTid> {
 
 struct Snapshot {
     HashMap<PidAndTid, ThreadData> map;
-    u32 sum_times_scheduled { 0 };
+    u64 total_time_scheduled { 0 };
+    u64 total_time_scheduled_kernel { 0 };
 };
 
 static Snapshot get_snapshot()
@@ -97,37 +94,38 @@ static Snapshot get_snapshot()
         return {};
 
     Snapshot snapshot;
-    for (auto& it : all_processes.value()) {
-        auto& stats = it.value;
-        for (auto& thread : stats.threads) {
-            snapshot.sum_times_scheduled += thread.times_scheduled;
+    for (auto& process : all_processes.value().processes) {
+        for (auto& thread : process.threads) {
             ThreadData thread_data;
             thread_data.tid = thread.tid;
-            thread_data.pid = stats.pid;
-            thread_data.pgid = stats.pgid;
-            thread_data.pgp = stats.pgp;
-            thread_data.sid = stats.sid;
-            thread_data.uid = stats.uid;
-            thread_data.gid = stats.gid;
-            thread_data.ppid = stats.ppid;
-            thread_data.nfds = stats.nfds;
-            thread_data.name = stats.name;
-            thread_data.tty = stats.tty;
-            thread_data.amount_virtual = stats.amount_virtual;
-            thread_data.amount_resident = stats.amount_resident;
-            thread_data.amount_shared = stats.amount_shared;
+            thread_data.pid = process.pid;
+            thread_data.pgid = process.pgid;
+            thread_data.pgp = process.pgp;
+            thread_data.sid = process.sid;
+            thread_data.uid = process.uid;
+            thread_data.gid = process.gid;
+            thread_data.ppid = process.ppid;
+            thread_data.nfds = process.nfds;
+            thread_data.name = process.name;
+            thread_data.tty = process.tty;
+            thread_data.amount_virtual = process.amount_virtual;
+            thread_data.amount_resident = process.amount_resident;
+            thread_data.amount_shared = process.amount_shared;
             thread_data.syscall_count = thread.syscall_count;
             thread_data.inode_faults = thread.inode_faults;
             thread_data.zero_faults = thread.zero_faults;
             thread_data.cow_faults = thread.cow_faults;
-            thread_data.times_scheduled = thread.times_scheduled;
+            thread_data.time_scheduled = (u64)thread.time_user + (u64)thread.time_kernel;
             thread_data.priority = thread.priority;
             thread_data.state = thread.state;
-            thread_data.username = stats.username;
+            thread_data.username = process.username;
 
-            snapshot.map.set({ stats.pid, thread.tid }, move(thread_data));
+            snapshot.map.set({ process.pid, thread.tid }, move(thread_data));
         }
     }
+
+    snapshot.total_time_scheduled = all_processes->total_time_scheduled;
+    snapshot.total_time_scheduled_kernel = all_processes->total_time_scheduled_kernel;
 
     return snapshot;
 }
@@ -135,7 +133,49 @@ static Snapshot get_snapshot()
 static bool g_window_size_changed = true;
 static struct winsize g_window_size;
 
-int main(int, char**)
+static void parse_args(int argc, char** argv, TopOption& top_option)
+{
+    Core::ArgsParser::Option sort_by_option {
+        true,
+        "Sort by field [pid, tid, pri, user, state, virt, phys, cpu, name]",
+        "sort-by",
+        's',
+        nullptr,
+        [&top_option](const char* s) {
+            StringView sort_by_option { s };
+            if (sort_by_option == "pid"sv)
+                top_option.sort_by = TopOption::SortBy::Pid;
+            else if (sort_by_option == "tid"sv)
+                top_option.sort_by = TopOption::SortBy::Tid;
+            else if (sort_by_option == "pri"sv)
+                top_option.sort_by = TopOption::SortBy::Priority;
+            else if (sort_by_option == "user"sv)
+                top_option.sort_by = TopOption::SortBy::UserName;
+            else if (sort_by_option == "state"sv)
+                top_option.sort_by = TopOption::SortBy::State;
+            else if (sort_by_option == "virt"sv)
+                top_option.sort_by = TopOption::SortBy::Virt;
+            else if (sort_by_option == "phys"sv)
+                top_option.sort_by = TopOption::SortBy::Phys;
+            else if (sort_by_option == "cpu"sv)
+                top_option.sort_by = TopOption::SortBy::Cpu;
+            else if (sort_by_option == "name"sv)
+                top_option.sort_by = TopOption::SortBy::Name;
+            else
+                return false;
+            return true;
+        }
+    };
+
+    Core::ArgsParser args_parser;
+
+    args_parser.set_general_help("Display information about processes");
+    args_parser.add_option(top_option.delay_time, "Delay time interval in seconds", "delay-time", 'd', nullptr);
+    args_parser.add_option(move(sort_by_option));
+    args_parser.parse(argc, argv);
+}
+
+int main(int argc, char** argv)
 {
     if (pledge("stdio rpath tty sigaction ", nullptr) < 0) {
         perror("pledge");
@@ -163,6 +203,9 @@ int main(int, char**)
         return 1;
     }
 
+    TopOption top_option;
+    parse_args(argc, argv, top_option);
+
     Vector<ThreadData*> threads;
     auto prev = get_snapshot();
     usleep(10000);
@@ -177,10 +220,10 @@ int main(int, char**)
         }
 
         auto current = get_snapshot();
-        auto sum_diff = current.sum_times_scheduled - prev.sum_times_scheduled;
+        auto total_scheduled_diff = current.total_time_scheduled - prev.total_time_scheduled;
 
         printf("\033[3J\033[H\033[2J");
-        printf("\033[47;30m%6s %3s %3s  %-9s  %-10s  %6s  %6s  %4s  %s\033[K\033[0m\n",
+        printf("\033[47;30m%6s %3s %3s  %-9s  %-13s  %6s  %6s  %4s  %s\033[K\033[0m\n",
             "PID",
             "TID",
             "PRI",
@@ -194,25 +237,45 @@ int main(int, char**)
             auto pid_and_tid = it.key;
             if (pid_and_tid.pid == 0)
                 continue;
-            u32 times_scheduled_now = it.value.times_scheduled;
             auto jt = prev.map.find(pid_and_tid);
             if (jt == prev.map.end())
                 continue;
-            u32 times_scheduled_before = (*jt).value.times_scheduled;
-            u32 times_scheduled_diff = times_scheduled_now - times_scheduled_before;
-            it.value.times_scheduled_since_prev = times_scheduled_diff;
-            it.value.cpu_percent = ((times_scheduled_diff * 100) / sum_diff);
-            it.value.cpu_percent_decimal = (((times_scheduled_diff * 1000) / sum_diff) % 10);
+            auto time_scheduled_before = (*jt).value.time_scheduled;
+            auto time_scheduled_diff = it.value.time_scheduled - time_scheduled_before;
+            it.value.time_scheduled_since_prev = time_scheduled_diff;
+            it.value.cpu_percent = total_scheduled_diff > 0 ? ((time_scheduled_diff * 100) / total_scheduled_diff) : 0;
+            it.value.cpu_percent_decimal = total_scheduled_diff > 0 ? (((time_scheduled_diff * 1000) / total_scheduled_diff) % 10) : 0;
             threads.append(&it.value);
         }
 
-        quick_sort(threads, [](auto* p1, auto* p2) {
-            return p2->times_scheduled_since_prev < p1->times_scheduled_since_prev;
+        quick_sort(threads, [&top_option](auto* p1, auto* p2) {
+            switch (top_option.sort_by) {
+            case TopOption::SortBy::Pid:
+                return p2->pid > p1->pid;
+            case TopOption::SortBy::Tid:
+                return p2->tid > p1->tid;
+            case TopOption::SortBy::Priority:
+                return p2->priority > p1->priority;
+            case TopOption::SortBy::UserName:
+                return p2->username > p1->username;
+            case TopOption::SortBy::State:
+                return p2->state > p1->state;
+            case TopOption::SortBy::Virt:
+                return p2->amount_virtual < p1->amount_virtual;
+            case TopOption::SortBy::Phys:
+                return p2->amount_resident < p1->amount_resident;
+            case TopOption::SortBy::Name:
+                return p2->name > p1->name;
+            case TopOption::SortBy::Cpu:
+                return p2->cpu_percent * 10 + p2->cpu_percent_decimal < p1->cpu_percent * 10 + p1->cpu_percent_decimal;
+            default:
+                return p2->time_scheduled_since_prev < p1->time_scheduled_since_prev;
+            }
         });
 
         int row = 0;
         for (auto* thread : threads) {
-            int nprinted = printf("%6d %3d %2u   %-9s  %-10s  %6zu  %6zu  %2u.%1u  ",
+            int nprinted = printf("%6d %3d %2u   %-9s  %-13s  %6zu  %6zu  %2u.%1u  ",
                 thread->pid,
                 thread->tid,
                 thread->priority,
@@ -232,7 +295,7 @@ int main(int, char**)
         }
         threads.clear_with_capacity();
         prev = move(current);
-        sleep(1);
+        sleep(top_option.delay_time);
     }
     return 0;
 }

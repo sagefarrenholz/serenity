@@ -49,10 +49,57 @@ test("flag and options", () => {
     expect(re.unicode).toBe(false);
 
     expect(() => {
-        /foo/gg;
+        Function("/foo/gg");
     }).toThrowWithMessage(SyntaxError, "Repeated RegExp flag 'g'");
 
     expect(() => {
-        /foo/x;
+        Function("/foo/x");
     }).toThrowWithMessage(SyntaxError, "Invalid RegExp flag 'x'");
+});
+
+test("override exec with function", () => {
+    let calls = 0;
+
+    let re = /test/;
+    let oldExec = re.exec.bind(re);
+    re.exec = function (...args) {
+        ++calls;
+        return oldExec(...args);
+    };
+
+    expect(re.test("test")).toBe(true);
+    expect(calls).toBe(1);
+});
+
+test("override exec with bad function", () => {
+    let calls = 0;
+
+    let re = /test/;
+    re.exec = function (...args) {
+        ++calls;
+        return 4;
+    };
+
+    expect(() => {
+        re.test("test");
+    }).toThrow(TypeError);
+    expect(calls).toBe(1);
+});
+
+test("override exec with non-function", () => {
+    let re = /test/;
+    re.exec = 3;
+    expect(re.test("test")).toBe(true);
+});
+
+test("property escapes", () => {
+    expect(/\p{ASCII}/.test("a")).toBeFalse();
+    expect(/\p{ASCII}/.test("p{ASCII}")).toBeTrue();
+    expect(/\p{ASCII}/u.test("a")).toBeTrue();
+    expect(/\p{ASCII}/u.test("😀")).toBeFalse();
+    expect(/\p{ASCII_Hex_Digit}/u.test("1")).toBeTrue();
+    expect(/\p{ASCII_Hex_Digit}/u.test("a")).toBeTrue();
+    expect(/\p{ASCII_Hex_Digit}/u.test("x")).toBeFalse();
+    expect(/\p{Any}/u.test("\u0378")).toBeTrue();
+    expect(/\p{Assigned}/u.test("\u0378")).toBeFalse();
 });

@@ -1,44 +1,23 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Badge.h>
+#include <AK/CharacterTypes.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf8View.h>
 #include <LibCore/Timer.h>
 #include <LibGUI/TextDocument.h>
-#include <LibGUI/TextEditor.h>
 #include <LibRegex/Regex.h>
-#include <ctype.h>
 
 namespace GUI {
 
 NonnullRefPtr<TextDocument> TextDocument::create(Client* client)
 {
-    return adopt(*new TextDocument(client));
+    return adopt_ref(*new TextDocument(client));
 }
 
 TextDocument::TextDocument(Client* client)
@@ -46,12 +25,14 @@ TextDocument::TextDocument(Client* client)
     if (client)
         m_clients.set(client);
     append_line(make<TextDocumentLine>(*this));
+    set_unmodified();
 
-    // TODO: Instead of a repating timer, this we should call a delayed 2 sec timer when the user types.
-    m_undo_timer = Core::Timer::construct(
-        2000, [this] {
-            update_undo_timer();
-        });
+    m_undo_stack.on_state_change = [this] {
+        if (m_client_notifications_enabled) {
+            for (auto* client : m_clients)
+                client->document_did_update_undo_stack();
+        }
+    };
 }
 
 TextDocument::~TextDocument()
@@ -61,6 +42,7 @@ TextDocument::~TextDocument()
 bool TextDocument::set_text(const StringView& text)
 {
     m_client_notifications_enabled = false;
+    m_undo_stack.clear();
     m_spans.clear();
     remove_all_lines();
 
@@ -111,6 +93,9 @@ bool TextDocument::set_text(const StringView& text)
         client->document_did_set_text();
 
     clear_text_guard.disarm();
+
+    // FIXME: Should the modified state be cleared on some of the earlier returns as well?
+    set_unmodified();
     return true;
 }
 
@@ -118,7 +103,7 @@ size_t TextDocumentLine::first_non_whitespace_column() const
 {
     for (size_t i = 0; i < length(); ++i) {
         auto code_point = code_points()[i];
-        if (!isspace(code_point))
+        if (!is_ascii_space(code_point))
             return i;
     }
     return length();
@@ -128,7 +113,7 @@ Optional<size_t> TextDocumentLine::last_non_whitespace_column() const
 {
     for (ssize_t i = length() - 1; i >= 0; --i) {
         auto code_point = code_points()[i];
-        if (!isspace(code_point))
+        if (!is_ascii_space(code_point))
             return i;
     }
     return {};
@@ -138,7 +123,19 @@ bool TextDocumentLine::ends_in_whitespace() const
 {
     if (!length())
         return false;
-    return isspace(code_points()[length() - 1]);
+    return is_ascii_space(code_points()[length() - 1]);
+}
+
+bool TextDocumentLine::can_select() const
+{
+    if (is_empty())
+        return false;
+    for (size_t i = 0; i < length(); ++i) {
+        auto code_point = code_points()[i];
+        if (code_point != '\n' && code_point != '\r' && code_point != '\f' && code_point != '\v')
+            return true;
+    }
+    return false;
 }
 
 size_t TextDocumentLine::leading_spaces() const
@@ -343,16 +340,23 @@ String TextDocument::text() const
 
 String TextDocument::text_in_range(const TextRange& a_range) const
 {
-    if (is_empty() || line_count() < a_range.end().line() - a_range.start().line() || line(a_range.start().line()).is_empty())
-        return String("");
     auto range = a_range.normalized();
+    if (is_empty() || line_count() < range.end().line() - range.start().line())
+        return String("");
 
     StringBuilder builder;
     for (size_t i = range.start().line(); i <= range.end().line(); ++i) {
         auto& line = this->line(i);
         size_t selection_start_column_on_line = range.start().line() == i ? range.start().column() : 0;
         size_t selection_end_column_on_line = range.end().line() == i ? range.end().column() : line.length();
-        builder.append(Utf32View(line.code_points() + selection_start_column_on_line, selection_end_column_on_line - selection_start_column_on_line));
+
+        if (!line.is_empty()) {
+            builder.append(
+                Utf32View(
+                    line.code_points() + selection_start_column_on_line,
+                    selection_end_column_on_line - selection_start_column_on_line));
+        }
+
         if (i != range.end().line())
             builder.append('\n');
     }
@@ -636,11 +640,15 @@ TextPosition TextDocument::first_word_break_before(const TextPosition& position,
 
     auto target = position;
     auto line = this->line(target.line());
-    auto is_start_alphanumeric = isalnum(line.code_points()[target.column() - (start_at_column_before ? 1 : 0)]);
+    auto modifier = start_at_column_before ? 1 : 0;
+    if (target.column() == line.length())
+        modifier = 1;
+
+    auto is_start_alphanumeric = is_ascii_alphanumeric(line.code_points()[target.column() - modifier]);
 
     while (target.column() > 0) {
         auto prev_code_point = line.code_points()[target.column() - 1];
-        if ((is_start_alphanumeric && !isalnum(prev_code_point)) || (!is_start_alphanumeric && isalnum(prev_code_point)))
+        if ((is_start_alphanumeric && !is_ascii_alphanumeric(prev_code_point)) || (!is_start_alphanumeric && is_ascii_alphanumeric(prev_code_point)))
             break;
         target.set_column(target.column() - 1);
     }
@@ -660,13 +668,46 @@ TextPosition TextDocument::first_word_break_after(const TextPosition& position) 
         return TextPosition(position.line() + 1, 0);
     }
 
-    auto is_start_alphanumeric = isalnum(line.code_points()[target.column()]);
+    auto is_start_alphanumeric = is_ascii_alphanumeric(line.code_points()[target.column()]);
 
     while (target.column() < line.length()) {
         auto next_code_point = line.code_points()[target.column()];
-        if ((is_start_alphanumeric && !isalnum(next_code_point)) || (!is_start_alphanumeric && isalnum(next_code_point)))
+        if ((is_start_alphanumeric && !is_ascii_alphanumeric(next_code_point)) || (!is_start_alphanumeric && is_ascii_alphanumeric(next_code_point)))
             break;
         target.set_column(target.column() + 1);
+    }
+
+    return target;
+}
+
+TextPosition TextDocument::first_word_before(const TextPosition& position, bool start_at_column_before) const
+{
+    if (position.column() == 0) {
+        if (position.line() == 0) {
+            return TextPosition(0, 0);
+        }
+        auto previous_line = this->line(position.line() - 1);
+        return TextPosition(position.line() - 1, previous_line.length());
+    }
+
+    auto target = position;
+    auto line = this->line(target.line());
+    if (target.column() == line.length())
+        start_at_column_before = 1;
+
+    auto nonblank_passed = !is_ascii_blank(line.code_points()[target.column() - start_at_column_before]);
+    while (target.column() > 0) {
+        auto prev_code_point = line.code_points()[target.column() - 1];
+        nonblank_passed |= !is_ascii_blank(prev_code_point);
+
+        if (nonblank_passed && is_ascii_blank(prev_code_point)) {
+            break;
+        } else if (is_ascii_punctuation(prev_code_point)) {
+            target.set_column(target.column() - 1);
+            break;
+        }
+
+        target.set_column(target.column() - 1);
     }
 
     return target;
@@ -709,6 +750,28 @@ InsertTextCommand::InsertTextCommand(TextDocument& document, const String& text,
 {
 }
 
+String InsertTextCommand::action_text() const
+{
+    return "Insert Text";
+}
+
+bool InsertTextCommand::merge_with(GUI::Command const& other)
+{
+    if (!is<InsertTextCommand>(other))
+        return false;
+    auto& typed_other = static_cast<InsertTextCommand const&>(other);
+    if (m_range.end() != typed_other.m_range.start())
+        return false;
+    if (m_range.start().line() != m_range.end().line())
+        return false;
+    StringBuilder builder(m_text.length() + typed_other.m_text.length());
+    builder.append(m_text);
+    builder.append(typed_other.m_text);
+    m_text = builder.to_string();
+    m_range.set_end(typed_other.m_range.end());
+    return true;
+}
+
 void InsertTextCommand::perform_formatting(const TextDocument::Client& client)
 {
     const size_t tab_width = client.soft_tab_width();
@@ -722,6 +785,10 @@ void InsertTextCommand::perform_formatting(const TextDocument::Client& client)
 
     for (auto input_char : m_text) {
         if (input_char == '\n') {
+            size_t spaces_at_end = 0;
+            if (column < line_indentation)
+                spaces_at_end = line_indentation - column;
+            line_indentation -= spaces_at_end;
             builder.append('\n');
             column = 0;
             if (should_auto_indent) {
@@ -777,6 +844,31 @@ RemoveTextCommand::RemoveTextCommand(TextDocument& document, const String& text,
 {
 }
 
+String RemoveTextCommand::action_text() const
+{
+    return "Remove Text";
+}
+
+bool RemoveTextCommand::merge_with(GUI::Command const& other)
+{
+    if (!is<RemoveTextCommand>(other))
+        return false;
+    auto& typed_other = static_cast<RemoveTextCommand const&>(other);
+    if (m_range.start() != typed_other.m_range.end())
+        return false;
+    if (m_range.start().line() != m_range.end().line())
+        return false;
+    // Merge backspaces
+    StringBuilder builder(m_text.length() + typed_other.m_text.length());
+    builder.append(typed_other.m_text);
+    builder.append(m_text);
+    m_text = builder.to_string();
+    m_range.set_start(typed_other.m_range.start());
+    return true;
+
+    return false;
+}
+
 void RemoveTextCommand::redo()
 {
     m_document.remove(m_range);
@@ -787,11 +879,6 @@ void RemoveTextCommand::undo()
 {
     auto new_cursor = m_document.insert_at(m_range.start(), m_text);
     m_document.set_all_cursors(new_cursor);
-}
-
-void TextDocument::update_undo_timer()
-{
-    m_undo_stack.finalize_current_combo();
 }
 
 TextPosition TextDocument::insert_at(const TextPosition& position, const StringView& text, const Client* client)
@@ -835,6 +922,9 @@ void TextDocument::remove(const TextRange& unnormalized_range)
     if (range.start().line() == range.end().line()) {
         // Delete within same line.
         auto& line = this->line(range.start().line());
+        if (line.length() == 0)
+            return;
+
         bool whole_line_is_selected = range.start().column() == 0 && range.end().column() == line.length();
 
         if (whole_line_is_selected) {
@@ -845,12 +935,16 @@ void TextDocument::remove(const TextRange& unnormalized_range)
     } else {
         // Delete across a newline, merging lines.
         VERIFY(range.start().line() == range.end().line() - 1);
+
         auto& first_line = line(range.start().line());
         auto& second_line = line(range.end().line());
+
         Vector<u32> code_points;
         code_points.append(first_line.code_points(), range.start().column());
-        code_points.append(second_line.code_points() + range.end().column(), second_line.length() - range.end().column());
+        if (!second_line.is_empty())
+            code_points.append(second_line.code_points() + range.end().column(), second_line.length() - range.end().column());
         first_line.set_text(*this, move(code_points));
+
         remove_line(range.end().line());
     }
 
@@ -880,6 +974,11 @@ const TextDocumentSpan* TextDocument::span_at(const TextPosition& position) cons
             return &span;
     }
     return nullptr;
+}
+
+void TextDocument::set_unmodified()
+{
+    m_undo_stack.set_current_unmodified();
 }
 
 }

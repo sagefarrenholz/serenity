@@ -1,43 +1,30 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Assertions.h>
+#include <AK/BitCast.h>
 #include <AK/Format.h>
 #include <AK/Forward.h>
+#include <AK/Function.h>
+#include <AK/Result.h>
 #include <AK/String.h>
 #include <AK/Types.h>
 #include <LibJS/Forward.h>
+#include <LibJS/Runtime/BigInt.h>
+#include <LibJS/Runtime/PrimitiveString.h>
+#include <LibJS/Runtime/Utf16String.h>
 #include <math.h>
 
 // 2 ** 53 - 1
 static constexpr double MAX_ARRAY_LIKE_INDEX = 9007199254740991.0;
-// 2 ** 32 - 1
-static constexpr double MAX_U32 = 4294967295.0;
+// Unique bit representation of negative zero (only sign bit set)
+static constexpr u64 NEGATIVE_ZERO_BITS = ((u64)1 << 63);
 
 namespace JS {
 
@@ -55,7 +42,6 @@ public:
         Symbol,
         Accessor,
         BigInt,
-        NativeProperty,
     };
 
     enum class PreferredType {
@@ -74,20 +60,20 @@ public:
     bool is_symbol() const { return m_type == Type::Symbol; }
     bool is_accessor() const { return m_type == Type::Accessor; };
     bool is_bigint() const { return m_type == Type::BigInt; };
-    bool is_native_property() const { return m_type == Type::NativeProperty; }
     bool is_nullish() const { return is_null() || is_undefined(); }
-    bool is_cell() const { return is_string() || is_accessor() || is_object() || is_bigint() || is_symbol() || is_native_property(); }
-    bool is_array() const;
+    bool is_cell() const { return is_string() || is_accessor() || is_object() || is_bigint() || is_symbol(); }
+    bool is_array(GlobalObject&) const;
     bool is_function() const;
-    bool is_regexp(GlobalObject& global_object) const;
+    bool is_constructor() const;
+    bool is_regexp(GlobalObject&) const;
 
     bool is_nan() const { return is_number() && __builtin_isnan(as_double()); }
     bool is_infinity() const { return is_number() && __builtin_isinf(as_double()); }
     bool is_positive_infinity() const { return is_number() && __builtin_isinf_sign(as_double()) > 0; }
     bool is_negative_infinity() const { return is_number() && __builtin_isinf_sign(as_double()) < 0; }
-    bool is_positive_zero() const { return is_number() && 1.0 / as_double() == INFINITY; }
-    bool is_negative_zero() const { return is_number() && 1.0 / as_double() == -INFINITY; }
-    bool is_integer() const { return is_finite_number() && (i32)as_double() == as_double(); }
+    bool is_positive_zero() const { return is_number() && bit_cast<u64>(as_double()) == 0; }
+    bool is_negative_zero() const { return is_number() && bit_cast<u64>(as_double()) == NEGATIVE_ZERO_BITS; }
+    bool is_integral_number() const { return is_finite_number() && trunc(as_double()) == as_double(); }
     bool is_finite_number() const
     {
         if (!is_number())
@@ -109,13 +95,24 @@ public:
 
     explicit Value(double value)
     {
-        bool is_negative_zero = value == 0.0 && (1.0 / value == -INFINITY);
+        bool is_negative_zero = bit_cast<u64>(value) == NEGATIVE_ZERO_BITS;
         if (value >= NumericLimits<i32>::min() && value <= NumericLimits<i32>::max() && trunc(value) == value && !is_negative_zero) {
             m_type = Type::Int32;
             m_value.as_i32 = static_cast<i32>(value);
         } else {
             m_type = Type::Double;
             m_value.as_double = value;
+        }
+    }
+
+    explicit Value(unsigned long value)
+    {
+        if (value > NumericLimits<i32>::max()) {
+            m_value.as_double = static_cast<double>(value);
+            m_type = Type::Double;
+        } else {
+            m_value.as_i32 = static_cast<i32>(value);
+            m_type = Type::Int32;
         }
     }
 
@@ -164,12 +161,6 @@ public:
         : m_type(Type::BigInt)
     {
         m_value.as_bigint = const_cast<BigInt*>(bigint);
-    }
-
-    Value(const NativeProperty* native_property)
-        : m_type(Type::NativeProperty)
-    {
-        m_value.as_native_property = const_cast<NativeProperty*>(native_property);
     }
 
     explicit Value(Type type)
@@ -229,10 +220,10 @@ public:
         return *m_value.as_symbol;
     }
 
-    Cell* as_cell()
+    Cell& as_cell()
     {
         VERIFY(is_cell());
-        return m_value.as_cell;
+        return *m_value.as_cell;
     }
 
     Accessor& as_accessor()
@@ -247,27 +238,26 @@ public:
         return *m_value.as_bigint;
     }
 
-    NativeProperty& as_native_property()
-    {
-        VERIFY(is_native_property());
-        return *m_value.as_native_property;
-    }
-
     Array& as_array();
-    Function& as_function();
+    FunctionObject& as_function();
 
     i32 as_i32() const;
     u32 as_u32() const;
-    size_t as_size_t() const;
+
+    u64 encoded() const { return m_value.encoded; }
 
     String to_string(GlobalObject&, bool legacy_null_to_empty_string = false) const;
+    Utf16String to_utf16_string(GlobalObject&) const;
     PrimitiveString* to_primitive_string(GlobalObject&);
     Value to_primitive(GlobalObject&, PreferredType preferred_type = PreferredType::Default) const;
     Object* to_object(GlobalObject&) const;
     Value to_numeric(GlobalObject&) const;
     Value to_number(GlobalObject&) const;
     BigInt* to_bigint(GlobalObject&) const;
+    i64 to_bigint_int64(GlobalObject&) const;
+    u64 to_bigint_uint64(GlobalObject&) const;
     double to_double(GlobalObject&) const;
+    StringOrSymbol to_property_key(GlobalObject&) const;
     i32 to_i32(GlobalObject& global_object) const
     {
         if (m_type == Type::Int32)
@@ -275,10 +265,18 @@ public:
         return to_i32_slow_case(global_object);
     }
     u32 to_u32(GlobalObject&) const;
+    i16 to_i16(GlobalObject&) const;
+    u16 to_u16(GlobalObject&) const;
+    i8 to_i8(GlobalObject&) const;
+    u8 to_u8(GlobalObject&) const;
+    u8 to_u8_clamp(GlobalObject&) const;
     size_t to_length(GlobalObject&) const;
     size_t to_index(GlobalObject&) const;
     double to_integer_or_infinity(GlobalObject&) const;
     bool to_boolean() const;
+
+    Value get(GlobalObject&, PropertyName const&) const;
+    FunctionObject* get_method(GlobalObject&, PropertyName const&) const;
 
     String to_string_without_side_effects() const;
 
@@ -289,8 +287,17 @@ public:
         return *this;
     }
 
+    String typeof() const;
+
+    bool operator==(Value const&) const;
+
+    template<typename... Args>
+    [[nodiscard]] ALWAYS_INLINE Value invoke(GlobalObject& global_object, PropertyName const& property_name, Args... args);
+
 private:
     Type m_type { Type::Empty };
+
+    [[nodiscard]] Value invoke_internal(GlobalObject& global_object, PropertyName const&, Optional<MarkedValueList> arguments);
 
     i32 to_i32_slow_case(GlobalObject&) const;
 
@@ -304,8 +311,9 @@ private:
         Cell* as_cell;
         Accessor* as_accessor;
         BigInt* as_bigint;
-        NativeProperty* as_native_property;
-    } m_value;
+
+        u64 encoded;
+    } m_value { .encoded = 0 };
 };
 
 inline Value js_undefined()
@@ -331,6 +339,12 @@ inline Value js_infinity()
 inline Value js_negative_infinity()
 {
     return Value(-INFINITY);
+}
+
+inline void Cell::Visitor::visit(Value value)
+{
+    if (value.is_cell())
+        visit_impl(value.as_cell());
 }
 
 Value greater_than(GlobalObject&, Value lhs, Value rhs);
@@ -362,8 +376,29 @@ bool same_value(Value lhs, Value rhs);
 bool same_value_zero(Value lhs, Value rhs);
 bool same_value_non_numeric(Value lhs, Value rhs);
 TriState abstract_relation(GlobalObject&, bool left_first, Value lhs, Value rhs);
-Function* get_method(GlobalObject& global_object, Value, const PropertyName&);
-size_t length_of_array_like(GlobalObject&, const Object&);
+
+inline bool Value::operator==(Value const& value) const { return same_value(*this, value); }
+
+struct ValueTraits : public Traits<Value> {
+    static unsigned hash(Value value)
+    {
+        VERIFY(!value.is_empty());
+        if (value.is_string())
+            return value.as_string().string().hash();
+
+        if (value.is_bigint())
+            return value.as_bigint().big_integer().hash();
+
+        if (value.is_negative_zero())
+            value = Value(0);
+
+        return u64_hash(value.encoded()); // FIXME: Is this the best way to hash pointers, doubles & ints?
+    }
+    static bool equals(const Value a, const Value b)
+    {
+        return same_value_zero(a, b);
+    }
+};
 
 }
 

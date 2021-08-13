@@ -1,35 +1,17 @@
 /*
  * Copyright (c) 2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Assertions.h>
+#include <AK/CheckedFormatString.h>
 #include <AK/LexicalPath.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/Vector.h>
 #include <LibCore/DirIterator.h>
-#include <getopt.h>
+#include <errno.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -41,16 +23,13 @@ bool g_follow_symlinks = false;
 bool g_there_was_an_error = false;
 bool g_have_seen_action_command = false;
 
-[[noreturn]] static void fatal_error(const char* format, ...)
+template<typename... Parameters>
+[[noreturn]] static void fatal_error(CheckedFormatString<Parameters...>&& fmtstr, Parameters const&... parameters)
 {
-    fputs("\033[31m", stderr);
-
-    va_list ap;
-    va_start(ap, format);
-    vfprintf(stderr, format, ap);
-    va_end(ap);
-
-    fputs("\033[0m\n", stderr);
+    warn("\033[31m");
+    warn(move(fmtstr), parameters...);
+    warn("\033[0m");
+    warnln();
     exit(1);
 }
 
@@ -85,7 +64,7 @@ public:
     {
         StringView type = arg;
         if (type.length() != 1 || !StringView("bcdlpfs").contains(type[0]))
-            fatal_error("Invalid mode: \033[1m%s", arg);
+            fatal_error("Invalid mode: \033[1m{}", arg);
         m_type = type[0];
     }
 
@@ -123,7 +102,7 @@ public:
     {
         auto number = StringView(arg).to_uint();
         if (!number.has_value())
-            fatal_error("Invalid number: \033[1m%s", arg);
+            fatal_error("Invalid number: \033[1m{}", arg);
         m_links = number.value();
     }
 
@@ -146,7 +125,7 @@ public:
             // Attempt to parse it as decimal UID.
             auto number = StringView(arg).to_uint();
             if (!number.has_value())
-                fatal_error("Invalid user: \033[1m%s", arg);
+                fatal_error("Invalid user: \033[1m{}", arg);
             m_uid = number.value();
         }
     }
@@ -170,7 +149,7 @@ public:
             // Attempt to parse it as decimal GID.
             auto number = StringView(arg).to_int();
             if (!number.has_value())
-                fatal_error("Invalid group: \033[1m%s", arg);
+                fatal_error("Invalid group: \033[1m{}", arg);
             m_gid = number.value();
         }
     }
@@ -195,7 +174,7 @@ public:
         }
         auto number = view.to_uint();
         if (!number.has_value())
-            fatal_error("Invalid size: \033[1m%s", arg);
+            fatal_error("Invalid size: \033[1m{}", arg);
         m_size = number.value();
     }
 
@@ -242,7 +221,7 @@ public:
 private:
     virtual bool evaluate(const char* file_path) const override
     {
-        printf("%s%c", file_path, m_terminator);
+        out("{}{}", file_path, m_terminator);
         return true;
     }
 
@@ -372,7 +351,7 @@ static OwnPtr<Command> parse_simple_command(char* argv[])
             command_argv.append(argv[optind]);
         return make<ExecCommand>(move(command_argv));
     } else {
-        fatal_error("Unsupported command \033[1m%s", argv[optind]);
+        fatal_error("Unsupported command \033[1m{}", argv[optind]);
     }
 }
 
@@ -383,9 +362,10 @@ static OwnPtr<Command> parse_complex_command(char* argv[])
     while (command && argv[optind] && argv[optind + 1]) {
         StringView arg = argv[++optind];
 
-        enum { And,
-            Or } binary_operation
-            = And;
+        enum {
+            And,
+            Or,
+        } binary_operation { And };
 
         if (arg == "-a") {
             optind++;
@@ -474,19 +454,25 @@ static void walk_tree(const char* root_path, Command& command)
     if (dir_iterator.has_error() && dir_iterator.error() == ENOTDIR)
         return;
 
-    while (dir_iterator.has_next())
-        walk_tree(dir_iterator.next_full_path().characters(), command);
+    while (dir_iterator.has_next()) {
+        auto path = dir_iterator.next_full_path();
+        struct stat stat;
+        if (g_follow_symlinks || ::lstat(path.characters(), &stat) < 0 || !S_ISLNK(stat.st_mode))
+            walk_tree(path.characters(), command);
+        else
+            command.evaluate(path.characters());
+    }
 
     if (dir_iterator.has_error()) {
-        fprintf(stderr, "%s: %s\n", root_path, dir_iterator.error_string());
+        warnln("{}: {}", root_path, dir_iterator.error_string());
         g_there_was_an_error = true;
     }
 }
 
 int main(int argc, char* argv[])
 {
-    auto root_path = parse_options(argc, argv);
+    LexicalPath root_path(parse_options(argc, argv));
     auto command = parse_all_commands(argv);
-    walk_tree(root_path, *command);
+    walk_tree(root_path.string().characters(), *command);
     return g_there_was_an_error ? 1 : 0;
 }

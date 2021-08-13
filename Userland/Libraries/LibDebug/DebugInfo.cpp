@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Itamar S. <itamar8910@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "DebugInfo.h"
@@ -35,11 +15,11 @@
 
 namespace Debug {
 
-DebugInfo::DebugInfo(NonnullOwnPtr<const ELF::Image> elf, String source_root, FlatPtr base_address)
-    : m_elf(move(elf))
-    , m_source_root(source_root)
+DebugInfo::DebugInfo(ELF::Image const& elf, String source_root, FlatPtr base_address)
+    : m_elf(elf)
+    , m_source_root(move(source_root))
     , m_base_address(base_address)
-    , m_dwarf_info(*m_elf)
+    , m_dwarf_info(m_elf)
 {
     prepare_variable_scopes();
     prepare_lines();
@@ -47,30 +27,26 @@ DebugInfo::DebugInfo(NonnullOwnPtr<const ELF::Image> elf, String source_root, Fl
 
 void DebugInfo::prepare_variable_scopes()
 {
-    m_dwarf_info.for_each_compilation_unit([&](const Dwarf::CompilationUnit& unit) {
+    m_dwarf_info.for_each_compilation_unit([&](Dwarf::CompilationUnit const& unit) {
         auto root = unit.root_die();
         parse_scopes_impl(root);
     });
 }
 
-void DebugInfo::parse_scopes_impl(const Dwarf::DIE& die)
+void DebugInfo::parse_scopes_impl(Dwarf::DIE const& die)
 {
-    die.for_each_child([&](const Dwarf::DIE& child) {
+    die.for_each_child([&](Dwarf::DIE const& child) {
         if (child.is_null())
             return;
         if (!(child.tag() == Dwarf::EntryTag::SubProgram || child.tag() == Dwarf::EntryTag::LexicalBlock))
             return;
 
         if (child.get_attribute(Dwarf::Attribute::Inline).has_value()) {
-#if SPAM_DEBUG
-            dbgln("DWARF inlined functions are not supported");
-#endif
+            dbgln_if(SPAM_DEBUG, "DWARF inlined functions are not supported");
             return;
         }
         if (child.get_attribute(Dwarf::Attribute::Ranges).has_value()) {
-#if SPAM_DEBUG
-            dbgln("DWARF ranges are not supported");
-#endif
+            dbgln_if(SPAM_DEBUG, "DWARF ranges are not supported");
             return;
         }
         auto name = child.get_attribute(Dwarf::Attribute::Name);
@@ -81,16 +57,14 @@ void DebugInfo::parse_scopes_impl(const Dwarf::DIE& die)
             scope.name = name.value().data.as_string;
 
         if (!child.get_attribute(Dwarf::Attribute::LowPc).has_value()) {
-#if SPAM_DEBUG
-            dbgln("DWARF: Couldn't find attribute LowPc for scope");
-#endif
+            dbgln_if(SPAM_DEBUG, "DWARF: Couldn't find attribute LowPc for scope");
             return;
         }
-        scope.address_low = child.get_attribute(Dwarf::Attribute::LowPc).value().data.as_u32;
+        scope.address_low = child.get_attribute(Dwarf::Attribute::LowPc).value().data.as_addr;
         // The attribute name HighPc is confusing. In this context, it seems to actually be a positive offset from LowPc
-        scope.address_high = scope.address_low + child.get_attribute(Dwarf::Attribute::HighPc).value().data.as_u32;
+        scope.address_high = scope.address_low + child.get_attribute(Dwarf::Attribute::HighPc).value().data.as_addr;
 
-        child.for_each_child([&](const Dwarf::DIE& variable_entry) {
+        child.for_each_child([&](Dwarf::DIE const& variable_entry) {
             if (!(variable_entry.tag() == Dwarf::EntryTag::Variable
                     || variable_entry.tag() == Dwarf::EntryTag::FormalParameter))
                 return;
@@ -104,46 +78,50 @@ void DebugInfo::parse_scopes_impl(const Dwarf::DIE& die)
 
 void DebugInfo::prepare_lines()
 {
-    auto section = elf().lookup_section(".debug_line");
-    if (section.is_undefined())
-        return;
-
-    InputMemoryStream stream { section.bytes() };
-
     Vector<Dwarf::LineProgram::LineInfo> all_lines;
-    while (!stream.eof()) {
-        Dwarf::LineProgram program(stream);
-        all_lines.append(program.lines());
-    }
+    m_dwarf_info.for_each_compilation_unit([&all_lines](Dwarf::CompilationUnit const& unit) {
+        all_lines.extend(unit.line_program().lines());
+    });
 
-    String serenity_slash("serenity/");
+    HashMap<FlyString, Optional<String>> memoized_full_paths;
+    auto compute_full_path = [&](FlyString const& file_path) -> Optional<String> {
+        if (file_path.view().contains("Toolchain/"sv) || file_path.view().contains("libgcc"sv))
+            return {};
+        if (file_path.view().starts_with("./"sv) && !m_source_root.is_null())
+            return LexicalPath::join(m_source_root, file_path).string();
+        if (auto index_of_serenity_slash = file_path.view().find("serenity/"sv); index_of_serenity_slash.has_value()) {
+            auto start_index = index_of_serenity_slash.value() + "serenity/"sv.length();
+            return file_path.view().substring_view(start_index, file_path.length() - start_index);
+        }
+        return file_path;
+    };
 
-    for (auto& line_info : all_lines) {
-        String file_path = line_info.file;
-        if (file_path.contains("Toolchain/") || file_path.contains("libgcc"))
+    m_sorted_lines.ensure_capacity(all_lines.size());
+
+    for (auto const& line_info : all_lines) {
+        auto it = memoized_full_paths.find(line_info.file);
+        if (it == memoized_full_paths.end()) {
+            memoized_full_paths.set(line_info.file, compute_full_path(line_info.file));
+            it = memoized_full_paths.find(line_info.file);
+        }
+        if (!it->value.has_value())
             continue;
-        if (file_path.contains(serenity_slash)) {
-            auto start_index = file_path.index_of(serenity_slash).value() + serenity_slash.length();
-            file_path = file_path.substring(start_index, file_path.length() - start_index);
-        }
-        if (file_path.starts_with("./") && !m_source_root.is_null()) {
-            file_path = LexicalPath::canonicalized_path(String::formatted("{}/{}", m_source_root, file_path));
-        }
-        m_sorted_lines.append({ line_info.address, file_path, line_info.line });
+        m_sorted_lines.unchecked_append({ line_info.address, it->value.value(), line_info.line });
     }
+
     quick_sort(m_sorted_lines, [](auto& a, auto& b) {
         return a.address < b.address;
     });
 }
 
-Optional<DebugInfo::SourcePosition> DebugInfo::get_source_position(u32 target_address) const
+Optional<DebugInfo::SourcePosition> DebugInfo::get_source_position(FlatPtr target_address) const
 {
     if (m_sorted_lines.is_empty())
         return {};
     if (target_address < m_sorted_lines[0].address)
         return {};
 
-    // TODO: We can do a binray search here
+    // TODO: We can do a binary search here
     for (size_t i = 0; i < m_sorted_lines.size() - 1; ++i) {
         if (m_sorted_lines[i + 1].address > target_address) {
             return SourcePosition::from_line_info(m_sorted_lines[i]);
@@ -152,16 +130,16 @@ Optional<DebugInfo::SourcePosition> DebugInfo::get_source_position(u32 target_ad
     return {};
 }
 
-Optional<DebugInfo::SourcePositionAndAddress> DebugInfo::get_address_from_source_position(const String& file, size_t line) const
+Optional<DebugInfo::SourcePositionAndAddress> DebugInfo::get_address_from_source_position(String const& file, size_t line) const
 {
     String file_path = file;
     if (!file_path.starts_with("/"))
-        file_path = String::format("/%s", file_path.characters());
+        file_path = String::formatted("/{}", file_path);
 
     constexpr char SERENITY_LIBS_PREFIX[] = "/usr/src/serenity";
     if (file.starts_with(SERENITY_LIBS_PREFIX)) {
         file_path = file.substring(sizeof(SERENITY_LIBS_PREFIX), file.length() - sizeof(SERENITY_LIBS_PREFIX));
-        file_path = String::format("../%s", file_path.characters());
+        file_path = String::formatted("../{}", file_path);
     }
 
     Optional<SourcePositionAndAddress> result;
@@ -188,7 +166,13 @@ NonnullOwnPtrVector<DebugInfo::VariableInfo> DebugInfo::get_variables_in_current
 
     // TODO: We can store the scopes in a better data structure
     for (const auto& scope : m_scopes) {
-        if (regs.eip - m_base_address < scope.address_low || regs.eip - m_base_address >= scope.address_high)
+        FlatPtr ip;
+#if ARCH(I386)
+        ip = regs.eip;
+#else
+        ip = regs.rip;
+#endif
+        if (ip - m_base_address < scope.address_low || ip - m_base_address >= scope.address_high)
             continue;
 
         for (const auto& die_entry : scope.dies_of_variables) {
@@ -201,27 +185,27 @@ NonnullOwnPtrVector<DebugInfo::VariableInfo> DebugInfo::get_variables_in_current
     return variables;
 }
 
-static Optional<Dwarf::DIE> parse_variable_type_die(const Dwarf::DIE& variable_die, DebugInfo::VariableInfo& variable_info)
+static Optional<Dwarf::DIE> parse_variable_type_die(Dwarf::DIE const& variable_die, DebugInfo::VariableInfo& variable_info)
 {
     auto type_die_offset = variable_die.get_attribute(Dwarf::Attribute::Type);
     if (!type_die_offset.has_value())
         return {};
 
-    VERIFY(type_die_offset.value().type == Dwarf::DIE::AttributeValue::Type::DieReference);
+    VERIFY(type_die_offset.value().type == Dwarf::AttributeValue::Type::DieReference);
 
-    auto type_die = variable_die.get_die_at_offset(type_die_offset.value().data.as_u32);
+    auto type_die = variable_die.compilation_unit().get_die_at_offset(type_die_offset.value().data.as_unsigned);
     auto type_name = type_die.get_attribute(Dwarf::Attribute::Name);
     if (type_name.has_value()) {
         variable_info.type_name = type_name.value().data.as_string;
     } else {
         dbgln("Unnamed DWARF type at offset: {}", type_die.offset());
-        variable_info.name = "[Unnamed Type]";
+        variable_info.type_name = "[Unnamed Type]";
     }
 
     return type_die;
 }
 
-static void parse_variable_location(const Dwarf::DIE& variable_die, DebugInfo::VariableInfo& variable_info, const PtraceRegisters& regs)
+static void parse_variable_location(Dwarf::DIE const& variable_die, DebugInfo::VariableInfo& variable_info, PtraceRegisters const& regs)
 {
     auto location_info = variable_die.get_attribute(Dwarf::Attribute::Location);
     if (!location_info.has_value()) {
@@ -232,18 +216,18 @@ static void parse_variable_location(const Dwarf::DIE& variable_die, DebugInfo::V
         return;
 
     switch (location_info.value().type) {
-    case Dwarf::DIE::AttributeValue::Type::UnsignedNumber:
+    case Dwarf::AttributeValue::Type::UnsignedNumber:
         variable_info.location_type = DebugInfo::VariableInfo::LocationType::Address;
-        variable_info.location_data.address = location_info.value().data.as_u32;
+        variable_info.location_data.address = location_info.value().data.as_addr;
         break;
-    case Dwarf::DIE::AttributeValue::Type::DwarfExpression: {
+    case Dwarf::AttributeValue::Type::DwarfExpression: {
         auto expression_bytes = ReadonlyBytes { location_info.value().data.as_raw_bytes.bytes, location_info.value().data.as_raw_bytes.length };
         auto value = Dwarf::Expression::evaluate(expression_bytes, regs);
 
         if (value.type != Dwarf::Expression::Type::None) {
-            VERIFY(value.type == Dwarf::Expression::Type::UnsignedIntetger);
+            VERIFY(value.type == Dwarf::Expression::Type::UnsignedInteger);
             variable_info.location_type = DebugInfo::VariableInfo::LocationType::Address;
-            variable_info.location_data.address = value.data.as_u32;
+            variable_info.location_data.address = value.data.as_addr;
         }
         break;
     }
@@ -252,14 +236,9 @@ static void parse_variable_location(const Dwarf::DIE& variable_die, DebugInfo::V
     }
 }
 
-OwnPtr<DebugInfo::VariableInfo> DebugInfo::create_variable_info(const Dwarf::DIE& variable_die, const PtraceRegisters& regs) const
+OwnPtr<DebugInfo::VariableInfo> DebugInfo::create_variable_info(Dwarf::DIE const& variable_die, PtraceRegisters const& regs, u32 address_offset) const
 {
-    VERIFY(variable_die.tag() == Dwarf::EntryTag::Variable
-        || variable_die.tag() == Dwarf::EntryTag::Member
-        || variable_die.tag() == Dwarf::EntryTag::FormalParameter
-        || variable_die.tag() == Dwarf::EntryTag::EnumerationType
-        || variable_die.tag() == Dwarf::EntryTag::Enumerator
-        || variable_die.tag() == Dwarf::EntryTag::StructureType);
+    VERIFY(is_variable_tag_supported(variable_die.tag()));
 
     if (variable_die.tag() == Dwarf::EntryTag::FormalParameter
         && !variable_die.get_attribute(Dwarf::Attribute::Name).has_value()) {
@@ -268,7 +247,9 @@ OwnPtr<DebugInfo::VariableInfo> DebugInfo::create_variable_info(const Dwarf::DIE
     }
 
     NonnullOwnPtr<VariableInfo> variable_info = make<VariableInfo>();
-    variable_info->name = variable_die.get_attribute(Dwarf::Attribute::Name).value().data.as_string;
+    auto name_attribute = variable_die.get_attribute(Dwarf::Attribute::Name);
+    if (name_attribute.has_value())
+        variable_info->name = name_attribute.value().data.as_string;
 
     auto type_die = parse_variable_type_die(variable_die, *variable_info);
 
@@ -276,13 +257,13 @@ OwnPtr<DebugInfo::VariableInfo> DebugInfo::create_variable_info(const Dwarf::DIE
         auto constant = variable_die.get_attribute(Dwarf::Attribute::ConstValue);
         VERIFY(constant.has_value());
         switch (constant.value().type) {
-        case Dwarf::DIE::AttributeValue::Type::UnsignedNumber:
-            variable_info->constant_data.as_u32 = constant.value().data.as_u32;
+        case Dwarf::AttributeValue::Type::UnsignedNumber:
+            variable_info->constant_data.as_u32 = constant.value().data.as_unsigned;
             break;
-        case Dwarf::DIE::AttributeValue::Type::SignedNumber:
-            variable_info->constant_data.as_i32 = constant.value().data.as_i32;
+        case Dwarf::AttributeValue::Type::SignedNumber:
+            variable_info->constant_data.as_i32 = constant.value().data.as_signed;
             break;
-        case Dwarf::DIE::AttributeValue::Type::String:
+        case Dwarf::AttributeValue::Type::String:
             variable_info->constant_data.as_string = constant.value().data.as_string;
             break;
         default:
@@ -290,47 +271,84 @@ OwnPtr<DebugInfo::VariableInfo> DebugInfo::create_variable_info(const Dwarf::DIE
         }
     } else {
         parse_variable_location(variable_die, *variable_info, regs);
+        variable_info->location_data.address += address_offset;
     }
 
-    if (type_die.has_value()) {
-        OwnPtr<VariableInfo> type_info;
-        if (type_die.value().tag() == Dwarf::EntryTag::EnumerationType || type_die.value().tag() == Dwarf::EntryTag::StructureType) {
-            type_info = create_variable_info(type_die.value(), regs);
-        }
-
-        type_die.value().for_each_child([&](const Dwarf::DIE& member) {
-            if (member.is_null())
-                return;
-            auto member_variable = create_variable_info(member, regs);
-            VERIFY(member_variable);
-
-            if (type_die.value().tag() == Dwarf::EntryTag::EnumerationType) {
-                member_variable->parent = type_info.ptr();
-                type_info->members.append(member_variable.release_nonnull());
-            } else {
-                if (variable_info->location_type == DebugInfo::VariableInfo::LocationType::None) {
-                    return;
-                }
-                VERIFY(variable_info->location_type == DebugInfo::VariableInfo::LocationType::Address);
-
-                if (member_variable->location_type == DebugInfo::VariableInfo::LocationType::Address)
-                    member_variable->location_data.address += variable_info->location_data.address;
-
-                member_variable->parent = variable_info.ptr();
-                variable_info->members.append(member_variable.release_nonnull());
-            }
-        });
-
-        if (type_info) {
-            variable_info->type = move(type_info);
-            variable_info->type->type_tag = type_die.value().tag();
-        }
-    }
+    if (type_die.has_value())
+        add_type_info_to_variable(type_die.value(), regs, variable_info);
 
     return variable_info;
 }
 
-String DebugInfo::name_of_containing_function(u32 address) const
+void DebugInfo::add_type_info_to_variable(Dwarf::DIE const& type_die, PtraceRegisters const& regs, DebugInfo::VariableInfo* parent_variable) const
+{
+    OwnPtr<VariableInfo> type_info;
+    auto is_array_type = type_die.tag() == Dwarf::EntryTag::ArrayType;
+
+    if (type_die.tag() == Dwarf::EntryTag::EnumerationType
+        || type_die.tag() == Dwarf::EntryTag::StructureType
+        || is_array_type) {
+        type_info = create_variable_info(type_die, regs);
+    }
+
+    type_die.for_each_child([&](Dwarf::DIE const& member) {
+        if (member.is_null())
+            return;
+
+        if (is_array_type && member.tag() == Dwarf::EntryTag::SubRangeType) {
+            auto upper_bound = member.get_attribute(Dwarf::Attribute::UpperBound);
+            VERIFY(upper_bound.has_value());
+            auto size = upper_bound.value().data.as_unsigned + 1;
+            type_info->dimension_sizes.append(size);
+            return;
+        }
+
+        if (!is_variable_tag_supported(member.tag()))
+            return;
+
+        auto member_variable = create_variable_info(member, regs, parent_variable->location_data.address);
+        VERIFY(member_variable);
+
+        if (type_die.tag() == Dwarf::EntryTag::EnumerationType) {
+            member_variable->parent = type_info.ptr();
+            type_info->members.append(member_variable.release_nonnull());
+        } else {
+            if (parent_variable->location_type != DebugInfo::VariableInfo::LocationType::Address)
+                return;
+
+            member_variable->parent = parent_variable;
+            parent_variable->members.append(member_variable.release_nonnull());
+        }
+    });
+
+    if (type_info) {
+        if (is_array_type) {
+            StringBuilder array_type_name;
+            array_type_name.append(type_info->type_name);
+            for (auto array_size : type_info->dimension_sizes) {
+                array_type_name.append("[");
+                array_type_name.append(String::formatted("{:d}", array_size));
+                array_type_name.append("]");
+            }
+            parent_variable->type_name = array_type_name.to_string();
+        }
+        parent_variable->type = move(type_info);
+        parent_variable->type->type_tag = type_die.tag();
+    }
+}
+
+bool DebugInfo::is_variable_tag_supported(Dwarf::EntryTag const& tag)
+{
+    return tag == Dwarf::EntryTag::Variable
+        || tag == Dwarf::EntryTag::Member
+        || tag == Dwarf::EntryTag::FormalParameter
+        || tag == Dwarf::EntryTag::EnumerationType
+        || tag == Dwarf::EntryTag::Enumerator
+        || tag == Dwarf::EntryTag::StructureType
+        || tag == Dwarf::EntryTag::ArrayType;
+}
+
+String DebugInfo::name_of_containing_function(FlatPtr address) const
 {
     auto function = get_containing_function(address);
     if (!function.has_value())
@@ -338,7 +356,7 @@ String DebugInfo::name_of_containing_function(u32 address) const
     return function.value().name;
 }
 
-Optional<DebugInfo::VariablesScope> DebugInfo::get_containing_function(u32 address) const
+Optional<DebugInfo::VariablesScope> DebugInfo::get_containing_function(FlatPtr address) const
 {
     for (const auto& scope : m_scopes) {
         if (!scope.is_function || address < scope.address_low || address >= scope.address_high)
@@ -348,7 +366,7 @@ Optional<DebugInfo::VariablesScope> DebugInfo::get_containing_function(u32 addre
     return {};
 }
 
-Vector<DebugInfo::SourcePosition> DebugInfo::source_lines_in_scope(const VariablesScope& scope) const
+Vector<DebugInfo::SourcePosition> DebugInfo::source_lines_in_scope(VariablesScope const& scope) const
 {
     Vector<DebugInfo::SourcePosition> source_lines;
     for (const auto& line : m_sorted_lines) {
@@ -362,9 +380,82 @@ Vector<DebugInfo::SourcePosition> DebugInfo::source_lines_in_scope(const Variabl
     return source_lines;
 }
 
-DebugInfo::SourcePosition DebugInfo::SourcePosition::from_line_info(const Dwarf::LineProgram::LineInfo& line)
+DebugInfo::SourcePosition DebugInfo::SourcePosition::from_line_info(Dwarf::LineProgram::LineInfo const& line)
 {
-    return { line.file, line.line, { line.address } };
+    return { line.file, line.line, line.address };
+}
+
+DebugInfo::SourcePositionWithInlines DebugInfo::get_source_position_with_inlines(FlatPtr address) const
+{
+    // If the address is in an "inline chain", this is the inner-most inlined position.
+    auto inner_source_position = get_source_position(address);
+
+    auto die = m_dwarf_info.get_die_at_address(address);
+    if (!die.has_value() || die->tag() == Dwarf::EntryTag::SubroutineType) {
+        // Inline chain is empty
+        return SourcePositionWithInlines { inner_source_position, {} };
+    }
+
+    Vector<SourcePosition> inline_chain;
+
+    auto insert_to_chain = [&](Dwarf::DIE const& die) {
+        auto caller_source_path = get_source_path_of_inline(die);
+        auto caller_line = get_line_of_inline(die);
+
+        if (!caller_source_path.has_value() || !caller_line.has_value()) {
+            return;
+        }
+
+        inline_chain.append({ String::formatted("{}/{}", caller_source_path->directory, caller_source_path->filename), caller_line.value() });
+    };
+
+    while (die->tag() == Dwarf::EntryTag::InlinedSubroutine) {
+        insert_to_chain(*die);
+
+        if (!die->parent_offset().has_value()) {
+            break;
+        }
+
+        auto parent = die->compilation_unit().dwarf_info().get_cached_die_at_offset(die->parent_offset().value());
+        if (!parent.has_value()) {
+            break;
+        }
+        die = *parent;
+    }
+
+    return SourcePositionWithInlines { inner_source_position, inline_chain };
+}
+
+Optional<Dwarf::LineProgram::DirectoryAndFile> DebugInfo::get_source_path_of_inline(Dwarf::DIE const& die) const
+{
+    auto caller_file = die.get_attribute(Dwarf::Attribute::CallFile);
+    if (caller_file.has_value()) {
+        u32 file_index = 0;
+
+        if (caller_file->type == Dwarf::AttributeValue::Type::UnsignedNumber) {
+            file_index = caller_file->data.as_unsigned;
+        } else if (caller_file->type == Dwarf::AttributeValue::Type::SignedNumber) {
+            // For some reason, the file_index is sometimes stored as a signed number.
+            VERIFY(caller_file->data.as_signed >= 0);
+            file_index = (u32)caller_file->data.as_signed;
+        } else {
+            return {};
+        }
+
+        return die.compilation_unit().line_program().get_directory_and_file(file_index);
+    }
+    return {};
+}
+
+Optional<uint32_t> DebugInfo::get_line_of_inline(Dwarf::DIE const& die) const
+{
+    auto caller_line = die.get_attribute(Dwarf::Attribute::CallLine);
+    if (!caller_line.has_value())
+        return {};
+
+    if (caller_line->type != Dwarf::AttributeValue::Type::UnsignedNumber)
+        return {};
+    return caller_line.value().data.as_unsigned;
 }
 
 }

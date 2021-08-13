@@ -1,39 +1,22 @@
 /*
- * Copyright (c) 2020, The SerenityOS developers.
- * All rights reserved.
+ * Copyright (c) 2020-2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Shell.h"
 #include "Execution.h"
 #include "Formatter.h"
+#include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
 #include <AK/Function.h>
 #include <AK/LexicalPath.h>
+#include <AK/QuickSort.h>
 #include <AK/ScopeGuard.h>
 #include <AK/ScopedValueRollback.h>
 #include <AK/StringBuilder.h>
 #include <AK/TemporaryChange.h>
+#include <AK/URL.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/Event.h>
@@ -64,9 +47,7 @@ void Shell::setup_signals()
 {
     if (m_should_reinstall_signal_handlers) {
         Core::EventLoop::register_signal(SIGCHLD, [this](int) {
-#if SH_DEBUG
-            dbgln("SIGCHLD!");
-#endif
+            dbgln_if(SH_DEBUG, "SIGCHLD!");
             notify_child_event();
         });
 
@@ -87,7 +68,8 @@ void Shell::print_path(const String& path)
         printf("%s", path.characters());
         return;
     }
-    printf("\033]8;;file://%s%s\033\\%s\033]8;;\033\\", hostname, path.characters(), path.characters());
+    auto url = URL::create_with_file_scheme(path, {}, hostname);
+    out("\033]8;;{}\033\\{}\033]8;;\033\\", url.serialize(), path);
 }
 
 String Shell::prompt() const
@@ -99,8 +81,8 @@ String Shell::prompt() const
                 return "# ";
 
             StringBuilder builder;
-            builder.appendf("\033]0;%s@%s:%s\007", username.characters(), hostname, cwd.characters());
-            builder.appendf("\033[31;1m%s\033[0m@\033[37;1m%s\033[0m:\033[32;1m%s\033[0m$> ", username.characters(), hostname, cwd.characters());
+            builder.appendff("\033]0;{}@{}:{}\007", username, hostname, cwd);
+            builder.appendff("\033[31;1m{}\033[0m@\033[37;1m{}\033[0m:\033[32;1m{}\033[0m$> ", username, hostname, cwd);
             return builder.to_string();
         }
 
@@ -173,9 +155,9 @@ String Shell::expand_tilde(const String& expression)
         if (!home) {
             auto passwd = getpwuid(getuid());
             VERIFY(passwd && passwd->pw_dir);
-            return String::format("%s/%s", passwd->pw_dir, path.to_string().characters());
+            return String::formatted("{}/{}", passwd->pw_dir, path.to_string());
         }
-        return String::format("%s/%s", home, path.to_string().characters());
+        return String::formatted("{}/{}", home, path.to_string());
     }
 
     auto passwd = getpwnam(login_name.to_string().characters());
@@ -183,7 +165,7 @@ String Shell::expand_tilde(const String& expression)
         return expression;
     VERIFY(passwd->pw_dir);
 
-    return String::format("%s/%s", passwd->pw_dir, path.to_string().characters());
+    return String::formatted("{}/{}", passwd->pw_dir, path.to_string());
 }
 
 bool Shell::is_glob(const StringView& s)
@@ -287,7 +269,7 @@ Vector<String> Shell::expand_globs(Vector<StringView> path_segments, const Strin
                 if (!base.ends_with('/'))
                     builder.append('/');
                 builder.append(path);
-                result.append(expand_globs(path_segments, builder.string_view()));
+                result.extend(expand_globs(path_segments, builder.string_view()));
             }
         }
 
@@ -319,9 +301,9 @@ Vector<AST::Command> Shell::expand_aliases(Vector<AST::Command> initial_commands
                         subcommand_ast = ast->command();
                     }
                     auto subcommand_nonnull = subcommand_ast.release_nonnull();
-                    NonnullRefPtr<AST::Node> substitute = adopt(*new AST::Join(subcommand_nonnull->position(),
+                    NonnullRefPtr<AST::Node> substitute = adopt_ref(*new AST::Join(subcommand_nonnull->position(),
                         subcommand_nonnull,
-                        adopt(*new AST::CommandLiteral(subcommand_nonnull->position(), command))));
+                        adopt_ref(*new AST::CommandLiteral(subcommand_nonnull->position(), command))));
                     auto res = substitute->run(*this);
                     for (auto& subst_command : res->resolve_as_commands(*this)) {
                         if (!subst_command.argv.is_empty() && subst_command.argv.first() == argv0) // Disallow an alias resolving to itself.
@@ -349,7 +331,7 @@ Vector<AST::Command> Shell::expand_aliases(Vector<AST::Command> initial_commands
 String Shell::resolve_path(String path) const
 {
     if (!path.starts_with('/'))
-        path = String::format("%s/%s", cwd.characters(), path.characters());
+        path = String::formatted("{}/{}", cwd, path);
 
     return Core::File::real_path_for(path);
 }
@@ -364,7 +346,7 @@ Shell::LocalFrame* Shell::find_frame_containing_local_variable(const String& nam
     return nullptr;
 }
 
-RefPtr<AST::Value> Shell::lookup_local_variable(const String& name)
+RefPtr<AST::Value> Shell::lookup_local_variable(const String& name) const
 {
     if (auto* frame = find_frame_containing_local_variable(name))
         return frame->local_variables.get(name).value();
@@ -375,10 +357,10 @@ RefPtr<AST::Value> Shell::lookup_local_variable(const String& name)
     return nullptr;
 }
 
-RefPtr<AST::Value> Shell::get_argument(size_t index)
+RefPtr<AST::Value> Shell::get_argument(size_t index) const
 {
     if (index == 0)
-        return adopt(*new AST::StringValue(current_script));
+        return adopt_ref(*new AST::StringValue(current_script));
 
     --index;
     if (auto argv = lookup_local_variable("ARGV")) {
@@ -399,7 +381,7 @@ RefPtr<AST::Value> Shell::get_argument(size_t index)
     return nullptr;
 }
 
-String Shell::local_variable_or(const String& name, const String& replacement)
+String Shell::local_variable_or(const String& name, const String& replacement) const
 {
     auto value = lookup_local_variable(name);
     if (value) {
@@ -474,12 +456,12 @@ bool Shell::invoke_function(const AST::Command& command, int& retval)
     size_t index = 0;
     for (auto& arg : function.arguments) {
         ++index;
-        set_local_variable(arg, adopt(*new AST::StringValue(command.argv[index])), true);
+        set_local_variable(arg, adopt_ref(*new AST::StringValue(command.argv[index])), true);
     }
 
     auto argv = command.argv;
     argv.take_first();
-    set_local_variable("ARGV", adopt(*new AST::ListValue(move(argv))), true);
+    set_local_variable("ARGV", adopt_ref(*new AST::ListValue(move(argv))), true);
 
     Core::EventLoop loop;
     setup_signals();
@@ -502,9 +484,7 @@ String Shell::format(const StringView& source, ssize_t& cursor) const
 Shell::Frame Shell::push_frame(String name)
 {
     m_local_frames.append(make<LocalFrame>(name, decltype(LocalFrame::local_variables) {}));
-#if SH_DEBUG
-    dbgln("New frame '{}' at {:p}", name, &m_local_frames.last());
-#endif
+    dbgln_if(SH_DEBUG, "New frame '{}' at {:p}", name, &m_local_frames.last());
     return { m_local_frames, m_local_frames.last() };
 }
 
@@ -535,12 +515,14 @@ String Shell::resolve_alias(const String& name) const
 
 bool Shell::is_runnable(const StringView& name)
 {
-    if (access(name.to_string().characters(), X_OK) == 0)
+    auto parts = name.split_view('/');
+    auto path = name.to_string();
+    if (parts.size() > 1 && access(path.characters(), X_OK) == 0)
         return true;
 
     return binary_search(
         cached_path.span(),
-        name.to_string(),
+        path,
         nullptr,
         [](auto& name, auto& program) { return strcmp(name.characters(), program.characters()); });
 }
@@ -568,10 +550,10 @@ int Shell::run_command(const StringView& cmd, Optional<SourcePosition> source_po
     if (!command)
         return 0;
 
-#if SH_DEBUG
-    dbgln("Command follows");
-    command->dump(0);
-#endif
+    if constexpr (SH_DEBUG) {
+        dbgln("Command follows");
+        command->dump(0);
+    }
 
     if (command->is_syntax_error()) {
         auto& error_node = command->syntax_error_node();
@@ -586,8 +568,11 @@ int Shell::run_command(const StringView& cmd, Optional<SourcePosition> source_po
     }
 
     tcgetattr(0, &termios);
+    tcsetattr(0, TCSANOW, &default_termios);
 
     command->run(*this);
+
+    tcsetattr(0, TCSANOW, &termios);
 
     if (!has_error(ShellError::None)) {
         possibly_print_error();
@@ -607,7 +592,7 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
 
     // If the command is empty, store the redirections and apply them to all later commands.
     if (command.argv.is_empty() && !command.should_immediately_execute_next) {
-        m_global_redirections.append(command.redirections);
+        m_global_redirections.extend(command.redirections);
         for (auto& next_in_chain : command.next_chain)
             run_tail(command, next_in_chain, last_return_code);
         return nullptr;
@@ -619,7 +604,7 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
         auto rewiring_result = redirection.apply();
         if (rewiring_result.is_error()) {
             if (!rewiring_result.error().is_empty())
-                fprintf(stderr, "error: %s\n", rewiring_result.error().characters());
+                warnln("error: {}", rewiring_result.error());
             return IterationDecision::Break;
         }
         auto& rewiring = rewiring_result.value();
@@ -665,9 +650,7 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
     auto apply_rewirings = [&] {
         for (auto& rewiring : rewirings) {
 
-#if SH_DEBUG
-            dbgln("in {}<{}>, dup2({}, {})", command.argv.is_empty() ? "(<Empty>)" : command.argv[0].characters(), getpid(), rewiring.old_fd, rewiring.new_fd);
-#endif
+            dbgln_if(SH_DEBUG, "in {}<{}>, dup2({}, {})", command.argv.is_empty() ? "(<Empty>)" : command.argv[0].characters(), getpid(), rewiring.old_fd, rewiring.new_fd);
             int rc = dup2(rewiring.old_fd, rewiring.new_fd);
             if (rc < 0) {
                 perror("dup2(run)");
@@ -780,9 +763,7 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
             }
         }
 
-#if SH_DEBUG
-        dbgln("Synced up with parent, we're good to exec()");
-#endif
+        dbgln_if(SH_DEBUG, "Synced up with parent, we're good to exec()");
 
         close(sync_pipe[0]);
 
@@ -830,10 +811,12 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
             perror("setpgid");
 
         if (!m_is_subshell) {
-            if (tcsetpgrp(STDOUT_FILENO, pgid) != 0 && m_is_interactive)
-                perror("tcsetpgrp(OUT)");
-            if (tcsetpgrp(STDIN_FILENO, pgid) != 0 && m_is_interactive)
-                perror("tcsetpgrp(IN)");
+            // There's no reason to care about the errors here
+            // either we're in a tty, we're interactive, and this works
+            // or we're not, and it fails - in which case, we don't need
+            // stdin/stdout handoff to child processes anyway.
+            tcsetpgrp(STDOUT_FILENO, pgid);
+            tcsetpgrp(STDIN_FILENO, pgid);
         }
     }
 
@@ -863,12 +846,18 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
             return;
 
         if (job->is_running_in_background() && job->should_announce_exit())
-            warnln("Shell: Job {} ({}) exited\n", job->job_id(), job->cmd().characters());
+            warnln("Shell: Job {} ({}) exited\n", job->job_id(), job->cmd());
         else if (job->signaled() && job->should_announce_signal())
-            warnln("Shell: Job {} ({}) {}\n", job->job_id(), job->cmd().characters(), strsignal(job->termination_signal()));
+            warnln("Shell: Job {} ({}) {}\n", job->job_id(), job->cmd(), strsignal(job->termination_signal()));
 
         last_return_code = job->exit_code();
         job->disown();
+
+        if (m_editor && job->exit_code() == 0 && is_allowed_to_modify_termios(job->command())) {
+            m_editor->refetch_default_termios();
+            default_termios = m_editor->default_termios();
+            termios = m_editor->termios();
+        }
 
         run_tail(job);
     };
@@ -882,39 +871,50 @@ void Shell::execute_process(Vector<const char*>&& argv)
 {
     int rc = execvp(argv[0], const_cast<char* const*>(argv.data()));
     if (rc < 0) {
+        auto parts = StringView { argv[0] }.split_view('/');
+        if (parts.size() == 1) {
+            // If this is a path in the current directory and it caused execvp() to fail,
+            // simply don't attempt to execute it, see #6774.
+            warnln("{}: Command not found.", argv[0]);
+            _exit(127);
+        }
         int saved_errno = errno;
         struct stat st;
         if (stat(argv[0], &st)) {
-            fprintf(stderr, "stat(%s): %s\n", argv[0], strerror(errno));
+            warnln("stat({}): {}", argv[0], strerror(errno));
             // Return code 127 on command not found.
             _exit(127);
         }
         if (!(st.st_mode & S_IXUSR)) {
-            fprintf(stderr, "%s: Not executable\n", argv[0]);
+            warnln("{}: Not executable", argv[0]);
             // Return code 126 when file is not executable.
             _exit(126);
         }
         if (saved_errno == ENOENT) {
-            int shebang_fd = open(argv[0], O_RDONLY);
-            auto close_argv = ScopeGuard([shebang_fd]() { if (shebang_fd >= 0)  close(shebang_fd); });
-            char shebang[256] {};
-            ssize_t num_read = -1;
-            if ((shebang_fd >= 0) && ((num_read = read(shebang_fd, shebang, sizeof(shebang))) >= 2) && (StringView(shebang).starts_with("#!"))) {
-                StringView shebang_path_view(&shebang[2], num_read - 2);
-                Optional<size_t> newline_pos = shebang_path_view.find_first_of("\n\r");
-                shebang[newline_pos.has_value() ? (newline_pos.value() + 2) : num_read] = '\0';
-                argv[0] = shebang;
+            do {
+                auto file_result = Core::File::open(argv[0], Core::OpenMode::ReadOnly);
+                if (file_result.is_error())
+                    break;
+                auto& file = file_result.value();
+                auto line = file->read_line();
+                if (!line.starts_with("#!"))
+                    break;
+                GenericLexer shebang_lexer { line.substring_view(2) };
+                auto shebang = shebang_lexer.consume_until(is_any_of("\n\r")).to_string();
+                argv.prepend(shebang.characters());
                 int rc = execvp(argv[0], const_cast<char* const*>(argv.data()));
-                if (rc < 0)
-                    fprintf(stderr, "%s: Invalid interpreter \"%s\": %s\n", argv[0], &shebang[2], strerror(errno));
-            } else
-                fprintf(stderr, "%s: Command not found.\n", argv[0]);
+                if (rc < 0) {
+                    warnln("{}: Invalid interpreter \"{}\": {}", argv[0], shebang.characters(), strerror(errno));
+                    _exit(126);
+                }
+            } while (false);
+            warnln("{}: Command not found.", argv[0]);
         } else {
             if (S_ISDIR(st.st_mode)) {
-                fprintf(stderr, "Shell: %s: Is a directory\n", argv[0]);
+                warnln("Shell: {}: Is a directory", argv[0]);
                 _exit(126);
             }
-            fprintf(stderr, "execvp(%s): %s\n", argv[0], strerror(saved_errno));
+            warnln("execvp({}): {}", argv[0], strerror(saved_errno));
         }
         _exit(126);
     }
@@ -936,8 +936,8 @@ void Shell::run_tail(const AST::Command& invoking_command, const AST::NodeWithAc
         }
         auto node = next_in_chain.node;
         if (!invoking_command.should_wait)
-            node = adopt(static_cast<AST::Node&>(*new AST::Background(next_in_chain.node->position(), move(node))));
-        adopt(static_cast<AST::Node&>(*new AST::Execute(next_in_chain.node->position(), move(node))))->run(*this);
+            node = adopt_ref(static_cast<AST::Node&>(*new AST::Background(next_in_chain.node->position(), move(node))));
+        adopt_ref(static_cast<AST::Node&>(*new AST::Execute(next_in_chain.node->position(), move(node))))->run(*this);
     };
     switch (next_in_chain.action) {
     case AST::NodeWithAction::And:
@@ -977,25 +977,25 @@ NonnullRefPtrVector<Job> Shell::run_commands(Vector<AST::Command>& commands)
     NonnullRefPtrVector<Job> spawned_jobs;
 
     for (auto& command : commands) {
-#if SH_DEBUG
-        dbgln("Command");
-        for (auto& arg : command.argv)
-            dbgln("argv: {}", arg);
-        for (auto& redir : command.redirections) {
-            if (redir.is_path_redirection()) {
-                auto path_redir = (const AST::PathRedirection*)&redir;
-                dbgln("redir path '{}' <-({})-> {}", path_redir->path, (int)path_redir->direction, path_redir->fd);
-            } else if (redir.is_fd_redirection()) {
-                auto* fdredir = (const AST::FdRedirection*)&redir;
-                dbgln("redir fd {} -> {}", fdredir->old_fd, fdredir->new_fd);
-            } else if (redir.is_close_redirection()) {
-                auto close_redir = (const AST::CloseRedirection*)&redir;
-                dbgln("close fd {}", close_redir->fd);
-            } else {
-                VERIFY_NOT_REACHED();
+        if constexpr (SH_DEBUG) {
+            dbgln("Command");
+            for (auto& arg : command.argv)
+                dbgln("argv: {}", arg);
+            for (auto& redir : command.redirections) {
+                if (redir.is_path_redirection()) {
+                    auto path_redir = (const AST::PathRedirection*)&redir;
+                    dbgln("redir path '{}' <-({})-> {}", path_redir->path, (int)path_redir->direction, path_redir->fd);
+                } else if (redir.is_fd_redirection()) {
+                    auto* fdredir = (const AST::FdRedirection*)&redir;
+                    dbgln("redir fd {} -> {}", fdredir->old_fd, fdredir->new_fd);
+                } else if (redir.is_close_redirection()) {
+                    auto close_redir = (const AST::CloseRedirection*)&redir;
+                    dbgln("close fd {}", close_redir->fd);
+                } else {
+                    VERIFY_NOT_REACHED();
+                }
             }
         }
-#endif
         auto job = run_command(command);
         if (!job)
             continue;
@@ -1025,7 +1025,7 @@ bool Shell::run_file(const String& filename, bool explicitly_invoked)
     TemporaryChange interactive_change { m_is_interactive, false };
     TemporaryChange<Optional<SourcePosition>> source_change { m_source_position, SourcePosition { .source_file = filename, .literal_source_text = {}, .position = {} } };
 
-    auto file_result = Core::File::open(filename, Core::File::ReadOnly);
+    auto file_result = Core::File::open(filename, Core::OpenMode::ReadOnly);
     if (file_result.is_error()) {
         auto error = String::formatted("'{}': {}", escape_token_for_single_quotes(filename), file_result.error());
         if (explicitly_invoked)
@@ -1038,6 +1038,19 @@ bool Shell::run_file(const String& filename, bool explicitly_invoked)
     auto data = file->read_all();
     return run_command(data) == 0;
 }
+
+bool Shell::is_allowed_to_modify_termios(const AST::Command& command) const
+{
+    if (command.argv.is_empty())
+        return false;
+
+    auto value = lookup_local_variable("PROGRAMS_ALLOWED_TO_MODIFY_DEFAULT_TERMIOS"sv);
+    if (!value)
+        return false;
+
+    return value->resolve_as_list(*this).contains_slow(command.argv[0]);
+}
+
 void Shell::restore_ios()
 {
     if (m_is_subshell)
@@ -1065,7 +1078,7 @@ void Shell::block_on_job(RefPtr<Job> job)
     if (!job)
         return;
 
-    if (job->is_suspended())
+    if (job->is_suspended() && !job->shell_did_continue())
         return; // We cannot wait for a suspended job.
 
     ScopeGuard io_restorer { [&]() {
@@ -1155,9 +1168,9 @@ String Shell::escape_token_for_double_quotes(const String& token)
     return builder.build();
 }
 
-bool Shell::is_special(char c)
+Shell::SpecialCharacterEscapeMode Shell::special_character_escape_mode(u32 code_point)
 {
-    switch (c) {
+    switch (code_point) {
     case '\'':
     case '"':
     case '$':
@@ -1169,25 +1182,70 @@ bool Shell::is_special(char c)
     case '{':
     case '}':
     case '&':
+    case ';':
     case '\\':
     case ' ':
-        return true;
+        return SpecialCharacterEscapeMode::Escaped;
+    case '\n':
+    case '\t':
+    case '\r':
+        return SpecialCharacterEscapeMode::QuotedAsEscape;
     default:
-        return false;
+        // FIXME: Should instead use unicode's "graphic" property (categories L, M, N, P, S, Zs)
+        if (is_ascii(code_point))
+            return is_ascii_printable(code_point) ? SpecialCharacterEscapeMode::Untouched : SpecialCharacterEscapeMode::QuotedAsHex;
+        return SpecialCharacterEscapeMode::Untouched;
     }
 }
 
 String Shell::escape_token(const String& token)
 {
-    StringBuilder builder;
+    auto do_escape = [](auto& token) {
+        StringBuilder builder;
+        for (auto c : token) {
+            static_assert(sizeof(c) == sizeof(u32) || sizeof(c) == sizeof(u8));
+            switch (special_character_escape_mode(c)) {
+            case SpecialCharacterEscapeMode::Untouched:
+                if constexpr (sizeof(c) == sizeof(u8))
+                    builder.append(c);
+                else
+                    builder.append(Utf32View { &c, 1 });
+                break;
+            case SpecialCharacterEscapeMode::Escaped:
+                builder.append('\\');
+                builder.append(c);
+                break;
+            case SpecialCharacterEscapeMode::QuotedAsEscape:
+                switch (c) {
+                case '\n':
+                    builder.append(R"("\n")");
+                    break;
+                case '\t':
+                    builder.append(R"("\t")");
+                    break;
+                case '\r':
+                    builder.append(R"("\r")");
+                    break;
+                default:
+                    VERIFY_NOT_REACHED();
+                }
+                break;
+            case SpecialCharacterEscapeMode::QuotedAsHex:
+                if (c <= NumericLimits<u8>::max())
+                    builder.appendff(R"("\x{:0>2x}")", static_cast<u8>(c));
+                else
+                    builder.appendff(R"("\u{:0>8x}")", static_cast<u32>(c));
+                break;
+            }
+        }
 
-    for (auto c : token) {
-        if (is_special(c))
-            builder.append('\\');
-        builder.append(c);
-    }
+        return builder.build();
+    };
 
-    return builder.build();
+    Utf8View view { token };
+    if (view.validate())
+        return do_escape(view);
+    return do_escape(token);
 }
 
 String Shell::unescape_token(const String& token)
@@ -1218,6 +1276,27 @@ String Shell::unescape_token(const String& token)
         builder.append('\\');
 
     return builder.build();
+}
+
+String Shell::find_in_path(const StringView& program_name)
+{
+    String path = getenv("PATH");
+    if (!path.is_empty()) {
+        auto directories = path.split(':');
+        for (const auto& directory : directories) {
+            Core::DirIterator programs(directory.characters(), Core::DirIterator::SkipDots);
+            while (programs.has_next()) {
+                auto program = programs.next_path();
+                auto program_path = String::formatted("{}/{}", directory, program);
+                if (access(program_path.characters(), X_OK) != 0)
+                    continue;
+                if (program == program_name)
+                    return program_path;
+            }
+        }
+    }
+
+    return {};
 }
 
 void Shell::cache_path()
@@ -1255,7 +1334,7 @@ void Shell::cache_path()
             Core::DirIterator programs(directory.characters(), Core::DirIterator::SkipDots);
             while (programs.has_next()) {
                 auto program = programs.next_path();
-                String program_path = String::format("%s/%s", directory.characters(), program.characters());
+                auto program_path = String::formatted("{}/{}", directory, program);
                 auto escaped_name = escape_token(program);
                 if (cached_path.contains_slow(escaped_name))
                     continue;
@@ -1286,6 +1365,19 @@ void Shell::add_entry_to_cache(const String& entry)
     cached_path.insert(index, entry);
 }
 
+void Shell::remove_entry_from_cache(const String& entry)
+{
+    size_t index { 0 };
+    auto match = binary_search(
+        cached_path.span(),
+        entry,
+        &index,
+        [](const auto& a, const auto& b) { return strcmp(a.characters(), b.characters()); });
+
+    if (match)
+        cached_path.remove(index);
+}
+
 void Shell::highlight(Line::Editor& editor) const
 {
     auto line = editor.line();
@@ -1310,7 +1402,8 @@ Vector<Line::CompletionSuggestion> Shell::complete()
     return ast->complete_for_editor(*this, line.length());
 }
 
-Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base, const String& part, size_t offset)
+Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base,
+    const String& part, size_t offset, ExecutableOnly executable_only)
 {
     auto token = offset ? part.substring_view(0, offset) : "";
     String path;
@@ -1323,6 +1416,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base, cons
     auto init_slash_part = token.substring_view(0, last_slash + 1);
     auto last_slash_part = token.substring_view(last_slash + 1, token.length() - last_slash - 1);
 
+    bool allow_direct_children = true;
+
     // Depending on the base, we will have to prepend cwd.
     if (base.is_empty()) {
         // '' /foo -> absolute
@@ -1331,6 +1426,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base, cons
             path_builder.append(cwd);
         path_builder.append('/');
         path_builder.append(init_slash_part);
+        if (executable_only == ExecutableOnly::Yes && init_slash_part.is_empty())
+            allow_direct_children = false;
     } else {
         // /foo * -> absolute
         // foo * -> relative
@@ -1362,12 +1459,14 @@ Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base, cons
         auto file = files.next_path();
         if (file.starts_with(token)) {
             struct stat program_status;
-            String file_path = String::format("%s/%s", path.characters(), file.characters());
+            auto file_path = String::formatted("{}/{}", path, file);
             int stat_error = stat(file_path.characters(), &program_status);
-            if (!stat_error) {
+            if (!stat_error && (executable_only == ExecutableOnly::No || access(file_path.characters(), X_OK) == 0)) {
                 if (S_ISDIR(program_status.st_mode)) {
                     suggestions.append({ escape_token(file), "/" });
                 } else {
+                    if (!allow_direct_children && !file.contains("/"))
+                        continue;
                     suggestions.append({ escape_token(file), " " });
                 }
                 suggestions.last().input_offset = token_length;
@@ -1387,7 +1486,7 @@ Vector<Line::CompletionSuggestion> Shell::complete_program_name(const String& na
         [](auto& name, auto& program) { return strncmp(name.characters(), program.characters(), name.length()); });
 
     if (!match)
-        return complete_path("", name, offset);
+        return complete_path("", name, offset, ExecutableOnly::Yes);
 
     String completion = *match;
     auto token_length = escape_token(name).length();
@@ -1648,13 +1747,9 @@ void Shell::notify_child_event()
             auto& job = *it.value;
 
             int wstatus = 0;
-#if SH_DEBUG
-            dbgln("waitpid({}) = ...", job.pid());
-#endif
+            dbgln_if(SH_DEBUG, "waitpid({} = {}) = ...", job.pid(), job.cmd());
             auto child_pid = waitpid(job.pid(), &wstatus, WNOHANG | WUNTRACED);
-#if SH_DEBUG
-            dbgln("... = {} - {}", child_pid, wstatus);
-#endif
+            dbgln_if(SH_DEBUG, "... = {} - exited: {}, suspended: {}", child_pid, WIFEXITED(wstatus), WIFSTOPPED(wstatus));
 
             if (child_pid < 0) {
                 if (errno == ECHILD) {
@@ -1667,6 +1762,13 @@ void Shell::notify_child_event()
             }
             if (child_pid == 0) {
                 // If the child existed, but wasn't dead.
+                if (job.is_suspended() || job.shell_did_continue()) {
+                    // The job was suspended, and someone sent it a SIGCONT.
+                    job.set_is_suspended(false);
+                    if (job.shell_did_continue())
+                        job.set_shell_did_continue(false);
+                    found_child = true;
+                }
                 continue;
             }
             if (child_pid == job.pid()) {
@@ -1719,7 +1821,7 @@ Shell::Shell()
         path.append(getenv("PATH"));
         if (path.length())
             path.append(":");
-        path.append("/bin:/usr/bin:/usr/local/bin");
+        path.append("/usr/local/bin:/usr/bin:/bin");
         setenv("PATH", path.to_string().characters(), true);
     }
 
@@ -1780,6 +1882,8 @@ Shell::Shell(Line::Editor& editor, bool attempt_interactive)
 
         return EDITOR_INTERNAL_FUNCTION(finish)(editor);
     });
+
+    start_timer(3000);
 }
 
 Shell::~Shell()
@@ -1801,9 +1905,7 @@ void Shell::stop_all_jobs()
             printf("Killing active jobs\n");
         for (auto& entry : jobs) {
             if (entry.value->is_suspended()) {
-#if SH_DEBUG
-                dbgln("Job {} is suspended", entry.value->pid());
-#endif
+                dbgln_if(SH_DEBUG, "Job {} is suspended", entry.value->pid());
                 kill_job(entry.value, SIGCONT);
             }
 
@@ -1813,9 +1915,7 @@ void Shell::stop_all_jobs()
         usleep(10000); // Wait for a bit before killing the job
 
         for (auto& entry : jobs) {
-#if SH_DEBUG
-            dbgln("Actively killing {} ({})", entry.value->pid(), entry.value->cmd());
-#endif
+            dbgln_if(SH_DEBUG, "Actively killing {} ({})", entry.value->pid(), entry.value->cmd());
             kill_job(entry.value, SIGKILL);
         }
 
@@ -1833,11 +1933,16 @@ u64 Shell::find_last_job_id() const
     return job_id;
 }
 
-const Job* Shell::find_job(u64 id)
+const Job* Shell::find_job(u64 id, bool is_pid)
 {
     for (auto& entry : jobs) {
-        if (entry.value->job_id() == id)
-            return entry.value;
+        if (is_pid) {
+            if (entry.value->pid() == static_cast<int>(id))
+                return entry.value;
+        } else {
+            if (entry.value->job_id() == id)
+                return entry.value;
+        }
     }
     return nullptr;
 }
@@ -1909,16 +2014,16 @@ void Shell::possibly_print_error() const
                 warn("\x1b[31m");
                 size_t length_written_so_far = 0;
                 if (line == (i64)source_position.position->start_line.line_number) {
-                    warn(StringView { "{:~>{}}" }, "", 5 + source_position.position->start_line.line_column);
+                    warn("{:~>{}}", "", 5 + source_position.position->start_line.line_column);
                     length_written_so_far += source_position.position->start_line.line_column;
                 } else {
-                    warn(StringView { "{:~>{}}" }, "", 5);
+                    warn("{:~>{}}", "", 5);
                 }
                 if (line == (i64)source_position.position->end_line.line_number) {
-                    warn(StringView { "{:^>{}}" }, "", source_position.position->end_line.line_column - length_written_so_far);
+                    warn("{:^>{}}", "", source_position.position->end_line.line_column - length_written_so_far);
                     length_written_so_far += source_position.position->start_line.line_column;
                 } else {
-                    warn(StringView { "{:^>{}}" }, "", current_line.length() - length_written_so_far);
+                    warn("{:^>{}}", "", current_line.length() - length_written_so_far);
                 }
                 warnln("\x1b[0m");
             }
@@ -1928,7 +2033,7 @@ void Shell::possibly_print_error() const
         i64 line_to_skip_to = max(source_position.position->start_line.line_number, 2ul) - 2;
 
         if (!source_position.source_file.is_null()) {
-            auto file = Core::File::open(source_position.source_file, Core::IODevice::OpenMode::ReadOnly);
+            auto file = Core::File::open(source_position.source_file, Core::OpenMode::ReadOnly);
             if (file.is_error()) {
                 warnln("Shell: Internal error while trying to display source information: {} (while reading '{}')", file.error(), source_position.source_file);
                 return;
@@ -1968,6 +2073,59 @@ void Shell::possibly_print_error() const
     warnln();
 }
 
+Optional<int> Shell::resolve_job_spec(const String& str)
+{
+    if (!str.starts_with('%'))
+        return {};
+
+    // %number -> job id <number>
+    if (auto number = str.substring_view(1).to_uint(); number.has_value())
+        return number.value();
+
+    // '%?str' -> iterate jobs and pick one with `str' in its command
+    // Note: must be quoted, since '?' will turn it into a glob - pretty ugly...
+    GenericLexer lexer { str.substring_view(1) };
+    if (!lexer.consume_specific('?'))
+        return {};
+    auto search_term = lexer.remaining();
+    for (auto& it : jobs) {
+        if (it.value->cmd().contains(search_term))
+            return it.key;
+    }
+
+    return {};
+}
+
+void Shell::timer_event(Core::TimerEvent& event)
+{
+    event.accept();
+
+    if (m_is_subshell)
+        return;
+
+    StringView option = getenv("HISTORY_AUTOSAVE_TIME_MS");
+
+    auto time = option.to_uint();
+    if (!time.has_value() || time.value() == 0) {
+        m_history_autosave_time.clear();
+        stop_timer();
+        start_timer(3000);
+        return;
+    }
+
+    if (m_history_autosave_time != time) {
+        m_history_autosave_time = time.value();
+        stop_timer();
+        start_timer(m_history_autosave_time.value());
+    }
+
+    if (!m_history_autosave_time.has_value())
+        return;
+
+    if (m_editor && m_editor->is_history_dirty())
+        m_editor->save_history(get_history_path());
+}
+
 void FileDescriptionCollector::collect()
 {
     for (auto fd : m_fds)
@@ -1998,8 +2156,8 @@ SavedFileDescriptors::SavedFileDescriptors(const NonnullRefPtrVector<AST::Rewiri
             continue;
         }
 
-        auto flags = fcntl(new_fd, F_GETFL);
-        auto rc = fcntl(new_fd, F_SETFL, flags | FD_CLOEXEC);
+        auto flags = fcntl(new_fd, F_GETFD);
+        auto rc = fcntl(new_fd, F_SETFD, flags | FD_CLOEXEC);
         VERIFY(rc == 0);
 
         m_saves.append({ rewiring.new_fd, new_fd });
@@ -2016,5 +2174,4 @@ SavedFileDescriptors::~SavedFileDescriptors()
         }
     }
 }
-
 }

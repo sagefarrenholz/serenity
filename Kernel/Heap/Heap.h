@@ -1,32 +1,12 @@
 /*
- * Copyright (c) 2020, The SerenityOS developers.
- * All rights reserved.
+ * Copyright (c) 2020, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/BitmapView.h>
+#include <AK/Bitmap.h>
 #include <AK/ScopeGuard.h>
 #include <AK/TemporaryChange.h>
 #include <AK/Vector.h>
@@ -40,8 +20,23 @@ class Heap {
 
     struct AllocationHeader {
         size_t allocation_size_in_chunks;
+#if ARCH(X86_64)
+        // FIXME: Get rid of this somehow
+        size_t alignment_dummy;
+#endif
         u8 data[0];
     };
+
+    static_assert(CHUNK_SIZE >= sizeof(AllocationHeader));
+
+    ALWAYS_INLINE AllocationHeader* allocation_header(void* ptr)
+    {
+        return (AllocationHeader*)((((u8*)ptr) - sizeof(AllocationHeader)));
+    }
+    ALWAYS_INLINE const AllocationHeader* allocation_header(const void* ptr) const
+    {
+        return (const AllocationHeader*)((((const u8*)ptr) - sizeof(AllocationHeader)));
+    }
 
     static size_t calculate_chunks(size_t memory_size)
     {
@@ -77,7 +72,7 @@ public:
 
         Optional<size_t> first_chunk;
 
-        // Choose the right politic for allocation.
+        // Choose the right policy for allocation.
         constexpr u32 best_fit_threshold = 128;
         if (chunks_needed < best_fit_threshold) {
             first_chunk = m_bitmap.find_first_fit(chunks_needed);
@@ -92,7 +87,7 @@ public:
         u8* ptr = a->data;
         a->allocation_size_in_chunks = chunks_needed;
 
-        m_bitmap.set_range(first_chunk.value(), chunks_needed, true);
+        m_bitmap.set_range_and_verify_that_all_bits_flip(first_chunk.value(), chunks_needed, true);
 
         m_allocated_chunks += chunks_needed;
         if constexpr (HEAP_SCRUB_BYTE_ALLOC != 0) {
@@ -105,12 +100,15 @@ public:
     {
         if (!ptr)
             return;
-        auto* a = (AllocationHeader*)((((u8*)ptr) - sizeof(AllocationHeader)));
+        auto* a = allocation_header(ptr);
         VERIFY((u8*)a >= m_chunks && (u8*)ptr < m_chunks + m_total_chunks * CHUNK_SIZE);
-        VERIFY((u8*)a + a->allocation_size_in_chunks * CHUNK_SIZE <= m_chunks + m_total_chunks * CHUNK_SIZE);
         FlatPtr start = ((FlatPtr)a - (FlatPtr)m_chunks) / CHUNK_SIZE;
 
-        m_bitmap.set_range(start, a->allocation_size_in_chunks, false);
+        // First, verify that the start of the allocation at `ptr` is actually allocated.
+        VERIFY(m_bitmap.get(start));
+
+        VERIFY((u8*)a + a->allocation_size_in_chunks * CHUNK_SIZE <= m_chunks + m_total_chunks * CHUNK_SIZE);
+        m_bitmap.set_range_and_verify_that_all_bits_flip(start, a->allocation_size_in_chunks, false);
 
         VERIFY(m_allocated_chunks >= a->allocation_size_in_chunks);
         m_allocated_chunks -= a->allocation_size_in_chunks;
@@ -120,36 +118,9 @@ public:
         }
     }
 
-    template<typename MainHeap>
-    void* reallocate(void* ptr, size_t new_size, MainHeap& h)
-    {
-        if (!ptr)
-            return h.allocate(new_size);
-
-        auto* a = (AllocationHeader*)((((u8*)ptr) - sizeof(AllocationHeader)));
-        VERIFY((u8*)a >= m_chunks && (u8*)ptr < m_chunks + m_total_chunks * CHUNK_SIZE);
-        VERIFY((u8*)a + a->allocation_size_in_chunks * CHUNK_SIZE <= m_chunks + m_total_chunks * CHUNK_SIZE);
-
-        size_t old_size = a->allocation_size_in_chunks * CHUNK_SIZE;
-
-        if (old_size == new_size)
-            return ptr;
-
-        auto* new_ptr = h.allocate(new_size);
-        if (new_ptr)
-            __builtin_memcpy(new_ptr, ptr, min(old_size, new_size));
-        deallocate(ptr);
-        return new_ptr;
-    }
-
-    void* reallocate(void* ptr, size_t new_size)
-    {
-        return reallocate(ptr, new_size, *this);
-    }
-
     bool contains(const void* ptr) const
     {
-        const auto* a = (const AllocationHeader*)((((const u8*)ptr) - sizeof(AllocationHeader)));
+        const auto* a = allocation_header(ptr);
         if ((const u8*)a < m_chunks)
             return false;
         if ((const u8*)ptr >= m_chunks + m_total_chunks * CHUNK_SIZE)
@@ -170,7 +141,7 @@ private:
     size_t m_total_chunks { 0 };
     size_t m_allocated_chunks { 0 };
     u8* m_chunks { nullptr };
-    BitmapView m_bitmap;
+    Bitmap m_bitmap;
 };
 
 template<typename ExpandHeap>
@@ -316,17 +287,6 @@ public:
                 }
                 return;
             }
-        }
-        VERIFY_NOT_REACHED();
-    }
-
-    void* reallocate(void* ptr, size_t new_size)
-    {
-        if (!ptr)
-            return allocate(new_size);
-        for (auto* subheap = &m_heaps; subheap; subheap = subheap->next) {
-            if (subheap->heap.contains(ptr))
-                return subheap->heap.reallocate(ptr, new_size, *this);
         }
         VERIFY_NOT_REACHED();
     }

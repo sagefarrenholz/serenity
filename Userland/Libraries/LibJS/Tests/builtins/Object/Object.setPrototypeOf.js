@@ -9,19 +9,16 @@ describe("correct behavior", () => {
         expect(Object.setPrototypeOf(o, p)).toBe(o);
         expect(Object.getPrototypeOf(o)).toBe(p);
     });
+
+    test("non-object argument is returned without being coerced to object", () => {
+        let o = 42;
+        let p = {};
+        expect(Object.setPrototypeOf(o, p)).toBe(o);
+        expect(Object.getPrototypeOf(o)).toBe(Number.prototype);
+    });
 });
 
 describe("errors", () => {
-    test("requires two arguments", () => {
-        expect(() => {
-            Object.setPrototypeOf();
-        }).toThrowWithMessage(TypeError, "Object.setPrototypeOf requires at least two arguments");
-
-        expect(() => {
-            Object.setPrototypeOf({});
-        }).toThrowWithMessage(TypeError, "Object.setPrototypeOf requires at least two arguments");
-    });
-
     test("prototype must be an object", () => {
         expect(() => {
             Object.setPrototypeOf({}, "foo");
@@ -39,5 +36,15 @@ describe("errors", () => {
         }).toThrowWithMessage(TypeError, "Object's [[SetPrototypeOf]] method returned false");
 
         expect(Object.setPrototypeOf(o, p)).toBe(o);
+    });
+
+    test("cyclic prototype chain", () => {
+        let o = {};
+        let p = {};
+        Object.setPrototypeOf(o, p);
+
+        expect(() => {
+            Object.setPrototypeOf(p, o);
+        }).toThrowWithMessage(TypeError, "Object's [[SetPrototypeOf]] method returned false");
     });
 });

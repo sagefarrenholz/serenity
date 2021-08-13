@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -53,7 +33,7 @@ public:
         : m_ptr(&ptr)
     {
         static_assert(
-            requires { requires typename T::AllowOwnPtr()(); } || !requires(T obj) { requires !typename T::AllowOwnPtr()(); obj.ref(); obj.unref(); },
+            requires { requires typename T::AllowOwnPtr()(); } || !requires { requires !typename T::AllowOwnPtr()(); declval<T>().ref(); declval<T>().unref(); },
             "Use NonnullRefPtr<> for RefCounted types");
     }
     NonnullOwnPtr(NonnullOwnPtr&& other)
@@ -118,17 +98,26 @@ public:
         return exchange(m_ptr, nullptr);
     }
 
-    T* ptr() { return m_ptr; }
-    const T* ptr() const { return m_ptr; }
+    ALWAYS_INLINE RETURNS_NONNULL T* ptr()
+    {
+        VERIFY(m_ptr);
+        return m_ptr;
+    }
 
-    T* operator->() { return m_ptr; }
-    const T* operator->() const { return m_ptr; }
+    ALWAYS_INLINE RETURNS_NONNULL const T* ptr() const
+    {
+        VERIFY(m_ptr);
+        return m_ptr;
+    }
 
-    T& operator*() { return *m_ptr; }
-    const T& operator*() const { return *m_ptr; }
+    ALWAYS_INLINE RETURNS_NONNULL T* operator->() { return ptr(); }
+    ALWAYS_INLINE RETURNS_NONNULL const T* operator->() const { return ptr(); }
 
-    operator const T*() const { return m_ptr; }
-    operator T*() { return m_ptr; }
+    ALWAYS_INLINE T& operator*() { return *ptr(); }
+    ALWAYS_INLINE const T& operator*() const { return *ptr(); }
+
+    ALWAYS_INLINE RETURNS_NONNULL operator const T*() const { return ptr(); }
+    ALWAYS_INLINE RETURNS_NONNULL operator T*() { return ptr(); }
 
     operator bool() const = delete;
     bool operator!() const = delete;
@@ -163,22 +152,33 @@ private:
     T* m_ptr = nullptr;
 };
 
+#if !defined(KERNEL)
+
 template<typename T>
 inline NonnullOwnPtr<T> adopt_own(T& object)
 {
     return NonnullOwnPtr<T>(NonnullOwnPtr<T>::Adopt, object);
 }
 
+#endif
+
 template<class T, class... Args>
-inline NonnullOwnPtr<T>
-make(Args&&... args)
+requires(IsConstructible<T, Args...>) inline NonnullOwnPtr<T> make(Args&&... args)
 {
     return NonnullOwnPtr<T>(NonnullOwnPtr<T>::Adopt, *new T(forward<Args>(args)...));
 }
 
+// FIXME: Remove once P0960R3 is available in Clang.
+template<class T, class... Args>
+inline NonnullOwnPtr<T> make(Args&&... args)
+{
+    return NonnullOwnPtr<T>(NonnullOwnPtr<T>::Adopt, *new T { forward<Args>(args)... });
+}
+
 template<typename T>
 struct Traits<NonnullOwnPtr<T>> : public GenericTraits<NonnullOwnPtr<T>> {
-    using PeekType = const T*;
+    using PeekType = T*;
+    using ConstPeekType = const T*;
     static unsigned hash(const NonnullOwnPtr<T>& p) { return int_hash((u32)p.ptr()); }
     static bool equals(const NonnullOwnPtr<T>& a, const NonnullOwnPtr<T>& b) { return a.ptr() == b.ptr(); }
 };
@@ -199,6 +199,8 @@ struct Formatter<NonnullOwnPtr<T>> : Formatter<const T*> {
 
 }
 
+#if !defined(KERNEL)
 using AK::adopt_own;
+#endif
 using AK::make;
 using AK::NonnullOwnPtr;

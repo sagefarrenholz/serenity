@@ -1,39 +1,19 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/Custody.h>
-#include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/Process.h>
 
 namespace Kernel {
 
-KResultOr<int> Process::sys$open(Userspace<const Syscall::SC_open_params*> user_params)
+KResultOr<FlatPtr> Process::sys$open(Userspace<const Syscall::SC_open_params*> user_params)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     Syscall::SC_open_params params;
     if (!copy_from_user(&params, user_params))
         return EFAULT;
@@ -63,16 +43,17 @@ KResultOr<int> Process::sys$open(Userspace<const Syscall::SC_open_params*> user_
     if (path.is_error())
         return path.error();
 
-    dbgln_if(IO_DEBUG, "sys$open(dirfd={}, path='{}', options={}, mode={})", dirfd, path.value(), options, mode);
-    int fd = alloc_fd();
-    if (fd < 0)
-        return fd;
+    dbgln_if(IO_DEBUG, "sys$open(dirfd={}, path='{}', options={}, mode={})", dirfd, path.value()->view(), options, mode);
 
+    auto fd_or_error = m_fds.allocate();
+    if (fd_or_error.is_error())
+        return fd_or_error.error();
+    auto new_fd = fd_or_error.release_value();
     RefPtr<Custody> base;
     if (dirfd == AT_FDCWD) {
         base = current_directory();
     } else {
-        auto base_description = file_description(dirfd);
+        auto base_description = fds().file_description(dirfd);
         if (!base_description)
             return EBADF;
         if (!base_description->is_directory())
@@ -82,7 +63,7 @@ KResultOr<int> Process::sys$open(Userspace<const Syscall::SC_open_params*> user_
         base = base_description->custody();
     }
 
-    auto result = VFS::the().open(path.value(), options, mode & ~umask(), *base);
+    auto result = VirtualFileSystem::the().open(path.value()->view(), options, mode & ~umask(), *base);
     if (result.is_error())
         return result.error();
     auto description = result.value();
@@ -91,14 +72,15 @@ KResultOr<int> Process::sys$open(Userspace<const Syscall::SC_open_params*> user_
         return ENXIO;
 
     u32 fd_flags = (options & O_CLOEXEC) ? FD_CLOEXEC : 0;
-    m_fds[fd].set(move(description), fd_flags);
-    return fd;
+    m_fds[new_fd.fd].set(move(description), fd_flags);
+    return new_fd.fd;
 }
 
-KResultOr<int> Process::sys$close(int fd)
+KResultOr<FlatPtr> Process::sys$close(int fd)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
-    auto description = file_description(fd);
+    auto description = fds().file_description(fd);
     dbgln_if(IO_DEBUG, "sys$close({}) {}", fd, description.ptr());
     if (!description)
         return EBADF;

@@ -1,42 +1,20 @@
 /*
  * Copyright (c) 2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "FindDialog.h"
 #include <AK/Hex.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
+#include <Applications/HexEditor/FindDialogGML.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
-#include <LibGUI/Label.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/RadioButton.h>
 #include <LibGUI/TextBox.h>
 #include <LibGUI/Widget.h>
-#include <LibGfx/Font.h>
-#include <LibGfx/FontDatabase.h>
 
 struct Option {
     String title;
@@ -46,11 +24,11 @@ struct Option {
 };
 
 static const Vector<Option> options = {
-    { "ACII String", OPTION_ASCII_STRING, true, true },
+    { "ASCII String", OPTION_ASCII_STRING, true, true },
     { "Hex value", OPTION_HEX_VALUE, true, false },
 };
 
-int FindDialog::show(GUI::Window* parent_window, String& out_text, ByteBuffer& out_buffer)
+int FindDialog::show(GUI::Window* parent_window, String& out_text, ByteBuffer& out_buffer, bool& find_all)
 {
     auto dialog = FindDialog::construct();
 
@@ -60,12 +38,16 @@ int FindDialog::show(GUI::Window* parent_window, String& out_text, ByteBuffer& o
     if (!out_text.is_empty() && !out_text.is_null())
         dialog->m_text_editor->set_text(out_text);
 
+    dialog->m_find_button->set_enabled(!dialog->m_text_editor->text().is_empty());
+    dialog->m_find_all_button->set_enabled(!dialog->m_text_editor->text().is_empty());
+
     auto result = dialog->exec();
 
     if (result != GUI::Dialog::ExecOK)
         return result;
 
-    auto processed = dialog->process_input(dialog->text_value(), dialog->selected_option());
+    auto selected_option = dialog->selected_option();
+    auto processed = dialog->process_input(dialog->text_value(), selected_option);
 
     out_text = dialog->text_value();
 
@@ -76,7 +58,9 @@ int FindDialog::show(GUI::Window* parent_window, String& out_text, ByteBuffer& o
         out_buffer = move(processed.value());
     }
 
-    dbgln("Find: value={} option={}", dialog->text_value().characters(), (int)dialog->selected_option());
+    find_all = dialog->find_all();
+
+    dbgln("Find: value={} option={} find_all={}", out_text.characters(), (int)selected_option, find_all);
     return result;
 }
 
@@ -108,28 +92,24 @@ Result<ByteBuffer, String> FindDialog::process_input(String text_value, OptionId
 FindDialog::FindDialog()
     : Dialog(nullptr)
 {
-    resize(280, 180 + ((static_cast<int>(options.size()) - 3) * 16));
+    resize(280, 146);
     center_on_screen();
     set_resizable(false);
     set_title("Find");
 
-    auto& main = set_main_widget<GUI::Widget>();
-    main.set_layout<GUI::VerticalBoxLayout>();
-    main.layout()->set_margins({ 8, 8, 8, 8 });
-    main.layout()->set_spacing(8);
-    main.set_fill_with_background_color(true);
+    auto& main_widget = set_main_widget<GUI::Widget>();
+    if (!main_widget.load_from_gml(find_dialog_gml))
+        VERIFY_NOT_REACHED();
 
-    auto& find_prompt_container = main.add<GUI::Widget>();
-    find_prompt_container.set_layout<GUI::HorizontalBoxLayout>();
+    m_text_editor = *main_widget.find_descendant_of_type_named<GUI::TextBox>("text_editor");
+    m_find_button = *main_widget.find_descendant_of_type_named<GUI::Button>("find_button");
+    m_find_all_button = *main_widget.find_descendant_of_type_named<GUI::Button>("find_all_button");
+    m_cancel_button = *main_widget.find_descendant_of_type_named<GUI::Button>("cancel_button");
 
-    find_prompt_container.add<GUI::Label>("Value to find");
-
-    m_text_editor = find_prompt_container.add<GUI::TextBox>();
-    m_text_editor->set_fixed_height(19);
-
+    auto& radio_container = *main_widget.find_descendant_of_type_named<GUI::Widget>("radio_container");
     for (size_t i = 0; i < options.size(); i++) {
         auto action = options[i];
-        auto& radio = main.add<GUI::RadioButton>();
+        auto& radio = radio_container.add<GUI::RadioButton>();
         radio.set_enabled(action.enabled);
         radio.set_text(action.title);
 
@@ -143,22 +123,31 @@ FindDialog::FindDialog()
         }
     }
 
-    auto& button_box = main.add<GUI::Widget>();
-    button_box.set_layout<GUI::HorizontalBoxLayout>();
-    button_box.layout()->set_spacing(8);
-
-    auto& ok_button = button_box.add<GUI::Button>();
-    ok_button.on_click = [this](auto) {
-        m_text_value = m_text_editor->text();
-        done(ExecResult::ExecOK);
+    m_text_editor->on_change = [this]() {
+        m_find_button->set_enabled(!m_text_editor->text().is_empty());
+        m_find_all_button->set_enabled(!m_text_editor->text().is_empty());
     };
-    ok_button.set_text("OK");
 
-    auto& cancel_button = button_box.add<GUI::Button>();
-    cancel_button.on_click = [this](auto) {
+    m_text_editor->on_return_pressed = [this] {
+        m_find_button->click();
+    };
+
+    m_find_button->on_click = [this](auto) {
+        auto text = m_text_editor->text();
+        if (!text.is_empty()) {
+            m_text_value = text;
+            done(ExecResult::ExecOK);
+        }
+    };
+
+    m_find_all_button->on_click = [this](auto) {
+        m_find_all = true;
+        m_find_button->click();
+    };
+
+    m_cancel_button->on_click = [this](auto) {
         done(ExecResult::ExecCancel);
     };
-    cancel_button.set_text("Cancel");
 }
 
 FindDialog::~FindDialog()

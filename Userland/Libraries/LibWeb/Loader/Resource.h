@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -62,7 +42,7 @@ public:
     bool is_failed() const { return m_failed; }
     const String& error() const { return m_error; }
 
-    bool has_encoded_data() const { return !m_encoded_data.is_null(); }
+    bool has_encoded_data() const { return !m_encoded_data.is_empty(); }
 
     const URL& url() const { return m_request.url(); }
     const ByteBuffer& encoded_data() const { return m_encoded_data; }
@@ -72,13 +52,14 @@ public:
     void register_client(Badge<ResourceClient>, ResourceClient&);
     void unregister_client(Badge<ResourceClient>, ResourceClient&);
 
-    const String& encoding() const { return m_encoding; }
+    bool has_encoding() const { return m_encoding.has_value(); }
+    const Optional<String>& encoding() const { return m_encoding; }
     const String& mime_type() const { return m_mime_type; }
 
     void for_each_client(Function<void(ResourceClient&)>);
 
-    void did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap<String, String, CaseInsensitiveStringTraits>& headers);
-    void did_fail(Badge<ResourceLoader>, const String& error);
+    void did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap<String, String, CaseInsensitiveStringTraits>& headers, Optional<u32> status_code);
+    void did_fail(Badge<ResourceLoader>, const String& error, Optional<u32> status_code);
 
 protected:
     explicit Resource(Type, const LoadRequest&);
@@ -90,9 +71,11 @@ private:
     bool m_loaded { false };
     bool m_failed { false };
     String m_error;
-    String m_encoding;
+    Optional<String> m_encoding;
+
     String m_mime_type;
     HashMap<String, String, CaseInsensitiveStringTraits> m_response_headers;
+    Optional<u32> m_status_code;
     HashTable<ResourceClient*> m_clients;
 };
 

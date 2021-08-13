@@ -1,30 +1,10 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/ByteBuffer.h>
+#include <AK/Assertions.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
@@ -56,7 +36,7 @@ static int parse_options(const StringView& options)
         else if (part == "remount")
             flags |= MS_REMOUNT;
         else
-            fprintf(stderr, "Ignoring invalid option: %s\n", part.to_string().characters());
+            warnln("Ignoring invalid option: {}", part);
     }
     return flags;
 }
@@ -88,8 +68,8 @@ static bool mount_all()
     dbgln("Mounting all filesystems...");
 
     auto fstab = Core::File::construct("/etc/fstab");
-    if (!fstab->open(Core::IODevice::OpenMode::ReadOnly)) {
-        fprintf(stderr, "Failed to open /etc/fstab: %s\n", fstab->error_string());
+    if (!fstab->open(Core::OpenMode::ReadOnly)) {
+        warnln("Failed to open {}: {}", fstab->name(), fstab->error_string());
         return false;
     }
 
@@ -103,7 +83,7 @@ static bool mount_all()
 
         Vector<String> parts = line.split('\t');
         if (parts.size() < 3) {
-            fprintf(stderr, "Invalid fstab entry: %s\n", line.characters());
+            warnln("Invalid fstab entry: {}", line);
             all_ok = false;
             continue;
         }
@@ -125,7 +105,7 @@ static bool mount_all()
 
         int rc = mount(fd, mountpoint, fstype, flags);
         if (rc != 0) {
-            fprintf(stderr, "Failed to mount %s (FD: %d) (%s) on %s: %s\n", filename, fd, fstype, mountpoint, strerror(errno));
+            warnln("Failed to mount {} (FD: {}) ({}) on {}: {}", filename, fd, fstype, mountpoint, strerror(errno));
             all_ok = false;
             continue;
         }
@@ -138,8 +118,8 @@ static bool print_mounts()
 {
     // Output info about currently mounted filesystems.
     auto df = Core::File::construct("/proc/df");
-    if (!df->open(Core::IODevice::ReadOnly)) {
-        fprintf(stderr, "Failed to open /proc/df: %s\n", df->error_string());
+    if (!df->open(Core::OpenMode::ReadOnly)) {
+        warnln("Failed to open {}: {}", df->name(), df->error_string());
         return false;
     }
 
@@ -148,30 +128,30 @@ static bool print_mounts()
     VERIFY(json.has_value());
 
     json.value().as_array().for_each([](auto& value) {
-        auto fs_object = value.as_object();
+        auto& fs_object = value.as_object();
         auto class_name = fs_object.get("class_name").to_string();
         auto mount_point = fs_object.get("mount_point").to_string();
         auto source = fs_object.get("source").as_string_or("none");
         auto readonly = fs_object.get("readonly").to_bool();
         auto mount_flags = fs_object.get("mount_flags").to_int();
 
-        printf("%s on %s type %s (", source.characters(), mount_point.characters(), class_name.characters());
+        out("{} on {} type {} (", source, mount_point, class_name);
 
         if (readonly || mount_flags & MS_RDONLY)
-            printf("ro");
+            out("ro");
         else
-            printf("rw");
+            out("rw");
 
         if (mount_flags & MS_NODEV)
-            printf(",nodev");
+            out(",nodev");
         if (mount_flags & MS_NOEXEC)
-            printf(",noexec");
+            out(",noexec");
         if (mount_flags & MS_NOSUID)
-            printf(",nosuid");
+            out(",nosuid");
         if (mount_flags & MS_BIND)
-            printf(",bind");
+            out(",bind");
 
-        printf(")\n");
+        outln(")");
     });
 
     return true;

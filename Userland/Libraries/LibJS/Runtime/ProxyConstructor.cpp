@@ -1,27 +1,8 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Runtime/Array.h>
@@ -32,8 +13,23 @@
 
 namespace JS {
 
+// 10.5.14 ProxyCreate ( target, handler ), https://tc39.es/ecma262/#sec-proxycreate
+static ProxyObject* proxy_create(GlobalObject& global_object, Value target, Value handler)
+{
+    auto& vm = global_object.vm();
+    if (!target.is_object()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::ProxyConstructorBadType, "target", target.to_string_without_side_effects());
+        return {};
+    }
+    if (!handler.is_object()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::ProxyConstructorBadType, "handler", handler.to_string_without_side_effects());
+        return {};
+    }
+    return ProxyObject::create(global_object, target.as_object(), handler.as_object());
+}
+
 ProxyConstructor::ProxyConstructor(GlobalObject& global_object)
-    : NativeFunction(vm().names.Proxy, *global_object.function_prototype())
+    : NativeFunction(vm().names.Proxy.as_string(), *global_object.function_prototype())
 {
 }
 
@@ -41,13 +37,17 @@ void ProxyConstructor::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property(vm.names.length, Value(2), Attribute::Configurable);
+    u8 attr = Attribute::Writable | Attribute::Configurable;
+    define_native_function(vm.names.revocable, revocable, 2, attr);
+
+    define_direct_property(vm.names.length, Value(2), Attribute::Configurable);
 }
 
 ProxyConstructor::~ProxyConstructor()
 {
 }
 
+// 28.2.1.1 Proxy ( target, handler ), https://tc39.es/ecma262/#sec-proxy-target-handler
 Value ProxyConstructor::call()
 {
     auto& vm = this->vm();
@@ -55,26 +55,38 @@ Value ProxyConstructor::call()
     return {};
 }
 
-Value ProxyConstructor::construct(Function&)
+// 28.2.1.1 Proxy ( target, handler ), https://tc39.es/ecma262/#sec-proxy-target-handler
+Value ProxyConstructor::construct(FunctionObject&)
 {
     auto& vm = this->vm();
-    if (vm.argument_count() < 2) {
-        vm.throw_exception<TypeError>(global_object(), ErrorType::ProxyTwoArguments);
-        return {};
-    }
+    return proxy_create(global_object(), vm.argument(0), vm.argument(1));
+}
 
-    auto target = vm.argument(0);
-    auto handler = vm.argument(1);
+// 28.2.2.1 Proxy.revocable ( target, handler ), https://tc39.es/ecma262/#sec-proxy.revocable
+JS_DEFINE_NATIVE_FUNCTION(ProxyConstructor::revocable)
+{
+    auto* proxy = proxy_create(global_object, vm.argument(0), vm.argument(1));
+    if (vm.exception())
+        return {};
 
-    if (!target.is_object()) {
-        vm.throw_exception<TypeError>(global_object(), ErrorType::ProxyConstructorBadType, "target", target.to_string_without_side_effects());
-        return {};
-    }
-    if (!handler.is_object()) {
-        vm.throw_exception<TypeError>(global_object(), ErrorType::ProxyConstructorBadType, "handler", handler.to_string_without_side_effects());
-        return {};
-    }
-    return ProxyObject::create(global_object(), target.as_object(), handler.as_object());
+    // 28.2.2.1.1 Proxy Revocation Functions, https://tc39.es/ecma262/#sec-proxy-revocation-functions
+    auto* revoker = NativeFunction::create(global_object, "", [proxy_handle = make_handle(proxy)](auto&, auto&) -> Value {
+        auto& proxy = const_cast<ProxyObject&>(*proxy_handle.cell());
+        if (proxy.is_revoked())
+            return js_undefined();
+        // NOTE: The spec wants us to unset [[ProxyTarget]] and [[ProxyHandler]],
+        // which is their way of revoking the Proxy - this might affect GC-ability,
+        // but AFAICT not doing that should be ok compatibility-wise.
+        proxy.revoke();
+        return js_undefined();
+    });
+    revoker->define_direct_property(vm.names.length, Value(0), Attribute::Configurable);
+    revoker->define_direct_property(vm.names.name, js_string(vm, String::empty()), Attribute::Configurable);
+
+    auto* result = Object::create(global_object, global_object.object_prototype());
+    result->create_data_property_or_throw(vm.names.proxy, proxy);
+    result->create_data_property_or_throw(vm.names.revoke, revoker);
+    return result;
 }
 
 }

@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Ali Mohammad Pur <ali.mpfard@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -59,14 +39,12 @@ public:
     {
     }
 
-    static size_t block_size() { VERIFY_NOT_REACHED(); }
-
     virtual ReadonlyBytes bytes() const = 0;
 
     virtual void overwrite(ReadonlyBytes) = 0;
     virtual void overwrite(const u8* data, size_t size) { overwrite({ data, size }); }
 
-    virtual void apply_initialization_vector(const u8* ivec) = 0;
+    virtual void apply_initialization_vector(ReadonlyBytes ivec) = 0;
 
     PaddingMode padding_mode() const { return m_padding_mode; }
     void set_padding_mode(PaddingMode mode) { m_padding_mode = mode; }
@@ -91,6 +69,9 @@ public:
 
         ptr[index] = (u8)value;
     }
+
+protected:
+    virtual ~CipherBlock() = default;
 
 private:
     virtual Bytes bytes() = 0;
@@ -123,7 +104,7 @@ public:
     virtual const KeyType& key() const = 0;
     virtual KeyType& key() = 0;
 
-    static size_t block_size() { return BlockType::block_size(); }
+    constexpr static size_t block_size() { return BlockType::block_size(); }
 
     PaddingMode padding_mode() const { return m_padding_mode; }
 
@@ -131,6 +112,9 @@ public:
     virtual void decrypt_block(const BlockType& in, BlockType& out) = 0;
 
     virtual String class_name() const = 0;
+
+protected:
+    virtual ~Cipher() = default;
 
 private:
     PaddingMode m_padding_mode;

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,11 +15,13 @@
 namespace Syntax {
 
 enum class Language {
-    PlainText,
     Cpp,
-    JavaScript,
-    INI,
     GML,
+    HTML,
+    INI,
+    JavaScript,
+    PlainText,
+    SQL,
     Shell,
 };
 
@@ -59,12 +41,18 @@ public:
     virtual void rehighlight(const Palette&) = 0;
     virtual void highlight_matching_token_pair();
 
-    virtual bool is_identifier(void*) const { return false; };
-    virtual bool is_navigatable(void*) const { return false; };
+    virtual bool is_identifier(u64) const { return false; };
+    virtual bool is_navigatable(u64) const { return false; };
 
     void attach(HighlighterClient&);
     void detach();
     void cursor_did_change();
+
+    struct MatchingTokenPair {
+        u64 open;
+        u64 close;
+    };
+    Vector<MatchingTokenPair> matching_token_pairs() const;
 
 protected:
     Highlighter() { }
@@ -72,13 +60,11 @@ protected:
     // FIXME: This should be WeakPtr somehow
     HighlighterClient* m_client { nullptr };
 
-    struct MatchingTokenPair {
-        void* open;
-        void* close;
-    };
-
-    virtual Vector<MatchingTokenPair> matching_token_pairs() const = 0;
-    virtual bool token_types_equal(void*, void*) const = 0;
+    virtual Vector<MatchingTokenPair> matching_token_pairs_impl() const = 0;
+    virtual bool token_types_equal(u64, u64) const = 0;
+    void register_nested_token_pairs(Vector<MatchingTokenPair>);
+    void clear_nested_token_pairs() { m_nested_token_pairs.clear(); }
+    size_t first_free_token_kind_serial_value() const { return m_nested_token_pairs.size(); }
 
     struct BuddySpan {
         int index { -1 };
@@ -87,6 +73,75 @@ protected:
 
     bool m_has_brace_buddies { false };
     BuddySpan m_brace_buddies[2];
+    HashTable<MatchingTokenPair> m_nested_token_pairs;
+};
+
+class ProxyHighlighterClient final : public Syntax::HighlighterClient {
+public:
+    ProxyHighlighterClient(Syntax::HighlighterClient& client, GUI::TextPosition start, u64 nested_kind_start_value, StringView source)
+        : m_document(client.get_document())
+        , m_text(source)
+        , m_start(start)
+        , m_nested_kind_start_value(nested_kind_start_value)
+    {
+    }
+
+    Vector<GUI::TextDocumentSpan> corrected_spans() const
+    {
+        Vector<GUI::TextDocumentSpan> spans { m_spans };
+        for (auto& entry : spans) {
+            entry.range.start() = {
+                entry.range.start().line() + m_start.line(),
+                entry.range.start().line() == 0 ? entry.range.start().column() + m_start.column() : entry.range.start().column(),
+            };
+            entry.range.end() = {
+                entry.range.end().line() + m_start.line(),
+                entry.range.end().line() == 0 ? entry.range.end().column() + m_start.column() : entry.range.end().column(),
+            };
+            if (entry.data != (u64)-1)
+                entry.data += m_nested_kind_start_value;
+        }
+
+        return spans;
+    }
+
+    Vector<Syntax::Highlighter::MatchingTokenPair> corrected_token_pairs(Vector<Syntax::Highlighter::MatchingTokenPair> pairs) const
+    {
+        for (auto& pair : pairs) {
+            pair.close += m_nested_kind_start_value;
+            pair.open += m_nested_kind_start_value;
+        }
+        return pairs;
+    }
+
+private:
+    virtual Vector<GUI::TextDocumentSpan>& spans() override { return m_spans; }
+    virtual const Vector<GUI::TextDocumentSpan>& spans() const override { return m_spans; }
+    virtual void set_span_at_index(size_t index, GUI::TextDocumentSpan span) override { m_spans.at(index) = move(span); }
+
+    virtual String highlighter_did_request_text() const override { return m_text; }
+    virtual void highlighter_did_request_update() override { }
+    virtual GUI::TextDocument& highlighter_did_request_document() override { return m_document; }
+    virtual GUI::TextPosition highlighter_did_request_cursor() const override { return {}; }
+    virtual void highlighter_did_set_spans(Vector<GUI::TextDocumentSpan> spans) override { m_spans = move(spans); }
+
+    Vector<GUI::TextDocumentSpan> m_spans;
+    GUI::TextDocument& m_document;
+    StringView m_text;
+    GUI::TextPosition m_start;
+    u64 m_nested_kind_start_value { 0 };
 };
 
 }
+
+template<>
+struct AK::Traits<Syntax::Highlighter::MatchingTokenPair> : public AK::GenericTraits<Syntax::Highlighter::MatchingTokenPair> {
+    static unsigned hash(Syntax::Highlighter::MatchingTokenPair const& pair)
+    {
+        return pair_int_hash(u64_hash(pair.open), u64_hash(pair.close));
+    }
+    static bool equals(Syntax::Highlighter::MatchingTokenPair const& a, Syntax::Highlighter::MatchingTokenPair const& b)
+    {
+        return a.open == b.open && a.close == b.close;
+    }
+};

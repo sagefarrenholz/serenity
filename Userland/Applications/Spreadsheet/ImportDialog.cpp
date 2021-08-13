@@ -1,33 +1,11 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "ImportDialog.h"
 #include "Spreadsheet.h"
-#include <AK/JsonArray.h>
-#include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
 #include <AK/LexicalPath.h>
 #include <Applications/Spreadsheet/CSVImportGML.h>
@@ -38,9 +16,9 @@
 #include <LibGUI/ComboBox.h>
 #include <LibGUI/ItemListModel.h>
 #include <LibGUI/RadioButton.h>
+#include <LibGUI/StackWidget.h>
 #include <LibGUI/TableView.h>
 #include <LibGUI/TextBox.h>
-#include <LibGUI/Wizards/AbstractWizardPage.h>
 #include <LibGUI/Wizards/WizardDialog.h>
 #include <LibGUI/Wizards/WizardPage.h>
 
@@ -71,13 +49,10 @@ CSVImportDialogPage::CSVImportDialogPage(StringView csv)
     m_trim_leading_field_spaces_check_box = m_page->body_widget().find_descendant_of_type_named<GUI::CheckBox>("trim_leading_field_spaces_check_box");
     m_trim_trailing_field_spaces_check_box = m_page->body_widget().find_descendant_of_type_named<GUI::CheckBox>("trim_trailing_field_spaces_check_box");
     m_data_preview_table_view = m_page->body_widget().find_descendant_of_type_named<GUI::TableView>("data_preview_table_view");
+    m_data_preview_error_label = m_page->body_widget().find_descendant_of_type_named<GUI::Label>("data_preview_error_label");
+    m_data_preview_widget = m_page->body_widget().find_descendant_of_type_named<GUI::StackWidget>("data_preview_widget");
 
-    Vector<String> quote_escape_items {
-        // Note: Keep in sync with Reader::ParserTraits::QuoteEscape.
-        "Repeat",
-        "Backslash",
-    };
-    m_quote_escape_combo_box->set_model(GUI::ItemListModel<String>::create(quote_escape_items));
+    m_quote_escape_combo_box->set_model(GUI::ItemListModel<String>::create(m_quote_escape_items));
 
     // By default, use commas, double quotes with repeat, and disable headers.
     m_delimiter_comma_radio->set_checked(true);
@@ -89,18 +64,18 @@ CSVImportDialogPage::CSVImportDialogPage(StringView csv)
     m_delimiter_tab_radio->on_checked = [&](auto) { update_preview(); };
     m_delimiter_space_radio->on_checked = [&](auto) { update_preview(); };
     m_delimiter_other_radio->on_checked = [&](auto) { update_preview(); };
-    m_delimiter_other_text_box->on_change = [&](auto&) {
+    m_delimiter_other_text_box->on_change = [&] {
         if (m_delimiter_other_radio->is_checked())
             update_preview();
     };
     m_quote_single_radio->on_checked = [&](auto) { update_preview(); };
     m_quote_double_radio->on_checked = [&](auto) { update_preview(); };
     m_quote_other_radio->on_checked = [&](auto) { update_preview(); };
-    m_quote_other_text_box->on_change = [&](auto&) {
+    m_quote_other_text_box->on_change = [&] {
         if (m_quote_other_radio->is_checked())
             update_preview();
     };
-    m_quote_escape_combo_box->on_change = [&](auto&) { update_preview(); };
+    m_quote_escape_combo_box->on_change = [&](auto&, auto&) { update_preview(); };
     m_read_header_check_box->on_checked = [&](auto) { update_preview(); };
     m_trim_leading_field_spaces_check_box->on_checked = [&](auto) { update_preview(); };
     m_trim_trailing_field_spaces_check_box->on_checked = [&](auto) { update_preview(); };
@@ -160,7 +135,7 @@ auto CSVImportDialogPage::make_reader() -> Optional<Reader::XSV>
         quote_escape,
     };
 
-    auto behaviours = Reader::default_behaviours();
+    auto behaviours = Reader::default_behaviours() | Reader::ParserBehaviour::Lenient;
 
     if (should_read_headers)
         behaviours = behaviours | Reader::ParserBehaviour::ReadHeaders;
@@ -169,7 +144,7 @@ auto CSVImportDialogPage::make_reader() -> Optional<Reader::XSV>
     if (should_trim_trailing)
         behaviours = behaviours | Reader::ParserBehaviour::TrimTrailingFieldSpaces;
 
-    return Reader::XSV(m_csv, traits, behaviours);
+    return Reader::XSV(m_csv, move(traits), behaviours);
 };
 
 void CSVImportDialogPage::update_preview()
@@ -178,14 +153,24 @@ void CSVImportDialogPage::update_preview()
     m_previously_made_reader = make_reader();
     if (!m_previously_made_reader.has_value()) {
         m_data_preview_table_view->set_model(nullptr);
+        m_data_preview_error_label->set_text("Could not read the given file");
+        m_data_preview_widget->set_active_widget(m_data_preview_error_label);
         return;
     }
 
     auto& reader = *m_previously_made_reader;
+    if (reader.has_error()) {
+        m_data_preview_table_view->set_model(nullptr);
+        m_data_preview_error_label->set_text(String::formatted("XSV parse error:\n{}", reader.error_string()));
+        m_data_preview_widget->set_active_widget(m_data_preview_error_label);
+        return;
+    }
+
     auto headers = reader.headers();
 
     m_data_preview_table_view->set_model(
         GUI::ItemListModel<Reader::XSV::Row, Reader::XSV, Vector<String>>::create(reader, headers, min(8ul, reader.size())));
+    m_data_preview_widget->set_active_widget(m_data_preview_table_view);
     m_data_preview_table_view->update();
 }
 
@@ -207,6 +192,10 @@ Result<NonnullRefPtrVector<Sheet>, String> ImportDialog::make_and_run_for(String
             NonnullRefPtrVector<Sheet> sheets;
 
             if (reader.has_value()) {
+                reader->parse();
+                if (reader.value().has_error())
+                    return String::formatted("CSV Import failed: {}", reader.value().error_string());
+
                 auto sheet = Sheet::from_xsv(reader.value(), workbook);
                 if (sheet)
                     sheets.append(sheet.release_nonnull());
@@ -260,7 +249,7 @@ Result<NonnullRefPtrVector<Sheet>, String> ImportDialog::make_and_run_for(String
     } else {
         auto page = GUI::WizardPage::construct(
             "Import File Format",
-            String::formatted("Select the format you wish to import '{}' as", LexicalPath { file.filename() }.basename()));
+            String::formatted("Select the format you wish to import '{}' as", LexicalPath::basename(file.filename())));
 
         page->on_next_page = [] { return nullptr; };
 

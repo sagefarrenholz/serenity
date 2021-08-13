@@ -1,39 +1,19 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <LibJS/Heap/Heap.h>
-#include <LibJS/Runtime/ScopeObject.h>
+#include <LibJS/Runtime/Environment.h>
 #include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
-class GlobalObject : public ScopeObject {
-    JS_OBJECT(GlobalObject, ScopeObject);
+class GlobalObject : public Object {
+    JS_OBJECT(GlobalObject, Object);
 
 public:
     explicit GlobalObject();
@@ -41,25 +21,42 @@ public:
 
     virtual ~GlobalObject() override;
 
-    virtual Optional<Variable> get_from_scope(const FlyString&) const override;
-    virtual void put_to_scope(const FlyString&, Variable) override;
-    virtual bool has_this_binding() const override;
-    virtual Value get_this_binding(GlobalObject&) const override;
+    GlobalEnvironment& environment() { return *m_environment; }
 
     Console& console() { return *m_console; }
 
     Shape* empty_object_shape() { return m_empty_object_shape; }
 
     Shape* new_object_shape() { return m_new_object_shape; }
-    Shape* new_script_function_prototype_object_shape() { return m_new_script_function_prototype_object_shape; }
+    Shape* new_ordinary_function_prototype_object_shape() { return m_new_ordinary_function_prototype_object_shape; }
 
     // Not included in JS_ENUMERATE_NATIVE_OBJECTS due to missing distinct prototype
     ProxyConstructor* proxy_constructor() { return m_proxy_constructor; }
+
+    // Not included in JS_ENUMERATE_NATIVE_OBJECTS due to missing distinct constructor
+    GeneratorObjectPrototype* generator_object_prototype() { return m_generator_object_prototype; }
+
+    FunctionObject* array_prototype_values_function() const { return m_array_prototype_values_function; }
+    FunctionObject* eval_function() const { return m_eval_function; }
+    FunctionObject* temporal_time_zone_prototype_get_offset_nanoseconds_for_function() const { return m_temporal_time_zone_prototype_get_offset_nanoseconds_for_function; }
+    FunctionObject* throw_type_error_function() const { return m_throw_type_error_function; }
 
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType) \
     ConstructorName* snake_name##_constructor() { return m_##snake_name##_constructor; } \
     Object* snake_name##_prototype() { return m_##snake_name##_prototype; }
     JS_ENUMERATE_BUILTIN_TYPES
+#undef __JS_ENUMERATE
+
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName)                              \
+    Intl::ConstructorName* intl_##snake_name##_constructor() { return m_intl_##snake_name##_constructor; } \
+    Object* intl_##snake_name##_prototype() { return m_intl_##snake_name##_prototype; }
+    JS_ENUMERATE_INTL_OBJECTS
+#undef __JS_ENUMERATE
+
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName)                                          \
+    Temporal::ConstructorName* temporal_##snake_name##_constructor() { return m_temporal_##snake_name##_constructor; } \
+    Object* temporal_##snake_name##_prototype() { return m_temporal_##snake_name##_prototype; }
+    JS_ENUMERATE_TEMPORAL_OBJECTS
 #undef __JS_ENUMERATE
 
 #define __JS_ENUMERATE(ClassName, snake_name) \
@@ -71,9 +68,9 @@ protected:
     virtual void visit_edges(Visitor&) override;
 
     template<typename ConstructorType>
-    void initialize_constructor(const FlyString& property_name, ConstructorType*&, Object* prototype);
+    void initialize_constructor(PropertyName const&, ConstructorType*&, Object* prototype);
     template<typename ConstructorType>
-    void add_constructor(const FlyString& property_name, ConstructorType*&, Object* prototype);
+    void add_constructor(PropertyName const&, ConstructorType*&, Object* prototype);
 
 private:
     virtual bool is_global_object() const final { return true; }
@@ -84,20 +81,48 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(parse_float);
     JS_DECLARE_NATIVE_FUNCTION(parse_int);
     JS_DECLARE_NATIVE_FUNCTION(eval);
+    JS_DECLARE_NATIVE_FUNCTION(encode_uri);
+    JS_DECLARE_NATIVE_FUNCTION(decode_uri);
+    JS_DECLARE_NATIVE_FUNCTION(encode_uri_component);
+    JS_DECLARE_NATIVE_FUNCTION(decode_uri_component);
+    JS_DECLARE_NATIVE_FUNCTION(escape);
+    JS_DECLARE_NATIVE_FUNCTION(unescape);
 
     NonnullOwnPtr<Console> m_console;
 
     Shape* m_empty_object_shape { nullptr };
     Shape* m_new_object_shape { nullptr };
-    Shape* m_new_script_function_prototype_object_shape { nullptr };
+    Shape* m_new_ordinary_function_prototype_object_shape { nullptr };
 
     // Not included in JS_ENUMERATE_NATIVE_OBJECTS due to missing distinct prototype
     ProxyConstructor* m_proxy_constructor { nullptr };
+
+    // Not included in JS_ENUMERATE_NATIVE_OBJECTS due to missing distinct constructor
+    GeneratorObjectPrototype* m_generator_object_prototype { nullptr };
+
+    GlobalEnvironment* m_environment { nullptr };
+
+    FunctionObject* m_array_prototype_values_function { nullptr };
+    FunctionObject* m_eval_function { nullptr };
+    FunctionObject* m_temporal_time_zone_prototype_get_offset_nanoseconds_for_function { nullptr };
+    FunctionObject* m_throw_type_error_function { nullptr };
 
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType) \
     ConstructorName* m_##snake_name##_constructor { nullptr };                           \
     Object* m_##snake_name##_prototype { nullptr };
     JS_ENUMERATE_BUILTIN_TYPES
+#undef __JS_ENUMERATE
+
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName) \
+    Intl::ConstructorName* m_intl_##snake_name##_constructor { nullptr };     \
+    Object* m_intl_##snake_name##_prototype { nullptr };
+    JS_ENUMERATE_INTL_OBJECTS
+#undef __JS_ENUMERATE
+
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName)     \
+    Temporal::ConstructorName* m_temporal_##snake_name##_constructor { nullptr }; \
+    Object* m_temporal_##snake_name##_prototype { nullptr };
+    JS_ENUMERATE_TEMPORAL_OBJECTS
 #undef __JS_ENUMERATE
 
 #define __JS_ENUMERATE(ClassName, snake_name) \
@@ -107,25 +132,27 @@ private:
 };
 
 template<typename ConstructorType>
-inline void GlobalObject::initialize_constructor(const FlyString& property_name, ConstructorType*& constructor, Object* prototype)
+inline void GlobalObject::initialize_constructor(PropertyName const& property_name, ConstructorType*& constructor, Object* prototype)
 {
     auto& vm = this->vm();
     constructor = heap().allocate<ConstructorType>(*this, *this);
-    constructor->define_property(vm.names.name, js_string(heap(), property_name), Attribute::Configurable);
+    constructor->define_direct_property(vm.names.name, js_string(heap(), property_name.as_string()), Attribute::Configurable);
     if (vm.exception())
         return;
     if (prototype) {
-        prototype->define_property(vm.names.constructor, constructor, Attribute::Writable | Attribute::Configurable);
+        prototype->define_direct_property(vm.names.constructor, constructor, Attribute::Writable | Attribute::Configurable);
         if (vm.exception())
             return;
     }
 }
 
 template<typename ConstructorType>
-inline void GlobalObject::add_constructor(const FlyString& property_name, ConstructorType*& constructor, Object* prototype)
+inline void GlobalObject::add_constructor(PropertyName const& property_name, ConstructorType*& constructor, Object* prototype)
 {
-    initialize_constructor(property_name, constructor, prototype);
-    define_property(property_name, constructor, Attribute::Writable | Attribute::Configurable);
+    // Some constructors are pre-initialized separately.
+    if (!constructor)
+        initialize_constructor(property_name, constructor, prototype);
+    define_direct_property(property_name, constructor, Attribute::Writable | Attribute::Configurable);
 }
 
 inline GlobalObject* Shape::global_object() const
@@ -135,5 +162,17 @@ inline GlobalObject* Shape::global_object() const
 
 template<>
 inline bool Object::fast_is<GlobalObject>() const { return is_global_object(); }
+
+template<typename... Args>
+[[nodiscard]] ALWAYS_INLINE Value Value::invoke(GlobalObject& global_object, PropertyName const& property_name, Args... args)
+{
+    if constexpr (sizeof...(Args) > 0) {
+        MarkedValueList arglist { global_object.vm().heap() };
+        (..., arglist.append(move(args)));
+        return invoke_internal(global_object, property_name, move(arglist));
+    }
+
+    return invoke_internal(global_object, property_name, Optional<MarkedValueList> {});
+}
 
 }

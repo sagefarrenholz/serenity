@@ -1,6 +1,9 @@
 test("basic functionality", () => {
     expect(String.prototype.substr).toHaveLength(2);
 
+    expect("".substr(1)).toBe("");
+    expect("".substr()).toBe("");
+    expect("".substr(-1)).toBe("");
     expect("hello friends".substr()).toBe("hello friends");
     expect("hello friends".substr(1)).toBe("ello friends");
     expect("hello friends".substr(0, 5)).toBe("hello");
@@ -13,4 +16,15 @@ test("basic functionality", () => {
     expect("hello friends".substr("2", "2")).toBe("ll");
     expect("hello friends".substr(-7)).toBe("friends");
     expect("hello friends".substr(-3, -5)).toBe("");
+});
+
+test("UTF-16", () => {
+    var s = "😀";
+    expect(s).toHaveLength(2);
+    expect(s.substr()).toBe("😀");
+    expect(s.substr(0)).toBe("😀");
+    expect(s.substr(0, 2)).toBe("😀");
+    expect(s.substr(0, 1)).toBe("\ud83d");
+    expect(s.substr(1, 1)).toBe("\ude00");
+    expect(s.substr(2, 1)).toBe("");
 });

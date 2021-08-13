@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020-2021, SerenityOS developers
- * All rights reserved.
+ * Copyright (c) 2020-2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/String.h>
@@ -29,97 +9,97 @@
 
 namespace Web::CSS {
 
-String Token::to_string() const
+String Token::to_debug_string() const
 {
     StringBuilder builder;
 
     switch (m_type) {
-    case TokenType::Invalid:
+    case Type::Invalid:
         VERIFY_NOT_REACHED();
 
-    case TokenType::EndOfFile:
+    case Type::EndOfFile:
         builder.append("__EOF__");
         break;
-    case TokenType::Ident:
-        //builder.append("Identifier");
+    case Type::Ident:
+        builder.append("Identifier: ");
         builder.append(m_value.to_string());
         return builder.to_string();
-    case TokenType::Function:
+    case Type::Function:
         builder.append("Function");
         break;
-    case TokenType::AtKeyword:
+    case Type::AtKeyword:
         builder.append("@");
         break;
-    case TokenType::Hash:
-        builder.append("#");
+    case Type::Hash:
+        builder.append("Hash: ");
         builder.append(m_value.to_string());
         return builder.to_string();
-    case TokenType::String:
-        //builder.append("String");
+    case Type::String:
+        builder.append("String: ");
         builder.append(m_value.to_string());
         return builder.to_string();
-    case TokenType::BadString:
+    case Type::BadString:
         builder.append("Invalid String");
         break;
-    case TokenType::Url:
+    case Type::Url:
         builder.append("Url");
         break;
-    case TokenType::BadUrl:
+    case Type::BadUrl:
         builder.append("Invalid Url");
         break;
-    case TokenType::Delim:
-        //builder.append("Delimiter");
+    case Type::Delim:
+        builder.append("Delimiter: ");
         builder.append(m_value.to_string());
         return builder.to_string();
-    case TokenType::Number:
-        //builder.append("Number");
+    case Type::Number:
+        builder.append("Number: ");
         builder.append(m_value.to_string());
-        builder.append(m_unit.to_string());
+        builder.append(m_number_type == NumberType::Integer ? " (int)" : " (float)");
         return builder.to_string();
-    case TokenType::Percentage:
-        //builder.append("Percentage");
-        builder.append(m_value.to_string());
-        builder.append(m_unit.to_string());
-        return builder.to_string();
-    case TokenType::Dimension:
-        //builder.append("Dimension");
+    case Type::Percentage:
+        builder.append("Percentage: ");
         builder.append(m_value.to_string());
         builder.append(m_unit.to_string());
         return builder.to_string();
-    case TokenType::Whitespace:
+    case Type::Dimension:
+        builder.append("Dimension: ");
+        builder.append(m_value.to_string());
+        builder.append(m_unit.to_string());
+        return builder.to_string();
+    case Type::Whitespace:
         builder.append("Whitespace");
         break;
-    case TokenType::CDO:
+    case Type::CDO:
         builder.append("CDO");
         break;
-    case TokenType::CDC:
+    case Type::CDC:
         builder.append("CDC");
         break;
-    case TokenType::Colon:
+    case Type::Colon:
         builder.append(":");
         break;
-    case TokenType::Semicolon:
+    case Type::Semicolon:
         builder.append(";");
         break;
-    case TokenType::Comma:
+    case Type::Comma:
         builder.append(",");
         break;
-    case TokenType::OpenSquare:
+    case Type::OpenSquare:
         builder.append("[");
         break;
-    case TokenType::CloseSquare:
+    case Type::CloseSquare:
         builder.append("]");
         break;
-    case TokenType::OpenParen:
+    case Type::OpenParen:
         builder.append("(");
         break;
-    case TokenType::CloseParen:
+    case Type::CloseParen:
         builder.append(")");
         break;
-    case TokenType::OpenCurly:
+    case Type::OpenCurly:
         builder.append("{");
         break;
-    case TokenType::CloseCurly:
+    case Type::CloseCurly:
         builder.append("}");
         break;
     }
@@ -133,7 +113,7 @@ String Token::to_string() const
     builder.append(" { value: '");
     builder.append(m_value.to_string());
 
-    if (m_type == Token::TokenType::Hash) {
+    if (m_type == Token::Type::Hash) {
         builder.append("', hash_type: '");
         if (m_hash_type == Token::HashType::Unrestricted) {
             builder.append("Unrestricted");
@@ -142,7 +122,7 @@ String Token::to_string() const
         }
     }
 
-    if (m_type == Token::TokenType::Number) {
+    if (m_type == Token::Type::Number) {
         builder.append("', number_type: '");
         if (m_number_type == Token::NumberType::Integer) {
             builder.append("Integer");
@@ -151,7 +131,7 @@ String Token::to_string() const
         }
     }
 
-    if (m_type == Token::TokenType::Dimension) {
+    if (m_type == Token::Type::Dimension) {
         builder.append("', number_type: '");
         if (m_number_type == Token::NumberType::Integer) {
             builder.append("Integer");
@@ -167,46 +147,46 @@ String Token::to_string() const
     return builder.to_string();
 }
 
-Token::TokenType Token::mirror_variant() const
+Token::Type Token::mirror_variant() const
 {
-    if (is_open_curly()) {
-        return TokenType::CloseCurly;
+    if (is(Token::Type::OpenCurly)) {
+        return Type::CloseCurly;
     }
 
-    if (is_open_square()) {
-        return TokenType::CloseSquare;
+    if (is(Token::Type::OpenSquare)) {
+        return Type::CloseSquare;
     }
 
-    if (is_open_paren()) {
-        return TokenType::CloseParen;
+    if (is(Token::Type::OpenParen)) {
+        return Type::CloseParen;
     }
 
-    return TokenType::Invalid;
+    return Type::Invalid;
 }
 
 String Token::bracket_string() const
 {
-    if (is_open_curly()) {
+    if (is(Token::Type::OpenCurly)) {
         return "{";
     }
 
-    if (is_close_curly()) {
+    if (is(Token::Type::CloseCurly)) {
         return "}";
     }
 
-    if (is_open_square()) {
+    if (is(Token::Type::OpenSquare)) {
         return "[";
     }
 
-    if (is_close_square()) {
+    if (is(Token::Type::CloseSquare)) {
         return "]";
     }
 
-    if (is_open_paren()) {
+    if (is(Token::Type::OpenParen)) {
         return "(";
     }
 
-    if (is_close_paren()) {
+    if (is(Token::Type::CloseParen)) {
         return ")";
     }
 
@@ -215,27 +195,27 @@ String Token::bracket_string() const
 
 String Token::bracket_mirror_string() const
 {
-    if (is_open_curly()) {
+    if (is(Token::Type::OpenCurly)) {
         return "}";
     }
 
-    if (is_close_curly()) {
+    if (is(Token::Type::CloseCurly)) {
         return "{";
     }
 
-    if (is_open_square()) {
+    if (is(Token::Type::OpenSquare)) {
         return "]";
     }
 
-    if (is_close_square()) {
+    if (is(Token::Type::CloseSquare)) {
         return "[";
     }
 
-    if (is_open_paren()) {
+    if (is(Token::Type::OpenParen)) {
         return ")";
     }
 
-    if (is_close_paren()) {
+    if (is(Token::Type::CloseParen)) {
         return "(";
     }
 

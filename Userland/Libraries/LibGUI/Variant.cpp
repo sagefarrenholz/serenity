@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/FlyString.h>
@@ -42,8 +22,10 @@ const char* to_string(Variant::Type type)
         return "Int32";
     case Variant::Type::Int64:
         return "Int64";
-    case Variant::Type::UnsignedInt:
-        return "UnsignedInt";
+    case Variant::Type::UnsignedInt32:
+        return "UnsignedInt32";
+    case Variant::Type::UnsignedInt64:
+        return "UnsignedInt64";
     case Variant::Type::Float:
         return "Float";
     case Variant::Type::String:
@@ -115,10 +97,16 @@ Variant::Variant(i64 value)
     m_value.as_i64 = value;
 }
 
-Variant::Variant(unsigned value)
-    : m_type(Type::UnsignedInt)
+Variant::Variant(u32 value)
+    : m_type(Type::UnsignedInt32)
 {
-    m_value.as_uint = value;
+    m_value.as_u32 = value;
+}
+
+Variant::Variant(u64 value)
+    : m_type(Type::UnsignedInt64)
+{
+    m_value.as_u64 = value;
 }
 
 Variant::Variant(float value)
@@ -169,8 +157,8 @@ Variant::Variant(const JsonValue& value)
     }
 
     if (value.is_u32()) {
-        m_type = Type::UnsignedInt;
-        m_value.as_uint = value.as_u32();
+        m_type = Type::UnsignedInt32;
+        m_value.as_u32 = value.as_u32();
         return;
     }
 
@@ -181,9 +169,8 @@ Variant::Variant(const JsonValue& value)
     }
 
     if (value.is_u64()) {
-        // FIXME: Variant should have a 64-bit internal type.
-        m_type = Type::UnsignedInt;
-        m_value.as_uint = value.to_u32();
+        m_type = Type::UnsignedInt64;
+        m_value.as_u64 = value.to_u64();
         return;
     }
 
@@ -293,8 +280,11 @@ void Variant::copy_from(const Variant& other)
     case Type::Int64:
         m_value.as_i64 = other.m_value.as_i64;
         break;
-    case Type::UnsignedInt:
-        m_value.as_uint = other.m_value.as_uint;
+    case Type::UnsignedInt32:
+        m_value.as_u32 = other.m_value.as_u32;
+        break;
+    case Type::UnsignedInt64:
+        m_value.as_u64 = other.m_value.as_u64;
         break;
     case Type::Float:
         m_value.as_float = other.m_value.as_float;
@@ -346,8 +336,10 @@ bool Variant::operator==(const Variant& other) const
         return as_i32() == other.as_i32();
     case Type::Int64:
         return as_i64() == other.as_i64();
-    case Type::UnsignedInt:
-        return as_uint() == other.as_uint();
+    case Type::UnsignedInt32:
+        return as_u32() == other.as_u32();
+    case Type::UnsignedInt64:
+        return as_u64() == other.as_u64();
     case Type::Float:
         return as_float() == other.as_float();
     case Type::String:
@@ -385,8 +377,10 @@ bool Variant::operator<(const Variant& other) const
         return as_i32() < other.as_i32();
     case Type::Int64:
         return as_i64() < other.as_i64();
-    case Type::UnsignedInt:
-        return as_uint() < other.as_uint();
+    case Type::UnsignedInt32:
+        return as_u32() < other.as_u32();
+    case Type::UnsignedInt64:
+        return as_u64() < other.as_u64();
     case Type::Float:
         return as_float() < other.as_float();
     case Type::String:
@@ -421,10 +415,12 @@ String Variant::to_string() const
         return String::number(as_i32());
     case Type::Int64:
         return String::number(as_i64());
-    case Type::UnsignedInt:
-        return String::number(as_uint());
+    case Type::UnsignedInt32:
+        return String::number(as_u32());
+    case Type::UnsignedInt64:
+        return String::number(as_u64());
     case Type::Float:
-        return String::format("%.2f", (double)as_float());
+        return String::formatted("{:.2}", as_float());
     case Type::String:
         return as_string();
     case Type::Bitmap:

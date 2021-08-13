@@ -1,36 +1,16 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
 #include <AK/ByteBuffer.h>
-#include <AK/Demangle.h>
+#include <AK/OwnPtr.h>
+#include <AK/Platform.h>
 #include <AK/StringBuilder.h>
 #include <LibC/sys/arch/i386/regs.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/File.h>
 #include <LibDebug/DebugInfo.h>
 #include <LibDebug/DebugSession.h>
 #include <LibLine/Editor.h>
@@ -39,7 +19,6 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 RefPtr<Line::Editor> editor;
@@ -56,9 +35,15 @@ static void handle_sigint(int)
 
 static void handle_print_registers(const PtraceRegisters& regs)
 {
-    outln("eax={:08x} ebx={:08x} ecx={:08x} edx={:08x}", regs.eax, regs.ebx, regs.ecx, regs.edx);
-    outln("esp={:08x} ebp={:08x} esi={:08x} edi={:08x}", regs.esp, regs.ebp, regs.esi, regs.edi);
-    outln("eip={:08x} eflags={:08x}", regs.eip, regs.eflags);
+#if ARCH(I386)
+    outln("eax={:p} ebx={:p} ecx={:p} edx={:p}", regs.eax, regs.ebx, regs.ecx, regs.edx);
+    outln("esp={:p} ebp={:p} esi={:p} edi={:p}", regs.esp, regs.ebp, regs.esi, regs.edi);
+    outln("eip={:p} eflags={:p}", regs.eip, regs.eflags);
+#else
+    outln("rax={:p} rbx={:p} rcx={:p} rdx={:p}", regs.rax, regs.rbx, regs.rcx, regs.rdx);
+    outln("rsp={:p} rbp={:p} rsi={:p} rdi={:p}", regs.rsp, regs.rbp, regs.rsi, regs.rdi);
+    outln("rip={:p} rflags={:p}", regs.rip, regs.rflags);
+#endif
 }
 
 static bool handle_disassemble_command(const String& command, void* first_instruction)
@@ -98,6 +83,33 @@ static bool handle_disassemble_command(const String& command, void* first_instru
     return true;
 }
 
+static bool handle_backtrace_command(const PtraceRegisters& regs)
+{
+#if ARCH(I386)
+    auto ebp_val = regs.ebp;
+    auto eip_val = regs.eip;
+    outln("Backtrace:");
+    while (g_debug_session->peek((u32*)eip_val).has_value() && g_debug_session->peek((u32*)ebp_val).has_value()) {
+        auto eip_symbol = g_debug_session->symbolicate(eip_val);
+        auto source_position = g_debug_session->get_source_position(eip_val);
+        String symbol_location = (eip_symbol.has_value() && eip_symbol->symbol != "") ? eip_symbol->symbol : "???";
+        if (source_position.has_value()) {
+            outln("{:p} in {} ({}:{})", eip_val, symbol_location, source_position->file_path, source_position->line_number);
+        } else {
+            outln("{:p} in {}", eip_val, symbol_location);
+        }
+        auto next_eip = g_debug_session->peek((u32*)(ebp_val + 4));
+        auto next_ebp = g_debug_session->peek((u32*)ebp_val);
+        eip_val = (u32)next_eip.value();
+        ebp_val = (u32)next_ebp.value();
+    }
+#else
+    (void)regs;
+    TODO();
+#endif
+    return true;
+}
+
 static bool insert_breakpoint_at_address(FlatPtr address)
 {
     return g_debug_session->insert_breakpoint((void*)address);
@@ -110,7 +122,7 @@ static bool insert_breakpoint_at_source_position(const String& file, size_t line
         warnln("Could not insert breakpoint at {}:{}", file, line);
         return false;
     }
-    outln("Breakpoint inserted [{}:{} ({}:{:p})]", result.value().file_name, result.value().line_number, result.value().library_name, result.value().address);
+    outln("Breakpoint inserted [{}:{} ({}:{:p})]", result.value().filename, result.value().line_number, result.value().library_name, result.value().address);
     return true;
 }
 
@@ -165,13 +177,13 @@ static bool handle_examine_command(const String& command)
     if (!(argument.starts_with("0x"))) {
         return false;
     }
-    u32 address = strtoul(argument.characters() + 2, nullptr, 16);
+    FlatPtr address = strtoul(argument.characters() + 2, nullptr, 16);
     auto res = g_debug_session->peek((u32*)address);
     if (!res.has_value()) {
-        printf("could not examine memory at address 0x%x\n", address);
+        outln("Could not examine memory at address {:p}", address);
         return true;
     }
-    printf("0x%x\n", res.value());
+    outln("{:#x}", res.value());
     return true;
 }
 
@@ -185,6 +197,7 @@ static void print_help()
         "regs - Print registers\n"
         "dis [number of instructions] - Print disassembly\n"
         "bp <address/symbol/file:line> - Insert a breakpoint\n"
+        "bt - show backtrace for current thread\n"
         "x <address> - examine dword in memory\n");
 }
 
@@ -192,7 +205,7 @@ int main(int argc, char** argv)
 {
     editor = Line::Editor::construct();
 
-    if (pledge("stdio proc ptrace exec rpath tty sigaction cpath unix fattr", nullptr) < 0) {
+    if (pledge("stdio proc ptrace exec rpath tty sigaction cpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -227,10 +240,15 @@ int main(int argc, char** argv)
 
         VERIFY(optional_regs.has_value());
         const PtraceRegisters& regs = optional_regs.value();
+#if ARCH(I386)
+        const FlatPtr ip = regs.eip;
+#else
+        const FlatPtr ip = regs.rip;
+#endif
 
-        auto symbol_at_ip = g_debug_session->symbolicate(regs.eip);
+        auto symbol_at_ip = g_debug_session->symbolicate(ip);
 
-        auto source_position = g_debug_session->get_source_position(regs.eip);
+        auto source_position = g_debug_session->get_source_position(ip);
 
         if (in_step_line) {
             bool no_source_info = !source_position.has_value();
@@ -244,9 +262,9 @@ int main(int argc, char** argv)
         }
 
         if (symbol_at_ip.has_value())
-            outln("Program is stopped at: {:p} ({}:{})", regs.eip, symbol_at_ip.value().library_name, symbol_at_ip.value().symbol);
+            outln("Program is stopped at: {:p} ({}:{})", ip, symbol_at_ip.value().library_name, symbol_at_ip.value().symbol);
         else
-            outln("Program is stopped at: {:p}", regs.eip);
+            outln("Program is stopped at: {:p}", ip);
 
         if (source_position.has_value()) {
             previous_source_position = source_position.value();
@@ -288,12 +306,14 @@ int main(int argc, char** argv)
                 success = true;
 
             } else if (command.starts_with("dis")) {
-                success = handle_disassemble_command(command, reinterpret_cast<void*>(regs.eip));
+                success = handle_disassemble_command(command, reinterpret_cast<void*>(ip));
 
             } else if (command.starts_with("bp")) {
                 success = handle_breakpoint_command(command);
             } else if (command.starts_with("x")) {
                 success = handle_examine_command(command);
+            } else if (command.starts_with("bt")) {
+                success = handle_backtrace_command(regs);
             }
 
             if (success && !command.is_empty()) {

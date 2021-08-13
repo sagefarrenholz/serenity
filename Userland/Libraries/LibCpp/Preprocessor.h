@@ -1,67 +1,65 @@
 /*
  * Copyright (c) 2021, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/FlyString.h>
+#include <AK/Function.h>
 #include <AK/HashMap.h>
 #include <AK/Optional.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
+#include <LibCpp/Token.h>
 
 namespace Cpp {
+
 class Preprocessor {
 
 public:
     explicit Preprocessor(const String& filename, const StringView& program);
-    const String& process();
-    const String& processed_text();
+    Vector<Token> process_and_lex();
     Vector<StringView> included_paths() const { return m_included_paths; }
 
     struct DefinedValue {
-        Optional<StringView> value;
+        String value;
         FlyString filename;
         size_t line { 0 };
         size_t column { 0 };
     };
     using Definitions = HashMap<StringView, DefinedValue>;
 
-    const Definitions& definitions() const { return m_definitions; }
+    struct Substitution {
+        Token original_token;
+        DefinedValue defined_value;
+    };
+
+    Definitions const& definitions() const { return m_definitions; }
+    Vector<Substitution> const& substitutions() const { return m_substitutions; }
 
     void set_ignore_unsupported_keywords(bool ignore) { m_options.ignore_unsupported_keywords = ignore; }
+    void set_keep_include_statements(bool keep) { m_options.keep_include_statements = keep; }
+
+    Function<Definitions(StringView)> definitions_in_header_callback { nullptr };
 
 private:
-    void handle_preprocessor_line(const StringView&);
+    using PreprocessorKeyword = StringView;
+    PreprocessorKeyword handle_preprocessor_line(StringView const&);
+    void handle_preprocessor_keyword(StringView const& keyword, GenericLexer& line_lexer);
+    void process_line(StringView const& line);
+    void do_substitution(Token const& replaced_token, DefinedValue const&);
 
-    Definitions m_definitions;
-    const String m_filename;
-    const StringView m_program;
-    StringBuilder m_builder;
+    String m_filename;
+    String m_program;
     Vector<StringView> m_lines;
+
+    Vector<Token> m_tokens;
+    Definitions m_definitions;
+    Vector<Substitution> m_substitutions;
+
     size_t m_line_index { 0 };
     size_t m_current_depth { 0 };
     Vector<size_t> m_depths_of_taken_branches;
@@ -75,10 +73,10 @@ private:
     State m_state { State::Normal };
 
     Vector<StringView> m_included_paths;
-    String m_processed_text;
 
     struct Options {
         bool ignore_unsupported_keywords { false };
+        bool keep_include_statements { false };
     } m_options;
 };
 }

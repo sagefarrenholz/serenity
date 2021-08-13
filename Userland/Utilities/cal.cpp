@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibCore/ArgsParser.h>
@@ -37,8 +17,6 @@ const int column_width = 22;
 char print_buffer[line_width * line_count];
 char temp_buffer[line_width * 8];
 
-int target_year;
-int target_month;
 int target_day;
 
 int current_year;
@@ -147,20 +125,20 @@ int main(int argc, char** argv)
     clean_buffers();
 
     if (year_mode) {
-        printf("                             ");
-        printf("Year %4d", year);
-        printf("                             \n\n");
+        out("                           Year {:04}                            ", year);
+        outln();
+        outln();
 
         for (int i = 1; i < 12; ++i) {
             insert_month_to_print(0, i++, year);
             insert_month_to_print(1, i++, year);
             insert_month_to_print(2, i, year);
-            printf("%s\n", print_buffer);
+            outln("{}", print_buffer);
             clean_buffers();
         }
     } else {
         insert_month_to_print(0, month, year);
-        printf("%s\n\n", print_buffer);
+        outln("{}", print_buffer);
         clean_buffers();
     }
 

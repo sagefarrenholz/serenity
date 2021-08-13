@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Paul Roukema <roukemap@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/ByteBuffer.h>
@@ -33,8 +13,6 @@
 #include <AK/Types.h>
 #include <LibGfx/ICOLoader.h>
 #include <LibGfx/PNGLoader.h>
-#include <math.h>
-#include <stdio.h>
 #include <string.h>
 
 namespace Gfx {
@@ -91,7 +69,7 @@ struct [[gnu::packed]] BMP_ARGB {
 };
 static_assert(sizeof(BMP_ARGB) == 4);
 
-struct ImageDescriptor {
+struct ICOImageDescriptor {
     u16 width;
     u16 height;
     size_t offset;
@@ -109,7 +87,7 @@ struct ICOLoadingContext {
     State state { NotDecoded };
     const u8* data { nullptr };
     size_t data_size { 0 };
-    Vector<ImageDescriptor> images;
+    Vector<ICOImageDescriptor> images;
     size_t largest_index;
 };
 
@@ -146,14 +124,14 @@ static Optional<size_t> decode_ico_header(InputMemoryStream& stream)
     return { header.image_count };
 }
 
-static Optional<ImageDescriptor> decode_ico_direntry(InputMemoryStream& stream)
+static Optional<ICOImageDescriptor> decode_ico_direntry(InputMemoryStream& stream)
 {
     ICONDIRENTRY entry;
     stream >> Bytes { &entry, sizeof(entry) };
     if (stream.handle_any_error())
         return {};
 
-    ImageDescriptor desc = { entry.width, entry.height, entry.offset, entry.size, nullptr };
+    ICOImageDescriptor desc = { entry.width, entry.height, entry.offset, entry.size, nullptr };
     if (desc.width == 0)
         desc.width = 256;
     if (desc.height == 0)
@@ -189,25 +167,17 @@ static bool load_ico_directory(ICOLoadingContext& context)
     for (size_t i = 0; i < image_count.value(); ++i) {
         auto maybe_desc = decode_ico_direntry(stream);
         if (!maybe_desc.has_value()) {
-#if ICO_DEBUG
-            printf("load_ico_directory: error loading entry: %lu\n", i);
-#endif
+            dbgln_if(ICO_DEBUG, "load_ico_directory: error loading entry: {}", i);
             return false;
         }
 
         auto& desc = maybe_desc.value();
         if (desc.offset + desc.size < desc.offset // detect integer overflow
             || (desc.offset + desc.size) > context.data_size) {
-#if ICO_DEBUG
-            printf("load_ico_directory: offset: %lu size: %lu doesn't fit in ICO size: %lu\n",
-                desc.offset, desc.size, context.data_size);
-#endif
+            dbgln_if(ICO_DEBUG, "load_ico_directory: offset: {} size: {} doesn't fit in ICO size: {}", desc.offset, desc.size, context.data_size);
             return false;
         }
-#if ICO_DEBUG
-        printf("load_ico_directory: index %zu width: %u height: %u offset: %lu size: %lu\n",
-            i, desc.width, desc.height, desc.offset, desc.size);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_directory: index {} width: {} height: {} offset: {} size: {}", i, desc.width, desc.height, desc.offset, desc.size);
         context.images.append(desc);
     }
     context.largest_index = find_largest_image(context);
@@ -215,7 +185,7 @@ static bool load_ico_directory(ICOLoadingContext& context)
     return true;
 }
 
-static bool load_ico_bmp(ICOLoadingContext& context, ImageDescriptor& desc)
+static bool load_ico_bmp(ICOLoadingContext& context, ICOImageDescriptor& desc)
 {
     BITMAPINFOHEADER info;
     if (desc.size < sizeof(info))
@@ -223,18 +193,20 @@ static bool load_ico_bmp(ICOLoadingContext& context, ImageDescriptor& desc)
 
     memcpy(&info, context.data + desc.offset, sizeof(info));
     if (info.size != sizeof(info)) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: info size: %u, expected: %lu\n", info.size, sizeof(info));
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: info size: {}, expected: {}", info.size, sizeof(info));
         return false;
     }
 
     if (info.width < 0) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: width %d < 0\n", info.width);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: width {} < 0", info.width);
         return false;
     }
+
+    if (info.height == NumericLimits<i32>::min()) {
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: height == NumericLimits<i32>::min()");
+        return false;
+    }
+
     bool topdown = false;
     if (info.height < 0) {
         topdown = true;
@@ -242,37 +214,25 @@ static bool load_ico_bmp(ICOLoadingContext& context, ImageDescriptor& desc)
     }
 
     if (info.planes != 1) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: planes: %d != 1", info.planes);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: planes: {} != 1", info.planes);
         return false;
     }
 
     if (info.bpp != 32) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: unsupported bpp: %u\n", info.bpp);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: unsupported bpp: {}", info.bpp);
         return false;
     }
 
-#if ICO_DEBUG
-    printf("load_ico_bmp: width: %d height: %d direction: %s bpp: %d size_image: %u\n",
+    dbgln_if(ICO_DEBUG, "load_ico_bmp: width: {} height: {} direction: {} bpp: {} size_image: {}",
         info.width, info.height, topdown ? "TopDown" : "BottomUp", info.bpp, info.size_image);
-#endif
 
     if (info.compression != 0 || info.palette_size != 0 || info.important_colors != 0) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: following fields must be 0: compression: %u palette_size: %u important_colors: %u\n",
-            info.compression, info.palette_size, info.important_colors);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: following fields must be 0: compression: {} palette_size: {} important_colors: {}", info.compression, info.palette_size, info.important_colors);
         return false;
     }
 
     if (info.width != desc.width || info.height != 2 * desc.height) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: size mismatch: ico %dx%d, bmp %dx%d\n",
-            desc.width, desc.height, info.width, info.height);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: size mismatch: ico {}x{}, bmp {}x{}", desc.width, desc.height, info.width, info.height);
         return false;
     }
 
@@ -281,14 +241,11 @@ static bool load_ico_bmp(ICOLoadingContext& context, ImageDescriptor& desc)
     size_t required_len = desc.height * (desc.width * sizeof(BMP_ARGB) + mask_row_len);
     size_t available_len = desc.size - sizeof(info);
     if (required_len > available_len) {
-#if ICO_DEBUG
-        printf("load_ico_bmp: required_len: %lu > available_len: %lu\n",
-            required_len, available_len);
-#endif
+        dbgln_if(ICO_DEBUG, "load_ico_bmp: required_len: {} > available_len: {}", required_len, available_len);
         return false;
     }
 
-    desc.bitmap = Bitmap::create_purgeable(BitmapFormat::BGRA8888, { desc.width, desc.height });
+    desc.bitmap = Bitmap::try_create(BitmapFormat::BGRA8888, { desc.width, desc.height });
     if (!desc.bitmap)
         return false;
     Bitmap& bitmap = *desc.bitmap;
@@ -324,23 +281,19 @@ static bool load_ico_bitmap(ICOLoadingContext& context, Optional<size_t> index)
         return false;
     }
 
-    ImageDescriptor& desc = context.images[real_index];
+    ICOImageDescriptor& desc = context.images[real_index];
 
     PNGImageDecoderPlugin png_decoder(context.data + desc.offset, desc.size);
     if (png_decoder.sniff()) {
         desc.bitmap = png_decoder.bitmap();
         if (!desc.bitmap) {
-#if ICO_DEBUG
-            printf("load_ico_bitmap: failed to load PNG encoded image index: %lu\n", real_index);
-#endif
+            dbgln_if(ICO_DEBUG, "load_ico_bitmap: failed to load PNG encoded image index: {}", real_index);
             return false;
         }
         return true;
     } else {
         if (!load_ico_bmp(context, desc)) {
-#if ICO_DEBUG
-            printf("load_ico_bitmap: failed to load BMP encoded image index: %lu\n", real_index);
-#endif
+            dbgln_if(ICO_DEBUG, "load_ico_bitmap: failed to load BMP encoded image index: {}", real_index);
             return false;
         }
         return true;
@@ -398,11 +351,11 @@ void ICOImageDecoderPlugin::set_volatile()
         m_context->images[0].bitmap->set_volatile();
 }
 
-bool ICOImageDecoderPlugin::set_nonvolatile()
+bool ICOImageDecoderPlugin::set_nonvolatile(bool& was_purged)
 {
     if (!m_context->images[0].bitmap)
         return false;
-    return m_context->images[0].bitmap->set_nonvolatile();
+    return m_context->images[0].bitmap->set_nonvolatile(was_purged);
 }
 
 bool ICOImageDecoderPlugin::sniff()
@@ -428,10 +381,9 @@ size_t ICOImageDecoderPlugin::frame_count()
 
 ImageFrameDescriptor ICOImageDecoderPlugin::frame(size_t i)
 {
-    if (i > 0) {
-        return { bitmap(), 0 };
-    }
-    return {};
+    if (i > 0)
+        return {};
+    return { bitmap(), 0 };
 }
 
 }

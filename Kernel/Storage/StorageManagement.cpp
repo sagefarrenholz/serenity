@@ -1,34 +1,14 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/UUID.h>
+#include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/CommandLine.h>
 #include <Kernel/Devices/BlockDevice.h>
 #include <Kernel/FileSystem/Ext2FileSystem.h>
-#include <Kernel/PCI/Access.h>
 #include <Kernel/Panic.h>
 #include <Kernel/Storage/AHCIController.h>
 #include <Kernel/Storage/IDEController.h>
@@ -65,18 +45,20 @@ bool StorageManagement::boot_argument_contains_partition_uuid()
 UNMAP_AFTER_INIT NonnullRefPtrVector<StorageController> StorageManagement::enumerate_controllers(bool force_pio) const
 {
     NonnullRefPtrVector<StorageController> controllers;
-    if (kernel_command_line().is_ide_enabled()) {
+    if (!kernel_command_line().disable_physical_storage()) {
+        if (kernel_command_line().is_ide_enabled()) {
+            PCI::enumerate([&](const PCI::Address& address, PCI::ID) {
+                if (PCI::get_class(address) == 0x1 && PCI::get_subclass(address) == 0x1) {
+                    controllers.append(IDEController::initialize(address, force_pio));
+                }
+            });
+        }
         PCI::enumerate([&](const PCI::Address& address, PCI::ID) {
-            if (PCI::get_class(address) == 0x1 && PCI::get_subclass(address) == 0x1) {
-                controllers.append(IDEController::initialize(address, force_pio));
+            if (PCI::get_class(address) == 0x1 && PCI::get_subclass(address) == 0x6 && PCI::get_programming_interface(address) == 0x1) {
+                controllers.append(AHCIController::initialize(address));
             }
         });
     }
-    PCI::enumerate([&](const PCI::Address& address, PCI::ID) {
-        if (PCI::get_class(address) == 0x1 && PCI::get_subclass(address) == 0x6 && PCI::get_programming_interface(address) == 0x1) {
-            controllers.append(AHCIController::initialize(address));
-        }
-    });
     controllers.append(RamdiskController::initialize());
     return controllers;
 }
@@ -194,7 +176,7 @@ int StorageManagement::minor_number()
     return s_device_minor_number++;
 }
 
-NonnullRefPtr<FS> StorageManagement::root_filesystem() const
+NonnullRefPtr<FileSystem> StorageManagement::root_filesystem() const
 {
     auto boot_device_description = boot_block_device();
     if (!boot_device_description) {
@@ -223,13 +205,4 @@ StorageManagement& StorageManagement::the()
     return *s_the;
 }
 
-NonnullRefPtrVector<StorageController> StorageManagement::ide_controllers() const
-{
-    NonnullRefPtrVector<StorageController> ide_controllers;
-    for (auto& controller : m_controllers) {
-        if (controller.type() == StorageController::Type::IDE)
-            ide_controllers.append(controller);
-    }
-    return ide_controllers;
-}
 }

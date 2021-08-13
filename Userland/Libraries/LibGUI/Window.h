@@ -1,32 +1,13 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Function.h>
+#include <AK/OwnPtr.h>
 #include <AK/String.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/Object.h>
@@ -49,6 +30,9 @@ public:
 
     static Window* from_window_id(int);
 
+    bool is_modified() const;
+    void set_modified(bool);
+
     bool is_modal() const { return m_modal; }
     void set_modal(bool);
 
@@ -56,9 +40,12 @@ public:
     void set_fullscreen(bool);
 
     bool is_maximized() const;
+    void set_maximized(bool);
 
     bool is_frameless() const { return m_frameless; }
     void set_frameless(bool);
+
+    void set_forced_shadow(bool);
 
     bool is_resizable() const { return m_resizable; }
     void set_resizable(bool resizable) { m_resizable = resizable; }
@@ -80,8 +67,10 @@ public:
 
     int window_id() const { return m_window_id; }
 
+    void make_window_manager(unsigned event_mask);
+
     String title() const;
-    void set_title(const StringView&);
+    void set_title(String);
 
     Color background_color() const { return m_background_color; }
     void set_background_color(Color color) { m_background_color = color; }
@@ -94,6 +83,7 @@ public:
     Function<void()> on_close;
     Function<CloseRequestDecision()> on_close_request;
     Function<void(bool is_active_input)> on_active_input_change;
+    Function<void(bool is_active_window)> on_active_window_change;
 
     int x() const { return rect().x(); }
     int y() const { return rect().y(); }
@@ -101,7 +91,7 @@ public:
     int height() const { return rect().height(); }
 
     Gfx::IntRect rect() const;
-    Gfx::IntRect rect_in_menubar() const;
+    Gfx::IntRect applet_rect_on_screen() const;
     Gfx::IntSize size() const { return rect().size(); }
     void set_rect(const Gfx::IntRect&);
     void set_rect(int x, int y, int width, int height) { set_rect({ x, y, width, height }); }
@@ -186,7 +176,7 @@ public:
     void apply_icon();
     const Gfx::Bitmap* icon() const { return m_icon.ptr(); }
 
-    Vector<Widget*> focusable_widgets(FocusSource) const;
+    Vector<Widget&> focusable_widgets(FocusSource) const;
 
     void schedule_relayout();
 
@@ -205,15 +195,21 @@ public:
 
     Window* find_parent_window();
 
-    void set_progress(int);
+    void set_progress(Optional<int>);
 
     void update_cursor(Badge<Widget>) { update_cursor(); }
 
     void did_disable_focused_widget(Badge<Widget>);
 
+    Menu& add_menu(String name);
+
 protected:
     Window(Core::Object* parent = nullptr);
     virtual void wm_event(WMEvent&);
+    virtual void screen_rects_change_event(ScreenRectsChangeEvent&);
+
+    virtual void enter_event(Core::Event&);
+    virtual void leave_event(Core::Event&);
 
 private:
     void update_cursor();
@@ -228,8 +224,11 @@ private:
     void handle_became_active_or_inactive_event(Core::Event&);
     void handle_close_request();
     void handle_theme_change_event(ThemeChangeEvent&);
+    void handle_fonts_change_event(FontsChangeEvent&);
+    void handle_screen_rects_change_event(ScreenRectsChangeEvent&);
     void handle_drag_move_event(DragEvent&);
-    void handle_left_event();
+    void handle_entered_event(Core::Event&);
+    void handle_left_event(Core::Event&);
 
     void server_did_destroy();
 
@@ -238,8 +237,12 @@ private:
     void flip(const Vector<Gfx::IntRect, 32>& dirty_rects);
     void force_update();
 
+    WeakPtr<Widget> m_previously_focused_widget;
+
     OwnPtr<WindowBackingStore> m_front_store;
     OwnPtr<WindowBackingStore> m_back_store;
+
+    NonnullRefPtr<Menubar> m_menubar;
 
     RefPtr<Gfx::Bitmap> m_icon;
     RefPtr<Gfx::Bitmap> m_custom_cursor;
@@ -271,6 +274,7 @@ private:
     bool m_minimizable { true };
     bool m_fullscreen { false };
     bool m_frameless { false };
+    bool m_forced_shadow { false };
     bool m_layout_pending { false };
     bool m_visible_for_timer_purposes { true };
     bool m_visible { false };

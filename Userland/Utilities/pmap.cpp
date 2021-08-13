@@ -1,30 +1,10 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/ByteBuffer.h>
+#include <AK/Assertions.h>
 #include <AK/JsonObject.h>
 #include <AK/QuickSort.h>
 #include <AK/String.h>
@@ -56,17 +36,23 @@ int main(int argc, char** argv)
     args_parser.parse(argc, argv);
 
     auto file = Core::File::construct(String::formatted("/proc/{}/vm", pid));
-    if (!file->open(Core::IODevice::ReadOnly)) {
-        fprintf(stderr, "Error: %s\n", file->error_string());
+    if (!file->open(Core::OpenMode::ReadOnly)) {
+        warnln("Failed to open {}: {}", file->name(), file->error_string());
         return 1;
     }
 
-    printf("%s:\n", pid);
+    outln("{}:", pid);
+
+#if ARCH(I386)
+    auto padding = "";
+#else
+    auto padding = "        ";
+#endif
 
     if (extended) {
-        printf("Address         Size   Resident      Dirty Access  VMObject Type  Purgeable   CoW Pages Name\n");
+        outln("Address{}           Size   Resident      Dirty Access  VMObject Type  Purgeable   CoW Pages Name", padding);
     } else {
-        printf("Address         Size Access  Name\n");
+        outln("Address{}           Size Access  Name", padding);
     }
 
     auto file_contents = file->read_all();
@@ -75,12 +61,12 @@ int main(int argc, char** argv)
 
     Vector<JsonValue> sorted_regions = json.value().as_array().values();
     quick_sort(sorted_regions, [](auto& a, auto& b) {
-        return a.as_object().get("address").to_u32() < b.as_object().get("address").to_u32();
+        return a.as_object().get("address").to_addr() < b.as_object().get("address").to_addr();
     });
 
     for (auto& value : sorted_regions) {
-        auto map = value.as_object();
-        auto address = map.get("address").to_int();
+        auto& map = value.as_object();
+        auto address = map.get("address").to_addr();
         auto size = map.get("size").to_string();
 
         auto access = String::formatted("{}{}{}{}{}",
@@ -90,8 +76,8 @@ int main(int argc, char** argv)
             (map.get("shared").to_bool() ? "s" : "-"),
             (map.get("syscall").to_bool() ? "c" : "-"));
 
-        printf("%08x  ", address);
-        printf("%10s ", size.characters());
+        out("{:p}  ", address);
+        out("{:>10} ", size);
         if (extended) {
             auto resident = map.get("amount_resident").to_string();
             auto dirty = map.get("amount_dirty").to_string();
@@ -100,18 +86,18 @@ int main(int argc, char** argv)
                 vmobject = vmobject.substring(0, vmobject.length() - 8);
             auto purgeable = map.get("purgeable").to_string();
             auto cow_pages = map.get("cow_pages").to_string();
-            printf("%10s ", resident.characters());
-            printf("%10s ", dirty.characters());
-            printf("%-6s ", access.characters());
-            printf("%-14s ", vmobject.characters());
-            printf("%-10s ", purgeable.characters());
-            printf("%10s ", cow_pages.characters());
+            out("{:>10} ", resident);
+            out("{:>10} ", dirty);
+            out("{:6} ", access);
+            out("{:14} ", vmobject);
+            out("{:10} ", purgeable);
+            out("{:>10} ", cow_pages);
         } else {
-            printf("%-6s ", access.characters());
+            out("{:6} ", access);
         }
         auto name = map.get("name").to_string();
-        printf("%-20s", name.characters());
-        printf("\n");
+        out("{:20}", name);
+        outln();
     }
 
     return 0;

@@ -1,37 +1,21 @@
 /*
  * Copyright (c) 2020, Fei Wu <f.eiwu@yahoo.com>
- * All rights reserved.
+ * Copyright (c) 2021, Brandon Pruitt <brapru@pm.me>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ScopeGuard.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
+#include <LibCore/Account.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,8 +42,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    unveil(nullptr, nullptr);
-
     const char* username = nullptr;
     bool remove_home = false;
 
@@ -68,91 +50,134 @@ int main(int argc, char** argv)
     args_parser.add_positional_argument(username, "Login user identity (username)", "login");
     args_parser.parse(argc, argv);
 
-    if (!remove_home) {
+    auto account_or_error = Core::Account::from_name(username);
+
+    if (account_or_error.is_error()) {
+        warnln("Core::Account::from_name: {}", account_or_error.error());
+        return 1;
+    }
+
+    auto& target_account = account_or_error.value();
+
+    if (remove_home) {
+        if (unveil(target_account.home_directory().characters(), "c") < 0) {
+            perror("unveil");
+            return 1;
+        }
+    } else {
         if (pledge("stdio wpath rpath cpath fattr", nullptr) < 0) {
             perror("pledge");
             return 1;
         }
     }
 
-    char temp_filename[] = "/etc/passwd.XXXXXX";
-    auto fd = mkstemp(temp_filename);
-    if (fd == -1) {
-        perror("failed to create temporary file");
-        return 1;
-    }
+    unveil(nullptr, nullptr);
 
-    FILE* temp_file = fdopen(fd, "w");
-    if (!temp_file) {
-        perror("fdopen");
-        if (unlink(temp_filename) < 0) {
+    char temp_passwd[] = "/etc/passwd.XXXXXX";
+    char temp_shadow[] = "/etc/shadow.XXXXXX";
+
+    auto unlink_temp_files = [&] {
+        if (unlink(temp_passwd) < 0)
             perror("unlink");
-        }
+        if (unlink(temp_shadow) < 0)
+            perror("unlink");
+    };
 
+    ArmedScopeGuard unlink_temp_files_guard = [&] {
+        unlink_temp_files();
+    };
+
+    auto temp_passwd_fd = mkstemp(temp_passwd);
+    if (temp_passwd_fd == -1) {
+        perror("failed to create temporary passwd file");
         return 1;
     }
 
-    bool user_exists = false;
-    String home_directory;
+    auto temp_shadow_fd = mkstemp(temp_shadow);
+    if (temp_shadow_fd == -1) {
+        perror("failed to create temporary shadow file");
+        return 1;
+    }
 
-    int rc = 0;
+    FILE* temp_passwd_file = fdopen(temp_passwd_fd, "w");
+    if (!temp_passwd_file) {
+        perror("fdopen");
+        return 1;
+    }
+
+    FILE* temp_shadow_file = fdopen(temp_shadow_fd, "w");
+    if (!temp_shadow_file) {
+        perror("fdopen");
+        return 1;
+    }
+
     setpwent();
     for (auto* pw = getpwent(); pw; pw = getpwent()) {
-        if (strcmp(pw->pw_name, username)) {
-            if (putpwent(pw, temp_file) != 0) {
+        if (strcmp(pw->pw_name, target_account.username().characters())) {
+            if (putpwent(pw, temp_passwd_file) != 0) {
                 perror("failed to put an entry in the temporary passwd file");
-                rc = 1;
-                break;
+                return 1;
             }
-        } else {
-            user_exists = true;
-            if (remove_home)
-                home_directory = pw->pw_dir;
         }
     }
     endpwent();
 
-    if (fclose(temp_file)) {
-        perror("fclose");
-        if (!rc)
-            rc = 1;
-    }
-
-    if (rc == 0 && !user_exists) {
-        fprintf(stderr, "specified user doesn't exist\n");
-        rc = 6;
-    }
-
-    if (rc == 0 && chmod(temp_filename, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) {
-        perror("chmod");
-        rc = 1;
-    }
-
-    if (rc == 0 && rename(temp_filename, "/etc/passwd") < 0) {
-        perror("failed to rename the temporary passwd file");
-        rc = 1;
-    }
-
-    if (rc) {
-        if (unlink(temp_filename) < 0) {
-            perror("unlink");
+    setspent();
+    for (auto* spwd = getspent(); spwd; spwd = getspent()) {
+        if (strcmp(spwd->sp_namp, target_account.username().characters())) {
+            if (putspent(spwd, temp_shadow_file) != 0) {
+                perror("failed to put an entry in the temporary shadow file");
+                return 1;
+            }
         }
-        return rc;
     }
+    endspent();
+
+    if (fclose(temp_passwd_file)) {
+        perror("fclose");
+        return 1;
+    }
+
+    if (fclose(temp_shadow_file)) {
+        perror("fclose");
+        return 1;
+    }
+
+    if (chmod(temp_passwd, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) {
+        perror("chmod");
+        return 1;
+    }
+
+    if (chmod(temp_shadow, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) {
+        perror("chmod");
+        return 1;
+    }
+
+    if (rename(temp_passwd, "/etc/passwd") < 0) {
+        perror("failed to rename the temporary passwd file");
+        return 1;
+    }
+
+    if (rename(temp_shadow, "/etc/shadow") < 0) {
+        perror("failed to rename the temporary shadow file");
+        return 1;
+    }
+
+    unlink_temp_files_guard.disarm();
 
     if (remove_home) {
-        if (access(home_directory.characters(), F_OK) == -1)
+        if (access(target_account.home_directory().characters(), F_OK) == -1)
             return 0;
 
-        String real_path = Core::File::real_path_for(home_directory);
+        String real_path = Core::File::real_path_for(target_account.home_directory());
 
         if (real_path == "/") {
-            fprintf(stderr, "home directory is /, not deleted!\n");
+            warnln("home directory is /, not deleted!");
             return 12;
         }
 
         pid_t child;
-        const char* argv[] = { "rm", "-r", home_directory.characters(), nullptr };
+        const char* argv[] = { "rm", "-r", target_account.home_directory().characters(), nullptr };
         if ((errno = posix_spawn(&child, "/bin/rm", nullptr, nullptr, const_cast<char**>(argv), environ))) {
             perror("posix_spawn");
             return 12;
@@ -163,7 +188,7 @@ int main(int argc, char** argv)
             return 12;
         }
         if (WEXITSTATUS(wstatus)) {
-            fprintf(stderr, "failed to remove the home directory\n");
+            warnln("failed to remove the home directory");
             return 12;
         }
     }

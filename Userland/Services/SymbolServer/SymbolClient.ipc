@@ -1,4 +1,0 @@
-endpoint SymbolClient = 4541511
-{
-    Dummy() =|
-}

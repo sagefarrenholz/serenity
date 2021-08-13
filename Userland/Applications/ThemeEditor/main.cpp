@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "PreviewWidget.h"
@@ -30,6 +10,8 @@
 #include <LibGUI/ColorInput.h>
 #include <LibGUI/ComboBox.h>
 #include <LibGUI/Icon.h>
+#include <LibGUI/Menu.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/Model.h>
 #include <LibGUI/Window.h>
 #include <unistd.h>
@@ -44,7 +26,6 @@ public:
             return Gfx::to_string(m_color_roles[(size_t)index.row()]);
         return {};
     }
-    virtual void update() { did_update(); }
 
     explicit ColorRoleModel(const Vector<Gfx::ColorRole>& color_roles)
         : m_color_roles(color_roles)
@@ -67,15 +48,14 @@ private:
 
 int main(int argc, char** argv)
 {
-
-    if (pledge("stdio recvfd sendfd thread rpath accept cpath wpath unix fattr", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd thread rpath cpath wpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     auto app = GUI::Application::construct(argc, argv);
 
-    if (pledge("stdio recvfd sendfd thread rpath accept", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd thread rpath", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -95,6 +75,13 @@ int main(int argc, char** argv)
     Gfx::Palette preview_palette = app->palette();
 
     auto window = GUI::Window::construct();
+
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
+
+    auto& help_menu = window->add_menu("&Help");
+    help_menu.add_action(GUI::CommonActions::make_about_action("Theme Editor", app_icon, window));
+
     auto& main_widget = window->set_main_widget<GUI::Widget>();
     main_widget.set_fill_with_background_color(true);
     main_widget.set_layout<GUI::VerticalBoxLayout>();
@@ -115,7 +102,7 @@ int main(int argc, char** argv)
 #undef __ENUMERATE_COLOR_ROLE
 
     combo_box.set_only_allow_values_from_model(true);
-    combo_box.set_model(adopt(*new ColorRoleModel(color_roles)));
+    combo_box.set_model(adopt_ref(*new ColorRoleModel(color_roles)));
     combo_box.on_change = [&](auto&, auto& index) {
         auto role = static_cast<const ColorRoleModel*>(index.model())->color_role(index);
         color_input.set_color(preview_palette.color(role));
@@ -128,8 +115,10 @@ int main(int argc, char** argv)
         preview_palette.set_color(role, color_input.color());
         preview_widget.set_preview_palette(preview_palette);
     };
+    color_input.set_color(preview_palette.color(Gfx::ColorRole::Window));
 
-    window->resize(480, 500);
+    window->resize(480, 385);
+    window->set_resizable(false);
     window->show();
     window->set_title("Theme Editor");
     window->set_icon(app_icon.bitmap_for_size(16));

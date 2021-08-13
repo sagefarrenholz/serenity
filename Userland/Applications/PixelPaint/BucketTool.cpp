@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "BucketTool.h"
@@ -31,7 +11,7 @@
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/Slider.h>
+#include <LibGUI/ValueSlider.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Rect.h>
 
@@ -45,7 +25,7 @@ BucketTool::~BucketTool()
 {
 }
 
-static float color_distance_squared(const Gfx::Color& lhs, const Gfx::Color& rhs)
+static float color_distance_squared(Gfx::Color const& lhs, Gfx::Color const& rhs)
 {
     int a = rhs.red() - lhs.red();
     int b = rhs.green() - lhs.green();
@@ -53,7 +33,7 @@ static float color_distance_squared(const Gfx::Color& lhs, const Gfx::Color& rhs
     return (a * a + b * b + c * c) / (255.0f * 255.0f);
 }
 
-static void flood_fill(Gfx::Bitmap& bitmap, const Gfx::IntPoint& start_position, Color target_color, Color fill_color, int threshold)
+static void flood_fill(Gfx::Bitmap& bitmap, Gfx::IntPoint const& start_position, Color target_color, Color fill_color, int threshold)
 {
     VERIFY(bitmap.bpp() == 32);
 
@@ -100,7 +80,7 @@ void BucketTool::on_mousedown(Layer& layer, GUI::MouseEvent& event, GUI::MouseEv
 
     flood_fill(layer.bitmap(), event.position(), target_color, m_editor->color_for(event), m_threshold);
 
-    layer.did_modify_bitmap(*m_editor->image());
+    layer.did_modify_bitmap();
     m_editor->did_complete_action();
 }
 
@@ -118,11 +98,11 @@ GUI::Widget* BucketTool::get_properties_widget()
         threshold_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
         threshold_label.set_fixed_size(80, 20);
 
-        auto& threshold_slider = threshold_container.add<GUI::HorizontalSlider>();
-        threshold_slider.set_fixed_height(20);
+        auto& threshold_slider = threshold_container.add<GUI::ValueSlider>(Orientation::Horizontal, "%");
         threshold_slider.set_range(0, 100);
         threshold_slider.set_value(m_threshold);
-        threshold_slider.on_change = [this](int value) {
+
+        threshold_slider.on_change = [&](int value) {
             m_threshold = value;
         };
     }

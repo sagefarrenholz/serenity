@@ -1,28 +1,8 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/ByteBuffer.h>
@@ -30,13 +10,14 @@
 #include <AK/GenericLexer.h>
 #include <AK/HashMap.h>
 #include <AK/LexicalPath.h>
+#include <AK/OwnPtr.h>
 #include <AK/SourceGenerator.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <ctype.h>
 
-static String make_input_acceptable_cpp(const String& input)
+static String make_input_acceptable_cpp(String const& input)
 {
     if (input.is_one_of("class", "template", "for", "default", "char", "namespace")) {
         StringBuilder builder;
@@ -102,13 +83,15 @@ static size_t get_function_length(FunctionType& function)
 struct Type {
     String name;
     bool nullable { false };
-    bool is_string() const { return name.is_one_of("DOMString", "USVString", "CSSOMString"); }
+    bool is_string() const { return name.is_one_of("ByteString", "CSSOMString", "DOMString", "USVString"); }
 };
 
 struct Parameter {
     Type type;
     String name;
     bool optional { false };
+    Optional<String> optional_default_value;
+    HashMap<String, String> extended_attributes;
 };
 
 struct Function {
@@ -164,7 +147,7 @@ struct Interface {
     String prototype_base_class;
 };
 
-static OwnPtr<Interface> parse_interface(StringView filename, const StringView& input)
+static OwnPtr<Interface> parse_interface(StringView filename, StringView const& input)
 {
     auto interface = make<Interface>();
 
@@ -187,7 +170,7 @@ static OwnPtr<Interface> parse_interface(StringView filename, const StringView& 
         }
     };
 
-    auto assert_string = [&](const StringView& expected) {
+    auto assert_string = [&](StringView const& expected) {
         if (!lexer.consume_specific(expected))
             report_parsing_error(String::formatted("expected '{}'", expected), filename, input, lexer.tell());
     };
@@ -286,13 +269,28 @@ static OwnPtr<Interface> parse_interface(StringView filename, const StringView& 
         for (;;) {
             if (lexer.next_is(')'))
                 break;
+            HashMap<String, String> extended_attributes;
+            if (lexer.consume_specific('['))
+                extended_attributes = parse_extended_attributes();
             bool optional = lexer.consume_specific("optional");
             if (optional)
                 consume_whitespace();
             auto type = parse_type();
             consume_whitespace();
-            auto name = lexer.consume_until([](auto ch) { return isspace(ch) || ch == ',' || ch == ')'; });
-            parameters.append({ move(type), move(name), optional });
+            auto name = lexer.consume_until([](auto ch) { return isspace(ch) || ch == ',' || ch == ')' || ch == '='; });
+            Parameter parameter = { move(type), move(name), optional, {}, extended_attributes };
+            consume_whitespace();
+            if (lexer.next_is(')')) {
+                parameters.append(parameter);
+                break;
+            }
+            if (lexer.next_is('=') && optional) {
+                assert_specific('=');
+                consume_whitespace();
+                auto default_value = lexer.consume_until([](auto ch) { return isspace(ch) || ch == ',' || ch == ')'; });
+                parameter.optional_default_value = default_value;
+            }
+            parameters.append(parameter);
             if (lexer.next_is(')'))
                 break;
             assert_specific(',');
@@ -371,17 +369,17 @@ static OwnPtr<Interface> parse_interface(StringView filename, const StringView& 
 
 }
 
-static void generate_constructor_header(const IDL::Interface&);
-static void generate_constructor_implementation(const IDL::Interface&);
-static void generate_prototype_header(const IDL::Interface&);
-static void generate_prototype_implementation(const IDL::Interface&);
-static void generate_header(const IDL::Interface&);
-static void generate_implementation(const IDL::Interface&);
+static void generate_constructor_header(IDL::Interface const&);
+static void generate_constructor_implementation(IDL::Interface const&);
+static void generate_prototype_header(IDL::Interface const&);
+static void generate_prototype_implementation(IDL::Interface const&);
+static void generate_header(IDL::Interface const&);
+static void generate_implementation(IDL::Interface const&);
 
 int main(int argc, char** argv)
 {
     Core::ArgsParser args_parser;
-    const char* path = nullptr;
+    char const* path = nullptr;
     bool header_mode = false;
     bool implementation_mode = false;
     bool constructor_header_mode = false;
@@ -397,14 +395,14 @@ int main(int argc, char** argv)
     args_parser.add_positional_argument(path, "IDL file", "idl-file");
     args_parser.parse(argc, argv);
 
-    auto file_or_error = Core::File::open(path, Core::IODevice::ReadOnly);
+    auto file_or_error = Core::File::open(path, Core::OpenMode::ReadOnly);
     if (file_or_error.is_error()) {
-        fprintf(stderr, "Cannot open %s\n", path);
+        warnln("Failed to open {}: {}", path, file_or_error.error());
         return 1;
     }
 
     LexicalPath lexical_path(path);
-    auto namespace_ = lexical_path.parts().at(lexical_path.parts().size() - 2);
+    auto& namespace_ = lexical_path.parts_view().at(lexical_path.parts_view().size() - 2);
 
     auto data = file_or_error.value()->read_all();
     auto interface = IDL::parse_interface(path, data);
@@ -470,7 +468,7 @@ int main(int argc, char** argv)
     return 0;
 }
 
-static bool should_emit_wrapper_factory(const IDL::Interface& interface)
+static bool should_emit_wrapper_factory(IDL::Interface const& interface)
 {
     // FIXME: This is very hackish.
     if (interface.name == "Event")
@@ -490,7 +488,7 @@ static bool should_emit_wrapper_factory(const IDL::Interface& interface)
     return true;
 }
 
-static bool is_wrappable_type(const IDL::Type& type)
+static bool is_wrappable_type(IDL::Type const& type)
 {
     if (type.name == "Node")
         return true;
@@ -502,13 +500,15 @@ static bool is_wrappable_type(const IDL::Type& type)
         return true;
     if (type.name.ends_with("Element"))
         return true;
+    if (type.name.ends_with("Event"))
+        return true;
     if (type.name == "ImageData")
         return true;
     return false;
 }
 
 template<typename ParameterType>
-static void generate_to_cpp(SourceGenerator& generator, ParameterType& parameter, const String& js_name, const String& js_suffix, const String& cpp_name, bool return_void = false, bool legacy_null_to_empty_string = false, bool optional = false)
+static void generate_to_cpp(SourceGenerator& generator, ParameterType& parameter, String const& js_name, String const& js_suffix, String const& cpp_name, bool return_void = false, bool legacy_null_to_empty_string = false, bool optional = false, Optional<String> optional_default_value = {})
 {
     auto scoped_generator = generator.fork();
     scoped_generator.set("cpp_name", make_input_acceptable_cpp(cpp_name));
@@ -517,12 +517,15 @@ static void generate_to_cpp(SourceGenerator& generator, ParameterType& parameter
     scoped_generator.set("legacy_null_to_empty_string", legacy_null_to_empty_string ? "true" : "false");
     scoped_generator.set("parameter.type.name", parameter.type.name);
 
+    if (optional_default_value.has_value())
+        scoped_generator.set("parameter.optional_default_value", *optional_default_value);
+
     if (return_void)
         scoped_generator.set("return_statement", "return;");
     else
         scoped_generator.set("return_statement", "return {};");
 
-    // FIXME: Add support for optional to all types
+    // FIXME: Add support for optional, nullable and default values to all types
     if (parameter.type.is_string()) {
         if (!optional) {
             scoped_generator.append(R"~~~(
@@ -537,19 +540,41 @@ static void generate_to_cpp(SourceGenerator& generator, ParameterType& parameter
         @cpp_name@ = @js_name@@js_suffix@.to_string(global_object, @legacy_null_to_empty_string@);
         if (vm.exception())
             @return_statement@
+    })~~~");
+            if (optional_default_value.has_value()) {
+                scoped_generator.append(R"~~~( else {
+        @cpp_name@ = @parameter.optional_default_value@;
     }
 )~~~");
+            } else {
+                scoped_generator.append(R"~~~(
+)~~~");
+            }
         }
     } else if (parameter.type.name == "EventListener") {
-        scoped_generator.append(R"~~~(
+        if (parameter.type.nullable) {
+            scoped_generator.append(R"~~~(
+    RefPtr<EventListener> @cpp_name@;
+    if (!@js_name@@js_suffix@.is_nullish()) {
+        if (!@js_name@@js_suffix@.is_function()) {
+            vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, "Function");
+            @return_statement@
+        }
+        @cpp_name@ = adopt_ref(*new EventListener(JS::make_handle(&@js_name@@js_suffix@.as_function())));
+    }
+)~~~");
+        } else {
+            scoped_generator.append(R"~~~(
     if (!@js_name@@js_suffix@.is_function()) {
         vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, "Function");
         @return_statement@
     }
-    auto @cpp_name@ = adopt(*new EventListener(JS::make_handle(&@js_name@@js_suffix@.as_function())));
+    auto @cpp_name@ = adopt_ref(*new EventListener(JS::make_handle(&@js_name@@js_suffix@.as_function())));
 )~~~");
+        }
     } else if (is_wrappable_type(parameter.type)) {
-        scoped_generator.append(R"~~~(
+        if (!parameter.type.nullable) {
+            scoped_generator.append(R"~~~(
     auto @cpp_name@_object = @js_name@@js_suffix@.to_object(global_object);
     if (vm.exception())
         @return_statement@
@@ -561,19 +586,100 @@ static void generate_to_cpp(SourceGenerator& generator, ParameterType& parameter
 
     auto& @cpp_name@ = static_cast<@parameter.type.name@Wrapper*>(@cpp_name@_object)->impl();
 )~~~");
+        } else {
+            scoped_generator.append(R"~~~(
+    @parameter.type.name@* @cpp_name@ = nullptr;
+    if (!@js_name@@js_suffix@.is_nullish()) {
+        auto @cpp_name@_object = @js_name@@js_suffix@.to_object(global_object);
+        if (vm.exception())
+            @return_statement@
+
+        if (!is<@parameter.type.name@Wrapper>(@cpp_name@_object)) {
+            vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, "@parameter.type.name@");
+            @return_statement@
+        }
+
+        @cpp_name@ = &static_cast<@parameter.type.name@Wrapper*>(@cpp_name@_object)->impl();
+    }
+)~~~");
+        }
     } else if (parameter.type.name == "double") {
-        scoped_generator.append(R"~~~(
-    auto @cpp_name@ = @js_name@@js_suffix@.to_double(global_object);
+        if (!optional) {
+            scoped_generator.append(R"~~~(
+    double @cpp_name@ = @js_name@@js_suffix@.to_double(global_object);
     if (vm.exception())
         @return_statement@
 )~~~");
-    } else if (parameter.type.name == "boolean") {
-        scoped_generator.append(R"~~~(
-    auto @cpp_name@ = @js_name@@js_suffix@.to_boolean();
+        } else {
+            if (optional_default_value.has_value()) {
+                scoped_generator.append(R"~~~(
+    double @cpp_name@;
 )~~~");
+            } else {
+                scoped_generator.append(R"~~~(
+    Optional<double> @cpp_name@;
+)~~~");
+            }
+            scoped_generator.append(R"~~~(
+    if (!@js_name@@js_suffix@.is_undefined()) {
+        @cpp_name@ = @js_name@@js_suffix@.to_double(global_object);
+        if (vm.exception())
+            @return_statement@
+    }
+)~~~");
+            if (optional_default_value.has_value()) {
+                scoped_generator.append(R"~~~(
+    else
+        @cpp_name@ = @parameter.optional_default_value@;
+)~~~");
+            } else {
+                scoped_generator.append(R"~~~(
+)~~~");
+            }
+        }
+    } else if (parameter.type.name == "boolean") {
+        if (!optional) {
+            scoped_generator.append(R"~~~(
+    bool @cpp_name@ = @js_name@@js_suffix@.to_boolean();
+)~~~");
+        } else {
+            if (optional_default_value.has_value()) {
+                scoped_generator.append(R"~~~(
+    bool @cpp_name@;
+)~~~");
+            } else {
+                scoped_generator.append(R"~~~(
+    Optional<bool> @cpp_name@;
+)~~~");
+            }
+            scoped_generator.append(R"~~~(
+    if (!@js_name@@js_suffix@.is_undefined())
+        @cpp_name@ = @js_name@@js_suffix@.to_boolean();)~~~");
+            if (optional_default_value.has_value()) {
+                scoped_generator.append(R"~~~(
+    else
+        @cpp_name@ = @parameter.optional_default_value@;
+)~~~");
+            } else {
+                scoped_generator.append(R"~~~(
+)~~~");
+            }
+        }
     } else if (parameter.type.name == "unsigned long") {
         scoped_generator.append(R"~~~(
     auto @cpp_name@ = @js_name@@js_suffix@.to_u32(global_object);
+    if (vm.exception())
+        @return_statement@
+)~~~");
+    } else if (parameter.type.name == "unsigned short") {
+        scoped_generator.append(R"~~~(
+    auto @cpp_name@ = (u16)@js_name@@js_suffix@.to_u32(global_object);
+    if (vm.exception())
+        @return_statement@
+)~~~");
+    } else if (parameter.type.name == "long") {
+        scoped_generator.append(R"~~~(
+    auto @cpp_name@ = @js_name@@js_suffix@.to_i32(global_object);
     if (vm.exception())
         @return_statement@
 )~~~");
@@ -593,7 +699,7 @@ static void generate_to_cpp(SourceGenerator& generator, ParameterType& parameter
         dbgln("Unimplemented JS-to-C++ conversion: {}", parameter.type.name);
         VERIFY_NOT_REACHED();
     }
-};
+}
 
 template<typename FunctionType>
 static void generate_argument_count_check(SourceGenerator& generator, FunctionType& function)
@@ -618,9 +724,9 @@ static void generate_argument_count_check(SourceGenerator& generator, FunctionTy
         return {};
     }
 )~~~");
-};
+}
 
-static void generate_arguments(SourceGenerator& generator, const Vector<IDL::Parameter>& parameters, StringBuilder& arguments_builder, bool return_void = false)
+static void generate_arguments(SourceGenerator& generator, Vector<IDL::Parameter> const& parameters, StringBuilder& arguments_builder, bool return_void = false)
 {
     auto arguments_generator = generator.fork();
 
@@ -633,15 +739,15 @@ static void generate_arguments(SourceGenerator& generator, const Vector<IDL::Par
         arguments_generator.append(R"~~~(
     auto arg@argument.index@ = vm.argument(@argument.index@);
 )~~~");
-        // FIXME: Parameters can have [LegacyNullToEmptyString] attached.
-        generate_to_cpp(generator, parameter, "arg", String::number(argument_index), parameter.name.to_snakecase(), return_void, false, parameter.optional);
+        bool legacy_null_to_empty_string = parameter.extended_attributes.contains("LegacyNullToEmptyString");
+        generate_to_cpp(generator, parameter, "arg", String::number(argument_index), parameter.name.to_snakecase(), return_void, legacy_null_to_empty_string, parameter.optional, parameter.optional_default_value);
         ++argument_index;
     }
 
     arguments_builder.join(", ", parameter_names);
-};
+}
 
-static void generate_header(const IDL::Interface& interface)
+static void generate_header(IDL::Interface const& interface)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -687,7 +793,7 @@ static void generate_header(const IDL::Interface& interface)
 namespace Web::Bindings {
 
 class @wrapper_class@ : public @wrapper_base_class@ {
-    JS_OBJECT(@wrapper_class@, @wrapper_base_class@);
+    JS_OBJECT(@name@, @wrapper_base_class@);
 public:
     static @wrapper_class@* create(JS::GlobalObject&, @fully_qualified_name@&);
 
@@ -698,24 +804,30 @@ public:
 
     if (interface.extended_attributes.contains("CustomGet")) {
         generator.append(R"~~~(
-    virtual JS::Value get(const JS::PropertyName&, JS::Value receiver = {}) const override;
+    virtual JS::Value internal_get(JS::PropertyName const&, JS::Value receiver) const override;
 )~~~");
     }
-    if (interface.extended_attributes.contains("CustomPut")) {
+    if (interface.extended_attributes.contains("CustomSet")) {
         generator.append(R"~~~(
-    virtual bool put(const JS::PropertyName&, JS::Value, JS::Value receiver = {}) override;
+    virtual bool internal_set(JS::PropertyName const&, JS::Value, JS::Value receiver) override;
+)~~~");
+    }
+
+    if (interface.extended_attributes.contains("CustomHasProperty")) {
+        generator.append(R"~~~(
+    virtual bool internal_has_property(JS::PropertyName const&) const override;
 )~~~");
     }
 
     if (interface.wrapper_base_class == "Wrapper") {
         generator.append(R"~~~(
     @fully_qualified_name@& impl() { return *m_impl; }
-    const @fully_qualified_name@& impl() const { return *m_impl; }
+    @fully_qualified_name@ const& impl() const { return *m_impl; }
 )~~~");
     } else {
         generator.append(R"~~~(
     @fully_qualified_name@& impl() { return static_cast<@fully_qualified_name@&>(@wrapper_base_class@::impl()); }
-    const @fully_qualified_name@& impl() const { return static_cast<const @fully_qualified_name@&>(@wrapper_base_class@::impl()); }
+    @fully_qualified_name@ const& impl() const { return static_cast<@fully_qualified_name@ const&>(@wrapper_base_class@::impl()); }
 )~~~");
     }
 
@@ -746,7 +858,7 @@ private:
     outln("{}", generator.as_string_view());
 }
 
-void generate_implementation(const IDL::Interface& interface)
+void generate_implementation(IDL::Interface const& interface)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -761,9 +873,9 @@ void generate_implementation(const IDL::Interface& interface)
 #include <AK/FlyString.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Error.h>
-#include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
-#include <LibJS/Runtime/Uint8ClampedArray.h>
+#include <LibJS/Runtime/TypedArray.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibWeb/Bindings/@prototype_class@.h>
 #include <LibWeb/Bindings/@wrapper_class@.h>
@@ -774,9 +886,14 @@ void generate_implementation(const IDL::Interface& interface)
 #include <LibWeb/Bindings/DocumentTypeWrapper.h>
 #include <LibWeb/Bindings/DocumentWrapper.h>
 #include <LibWeb/Bindings/EventTargetWrapperFactory.h>
+#include <LibWeb/Bindings/EventWrapperFactory.h>
 #include <LibWeb/Bindings/HTMLCanvasElementWrapper.h>
+#include <LibWeb/Bindings/HTMLCollectionWrapper.h>
+#include <LibWeb/Bindings/HTMLFormElementWrapper.h>
 #include <LibWeb/Bindings/HTMLHeadElementWrapper.h>
 #include <LibWeb/Bindings/HTMLImageElementWrapper.h>
+#include <LibWeb/Bindings/HTMLTableCaptionElementWrapper.h>
+#include <LibWeb/Bindings/HTMLTableSectionElementWrapper.h>
 #include <LibWeb/Bindings/ImageDataWrapper.h>
 #include <LibWeb/Bindings/NodeWrapperFactory.h>
 #include <LibWeb/Bindings/TextWrapper.h>
@@ -813,7 +930,8 @@ namespace Web::Bindings {
 @wrapper_class@::@wrapper_class@(JS::GlobalObject& global_object, @fully_qualified_name@& impl)
     : @wrapper_base_class@(global_object, impl)
 {
-    set_prototype(&static_cast<WindowObject&>(global_object).ensure_web_prototype<@prototype_class@>("@name@"));
+    auto success = internal_set_prototype_of(&static_cast<WindowObject&>(global_object).ensure_web_prototype<@prototype_class@>("@name@"));
+    VERIFY(success);
 }
 )~~~");
     }
@@ -845,7 +963,7 @@ void @wrapper_class@::initialize(JS::GlobalObject& global_object)
     outln("{}", generator.as_string_view());
 }
 
-static void generate_constructor_header(const IDL::Interface& interface)
+static void generate_constructor_header(IDL::Interface const& interface)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -870,7 +988,7 @@ public:
     virtual ~@constructor_class@() override;
 
     virtual JS::Value call() override;
-    virtual JS::Value construct(JS::Function& new_target) override;
+    virtual JS::Value construct(JS::FunctionObject& new_target) override;
 
 private:
     virtual bool has_constructor() const override { return true; }
@@ -882,7 +1000,7 @@ private:
     outln("{}", generator.as_string_view());
 }
 
-void generate_constructor_implementation(const IDL::Interface& interface)
+void generate_constructor_implementation(IDL::Interface const& interface)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -900,6 +1018,7 @@ void generate_constructor_implementation(const IDL::Interface& interface)
 #include <LibWeb/Bindings/@constructor_class@.h>
 #include <LibWeb/Bindings/@prototype_class@.h>
 #include <LibWeb/Bindings/@wrapper_class@.h>
+#include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/WindowObject.h>
 #if __has_include(<LibWeb/CSS/@name@.h>)
 #    include <LibWeb/CSS/@name@.h>
@@ -941,7 +1060,7 @@ JS::Value @constructor_class@::call()
     return {};
 }
 
-JS::Value @constructor_class@::construct(Function&)
+JS::Value @constructor_class@::construct(FunctionObject&)
 {
 )~~~");
 
@@ -973,15 +1092,17 @@ JS::Value @constructor_class@::construct(Function&)
             generator.set(".constructor_arguments", arguments_builder.string_view());
 
             generator.append(R"~~~(
-    auto impl = @fully_qualified_name@::create_with_global_object(window, @.constructor_arguments@);
+    auto impl = throw_dom_exception_if_needed(vm, global_object, [&] { return @fully_qualified_name@::create_with_global_object(window, @.constructor_arguments@); });
 )~~~");
         } else {
             generator.append(R"~~~(
-    auto impl = @fully_qualified_name@::create_with_global_object(window);
+    auto impl = throw_dom_exception_if_needed(vm, global_object, [&] { return @fully_qualified_name@::create_with_global_object(window); });
 )~~~");
         }
         generator.append(R"~~~(
-    return @wrapper_class@::create(global_object, impl);
+    if (should_return_empty(impl))
+        return JS::Value();
+    return @wrapper_class@::create(global_object, impl.release_value());
 )~~~");
     } else {
         // Multiple constructor overloads - can't do that yet.
@@ -998,8 +1119,8 @@ void @constructor_class@::initialize(JS::GlobalObject& global_object)
     [[maybe_unused]] u8 default_attributes = JS::Attribute::Enumerable;
 
     NativeFunction::initialize(global_object);
-    define_property(vm.names.prototype, &window.ensure_web_prototype<@prototype_class@>("@name@"), 0);
-    define_property(vm.names.length, JS::Value(@constructor.length@), JS::Attribute::Configurable);
+    define_direct_property(vm.names.prototype, &window.ensure_web_prototype<@prototype_class@>("@name@"), 0);
+    define_direct_property(vm.names.length, JS::Value(@constructor.length@), JS::Attribute::Configurable);
 
 )~~~");
 
@@ -1009,7 +1130,7 @@ void @constructor_class@::initialize(JS::GlobalObject& global_object)
         constant_generator.set("constant.value", constant.value);
 
         constant_generator.append(R"~~~(
-define_property("@constant.name@", JS::Value((i32)@constant.value@), JS::Attribute::Enumerable);
+define_direct_property("@constant.name@", JS::Value((i32)@constant.value@), JS::Attribute::Enumerable);
 )~~~");
     }
 
@@ -1022,7 +1143,7 @@ define_property("@constant.name@", JS::Value((i32)@constant.value@), JS::Attribu
     outln("{}", generator.as_string_view());
 }
 
-static void generate_prototype_header(const IDL::Interface& interface)
+static void generate_prototype_header(IDL::Interface const& interface)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -1060,12 +1181,12 @@ private:
         auto attribute_generator = generator.fork();
         attribute_generator.set("attribute.name:snakecase", attribute.name.to_snakecase());
         attribute_generator.append(R"~~~(
-    JS_DECLARE_NATIVE_GETTER(@attribute.name:snakecase@_getter);
+    JS_DECLARE_NATIVE_FUNCTION(@attribute.name:snakecase@_getter);
 )~~~");
 
         if (!attribute.readonly) {
             attribute_generator.append(R"~~~(
-    JS_DECLARE_NATIVE_SETTER(@attribute.name:snakecase@_setter);
+    JS_DECLARE_NATIVE_FUNCTION(@attribute.name:snakecase@_setter);
 )~~~");
         }
     }
@@ -1079,7 +1200,7 @@ private:
     outln("{}", generator.as_string_view());
 }
 
-void generate_prototype_implementation(const IDL::Interface& interface)
+void generate_prototype_implementation(IDL::Interface const& interface)
 {
     StringBuilder builder;
     SourceGenerator generator { builder };
@@ -1097,9 +1218,9 @@ void generate_prototype_implementation(const IDL::Interface& interface)
 #include <AK/Function.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Error.h>
-#include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
-#include <LibJS/Runtime/Uint8ClampedArray.h>
+#include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/Bindings/@prototype_class@.h>
 #include <LibWeb/Bindings/@wrapper_class@.h>
 #include <LibWeb/Bindings/CSSStyleDeclarationWrapper.h>
@@ -1111,10 +1232,16 @@ void generate_prototype_implementation(const IDL::Interface& interface)
 #include <LibWeb/Bindings/DocumentTypeWrapper.h>
 #include <LibWeb/Bindings/DocumentWrapper.h>
 #include <LibWeb/Bindings/EventTargetWrapperFactory.h>
+#include <LibWeb/Bindings/EventWrapper.h>
+#include <LibWeb/Bindings/EventWrapperFactory.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/HTMLCanvasElementWrapper.h>
+#include <LibWeb/Bindings/HTMLCollectionWrapper.h>
+#include <LibWeb/Bindings/HTMLFormElementWrapper.h>
 #include <LibWeb/Bindings/HTMLHeadElementWrapper.h>
 #include <LibWeb/Bindings/HTMLImageElementWrapper.h>
+#include <LibWeb/Bindings/HTMLTableCaptionElementWrapper.h>
+#include <LibWeb/Bindings/HTMLTableSectionElementWrapper.h>
 #include <LibWeb/Bindings/ImageDataWrapper.h>
 #include <LibWeb/Bindings/NodeWrapperFactory.h>
 #include <LibWeb/Bindings/PerformanceTimingWrapper.h>
@@ -1170,14 +1297,18 @@ namespace Web::Bindings {
         // https://heycam.github.io/webidl/#es-DOMException-specialness
         // Object.getPrototypeOf(DOMException.prototype) === Error.prototype
         generator.append(R"~~~(
-    set_prototype(global_object.error_prototype());
+    auto success = internal_set_prototype_of(global_object.error_prototype());
+    VERIFY(success);
 )~~~");
     } else if (!interface.parent_name.is_empty()) {
         generator.append(R"~~~(
-    set_prototype(&static_cast<WindowObject&>(global_object).ensure_web_prototype<@prototype_base_class@>("@parent_name@"));
+    auto success = internal_set_prototype_of(&static_cast<WindowObject&>(global_object).ensure_web_prototype<@prototype_base_class@>("@parent_name@"));
+    VERIFY(success);
 )~~~");
     }
 
+    // FIXME: Currently almost everything gets default_attributes but it should be configurable per attribute.
+    //        See the spec links for details
     generator.append(R"~~~(
 }
 
@@ -1188,10 +1319,11 @@ namespace Web::Bindings {
 void @prototype_class@::initialize(JS::GlobalObject& global_object)
 {
     [[maybe_unused]] auto& vm = this->vm();
-    [[maybe_unused]] u8 default_attributes = JS::Attribute::Enumerable | JS::Attribute::Configurable;
+    [[maybe_unused]] u8 default_attributes = JS::Attribute::Enumerable | JS::Attribute::Configurable | JS::Attribute::Writable;
 
 )~~~");
 
+    // https://heycam.github.io/webidl/#es-attributes
     for (auto& attribute : interface.attributes) {
         auto attribute_generator = generator.fork();
         attribute_generator.set("attribute.name", attribute.name);
@@ -1203,20 +1335,22 @@ void @prototype_class@::initialize(JS::GlobalObject& global_object)
             attribute_generator.set("attribute.setter_callback", attribute.setter_callback_name);
 
         attribute_generator.append(R"~~~(
-    define_native_property("@attribute.name@", @attribute.getter_callback@, @attribute.setter_callback@, default_attributes);
+    define_native_accessor("@attribute.name@", @attribute.getter_callback@, @attribute.setter_callback@, default_attributes);
 )~~~");
     }
 
+    // https://heycam.github.io/webidl/#es-constants
     for (auto& constant : interface.constants) {
         auto constant_generator = generator.fork();
         constant_generator.set("constant.name", constant.name);
         constant_generator.set("constant.value", constant.value);
 
         constant_generator.append(R"~~~(
-    define_property("@constant.name@", JS::Value((i32)@constant.value@), JS::Attribute::Enumerable);
+    define_direct_property("@constant.name@", JS::Value((i32)@constant.value@), JS::Attribute::Enumerable);
 )~~~");
     }
 
+    // https://heycam.github.io/webidl/#es-operations
     for (auto& function : interface.functions) {
         auto function_generator = generator.fork();
         function_generator.set("function.name", function.name);
@@ -1294,7 +1428,7 @@ static @fully_qualified_name@* impl_from(JS::VM& vm, JS::GlobalObject& global_ob
             // FIXME: Remove this fake type hack once it's no longer needed.
             //        Basically once we have NodeList we can throw this out.
             scoped_generator.append(R"~~~(
-    auto* new_array = JS::Array::create(global_object);
+    auto* new_array = JS::Array::create(global_object, 0);
     for (auto& element : retval)
         new_array->indexed_properties().append(wrap(global_object, element));
 
@@ -1314,6 +1448,9 @@ static @fully_qualified_name@* impl_from(JS::VM& vm, JS::GlobalObject& global_ob
 )~~~");
         } else if (return_type.name == "EventHandler") {
             scoped_generator.append(R"~~~(
+    if (retval.callback.is_null())
+        return JS::js_null();
+
     return retval.callback.cell();
 )~~~");
         } else {
@@ -1348,7 +1485,7 @@ static @fully_qualified_name@* impl_from(JS::VM& vm, JS::GlobalObject& global_ob
         }
 
         attribute_generator.append(R"~~~(
-JS_DEFINE_NATIVE_GETTER(@prototype_class@::@attribute.getter_callback@)
+JS_DEFINE_NATIVE_FUNCTION(@prototype_class@::@attribute.getter_callback@)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)
@@ -1386,14 +1523,16 @@ JS_DEFINE_NATIVE_GETTER(@prototype_class@::@attribute.getter_callback@)
 
         if (!attribute.readonly) {
             attribute_generator.append(R"~~~(
-JS_DEFINE_NATIVE_SETTER(@prototype_class@::@attribute.setter_callback@)
+JS_DEFINE_NATIVE_FUNCTION(@prototype_class@::@attribute.setter_callback@)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)
-        return;
+        return {};
+
+    auto value = vm.argument(0);
 )~~~");
 
-            generate_to_cpp(generator, attribute, "value", "", "cpp_value", true, attribute.extended_attributes.contains("LegacyNullToEmptyString"));
+            generate_to_cpp(generator, attribute, "value", "", "cpp_value", false, attribute.extended_attributes.contains("LegacyNullToEmptyString"));
 
             if (attribute.extended_attributes.contains("Reflect")) {
                 if (attribute.type.name != "boolean") {
@@ -1415,6 +1554,7 @@ JS_DEFINE_NATIVE_SETTER(@prototype_class@::@attribute.setter_callback@)
             }
 
             attribute_generator.append(R"~~~(
+    return {};
 }
 )~~~");
         }
@@ -1425,6 +1565,13 @@ JS_DEFINE_NATIVE_SETTER(@prototype_class@::@attribute.setter_callback@)
         auto function_generator = generator.fork();
         function_generator.set("function.name", function.name);
         function_generator.set("function.name:snakecase", function.name.to_snakecase());
+
+        if (function.extended_attributes.contains("ImplementedAs")) {
+            auto implemented_as = function.extended_attributes.get("ImplementedAs").value();
+            function_generator.set("function.cpp_name", implemented_as);
+        } else {
+            function_generator.set("function.cpp_name", function.name.to_snakecase());
+        }
 
         function_generator.append(R"~~~(
 JS_DEFINE_NATIVE_FUNCTION(@prototype_class@::@function.name:snakecase@)
@@ -1441,9 +1588,11 @@ JS_DEFINE_NATIVE_FUNCTION(@prototype_class@::@function.name:snakecase@)
         function_generator.set(".arguments", arguments_builder.string_view());
 
         function_generator.append(R"~~~(
-    auto retval = throw_dom_exception_if_needed(vm, global_object, [&] { return impl->@function.name:snakecase@(@.arguments@); });
-    if (should_return_empty(retval))
+    auto result = throw_dom_exception_if_needed(vm, global_object, [&] { return impl->@function.cpp_name@(@.arguments@); });
+    if (should_return_empty(result))
         return JS::Value();
+
+    [[maybe_unused]] auto retval = result.release_value();
 )~~~");
 
         generate_return_statement(function.return_type);

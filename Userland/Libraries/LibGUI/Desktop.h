@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -30,11 +10,18 @@
 #include <AK/String.h>
 #include <LibGUI/Forward.h>
 #include <LibGfx/Rect.h>
+#include <Services/Taskbar/TaskbarWindow.h>
+#include <Services/WindowServer/ScreenLayout.h>
 
 namespace GUI {
 
+using ScreenLayout = WindowServer::ScreenLayout;
+
 class Desktop {
 public:
+    // Most people will probably have 4 screens or less
+    static constexpr size_t default_screen_rect_count = 4;
+
     static Desktop& the();
     Desktop();
 
@@ -45,17 +32,30 @@ public:
     String wallpaper() const;
     bool set_wallpaper(const StringView& path, bool save_config = true);
 
-    Gfx::IntRect rect() const { return m_rect; }
+    Gfx::IntRect rect() const { return m_bounding_rect; }
+    const Vector<Gfx::IntRect, 4>& rects() const { return m_rects; }
+    size_t main_screen_index() const { return m_main_screen_index; }
 
-    int taskbar_height() const { return 28; }
-    int menubar_height() const { return 19; }
+    unsigned virtual_desktop_rows() const { return m_virtual_desktop_rows; }
+    unsigned virtual_desktop_columns() const { return m_virtual_desktop_columns; }
 
-    void did_receive_screen_rect(Badge<WindowServerConnection>, const Gfx::IntRect&);
+    int taskbar_height() const { return TaskbarWindow::taskbar_height(); }
 
-    Function<void(const Gfx::IntRect&)> on_rect_change;
+    void did_receive_screen_rects(Badge<WindowServerConnection>, const Vector<Gfx::IntRect, 4>&, size_t, unsigned, unsigned);
+
+    template<typename F>
+    void on_receive_screen_rects(F&& callback)
+    {
+        m_receive_rects_callbacks.append(forward<F>(callback));
+    }
 
 private:
-    Gfx::IntRect m_rect;
+    Vector<Gfx::IntRect, default_screen_rect_count> m_rects;
+    size_t m_main_screen_index { 0 };
+    Gfx::IntRect m_bounding_rect;
+    unsigned m_virtual_desktop_rows { 1 };
+    unsigned m_virtual_desktop_columns { 1 };
+    Vector<Function<void(Desktop&)>> m_receive_rects_callbacks;
 };
 
 }

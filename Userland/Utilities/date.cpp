@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/String.h>
@@ -56,7 +36,7 @@ int main(int argc, char** argv)
         auto number = String(set_date).to_uint();
 
         if (!number.has_value()) {
-            fprintf(stderr, "date: Invalid timestamp value");
+            warnln("date: Invalid timestamp value");
             return 1;
         }
 
@@ -72,7 +52,7 @@ int main(int argc, char** argv)
     // FIXME: this should be improved and will need to be cleaned up
     // when additional output formats and formatting is supported
     if (print_unix_date && print_iso_8601 && print_rfc_3339 && print_rfc_5322) {
-        fprintf(stderr, "date: multiple output formats specified\n");
+        warnln("date: multiple output formats specified");
         return 1;
     }
 
@@ -80,19 +60,19 @@ int main(int argc, char** argv)
     auto date = Core::DateTime::from_timestamp(now);
 
     if (print_unix_date) {
-        printf("%lld\n", (long long)now);
+        outln("{}", (long long)now);
         return 0;
     } else if (print_iso_8601) {
-        printf("%s\n", date.to_string("%Y-%m-%dT%H:%M:%S-00:00").characters());
+        outln("{}", date.to_string("%Y-%m-%dT%H:%M:%S-00:00"));
         return 0;
     } else if (print_rfc_5322) {
-        printf("%s\n", date.to_string("%a, %d %b %Y %H:%M:%S -0000").characters());
+        outln("{}", date.to_string("%a, %d %b %Y %H:%M:%S -0000"));
         return 0;
     } else if (print_rfc_3339) {
-        printf("%s\n", date.to_string("%Y-%m-%d %H:%M:%S-00:00").characters());
+        outln("{}", date.to_string("%Y-%m-%d %H:%M:%S-00:00"));
         return 0;
     } else {
-        printf("%s\n", date.to_string().characters());
+        outln("{}", date.to_string());
         return 0;
     }
 }

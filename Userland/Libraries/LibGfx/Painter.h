@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,7 +15,9 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/Size.h>
 #include <LibGfx/TextAlignment.h>
+#include <LibGfx/TextDirection.h>
 #include <LibGfx/TextElision.h>
+#include <LibGfx/TextWrapping.h>
 
 namespace Gfx {
 
@@ -56,6 +38,8 @@ public:
     void fill_rect_with_checkerboard(const IntRect&, const IntSize&, Color color_dark, Color color_light);
     void fill_rect_with_gradient(Orientation, const IntRect&, Color gradient_start, Color gradient_end);
     void fill_rect_with_gradient(const IntRect&, Color gradient_start, Color gradient_end);
+    void fill_rect_with_rounded_corners(const IntRect&, Color, int radius);
+    void fill_rect_with_rounded_corners(const IntRect&, Color, int top_left_radius, int top_right_radius, int bottom_right_radius, int bottom_left_radius);
     void fill_ellipse(const IntRect&, Color);
     void draw_rect(const IntRect&, Color, bool rough = false);
     void draw_focus_rect(const IntRect&, Color);
@@ -67,7 +51,7 @@ public:
     void draw_ellipse_intersecting(const IntRect&, Color, int thickness = 1);
     void set_pixel(const IntPoint&, Color);
     void set_pixel(int x, int y, Color color) { set_pixel({ x, y }, color); }
-    void draw_line(const IntPoint&, const IntPoint&, Color, int thickness = 1, LineStyle style = LineStyle::Solid);
+    void draw_line(const IntPoint&, const IntPoint&, Color, int thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent);
     void draw_quadratic_bezier_curve(const IntPoint& control_point, const IntPoint&, const IntPoint&, Color, int thickness = 1, LineStyle style = LineStyle::Solid);
     void draw_elliptical_arc(const IntPoint& p1, const IntPoint& p2, const IntPoint& center, const FloatPoint& radii, float x_axis_rotation, float theta_1, float theta_delta, Color, int thickness = 1, LineStyle style = LineStyle::Solid);
     void blit(const IntPoint&, const Gfx::Bitmap&, const IntRect& src_rect, float opacity = 1.0f, bool apply_alpha = true);
@@ -78,17 +62,27 @@ public:
     void blit_offset(const IntPoint&, const Gfx::Bitmap&, const IntRect& src_rect, const IntPoint&);
     void blit_disabled(const IntPoint&, const Gfx::Bitmap&, const IntRect&, const Palette&);
     void blit_tiled(const IntRect&, const Gfx::Bitmap&, const IntRect& src_rect);
-    void draw_text(const IntRect&, const StringView&, const Font&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None);
-    void draw_text(const IntRect&, const StringView&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None);
-    void draw_text(const IntRect&, const Utf32View&, const Font&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None);
-    void draw_text(const IntRect&, const Utf32View&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None);
-    void draw_text(Function<void(const IntRect&, u32)>, const IntRect&, const StringView&, const Font&, TextAlignment = TextAlignment::TopLeft, TextElision = TextElision::None);
-    void draw_text(Function<void(const IntRect&, u32)>, const IntRect&, const Utf8View&, const Font&, TextAlignment = TextAlignment::TopLeft, TextElision = TextElision::None);
-    void draw_text(Function<void(const IntRect&, u32)>, const IntRect&, const Utf32View&, const Font&, TextAlignment = TextAlignment::TopLeft, TextElision = TextElision::None);
+    void draw_text(const IntRect&, const StringView&, const Font&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_text(const IntRect&, const StringView&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_text(const IntRect&, const Utf32View&, const Font&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_text(const IntRect&, const Utf32View&, TextAlignment = TextAlignment::TopLeft, Color = Color::Black, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_text(Function<void(const IntRect&, u32)>, const IntRect&, const StringView&, const Font&, TextAlignment = TextAlignment::TopLeft, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_text(Function<void(const IntRect&, u32)>, const IntRect&, const Utf8View&, const Font&, TextAlignment = TextAlignment::TopLeft, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_text(Function<void(const IntRect&, u32)>, const IntRect&, const Utf32View&, const Font&, TextAlignment = TextAlignment::TopLeft, TextElision = TextElision::None, TextWrapping = TextWrapping::DontWrap);
+    void draw_ui_text(const Gfx::IntRect&, const StringView&, const Gfx::Font&, TextAlignment, Gfx::Color);
     void draw_glyph(const IntPoint&, u32, Color);
     void draw_glyph(const IntPoint&, u32, const Font&, Color);
     void draw_emoji(const IntPoint&, const Gfx::Bitmap&, const Font&);
     void draw_glyph_or_emoji(const IntPoint&, u32 code_point, const Font&, Color);
+    void draw_circle_arc_intersecting(const IntRect&, const IntPoint&, int radius, Color, int thickness);
+
+    enum class CornerOrientation {
+        TopLeft,
+        TopRight,
+        BottomRight,
+        BottomLeft
+    };
+    void fill_rounded_corner(const IntRect&, int radius, Color, CornerOrientation);
 
     static void for_each_line_segment_on_bezier_curve(const FloatPoint& control_point, const FloatPoint& p1, const FloatPoint& p2, Function<void(const FloatPoint&, const FloatPoint&)>&);
     static void for_each_line_segment_on_bezier_curve(const FloatPoint& control_point, const FloatPoint& p1, const FloatPoint& p2, Function<void(const FloatPoint&, const FloatPoint&)>&&);
@@ -119,7 +113,7 @@ public:
     void clear_clip_rect();
 
     void translate(int dx, int dy) { translate({ dx, dy }); }
-    void translate(const IntPoint& delta) { state().translation.move_by(delta); }
+    void translate(const IntPoint& delta) { state().translation.translate_by(delta); }
 
     Gfx::Bitmap* target() { return m_target.ptr(); }
 
@@ -159,6 +153,12 @@ protected:
     IntRect m_clip_origin;
     NonnullRefPtr<Gfx::Bitmap> m_target;
     Vector<State, 4> m_state_stack;
+
+private:
+    Vector<DirectionalRun> split_text_into_directional_runs(Utf8View const&, TextDirection initial_direction);
+    bool text_contains_bidirectional_text(Utf8View const&, TextDirection);
+    template<typename DrawGlyphFunction>
+    void do_draw_text(IntRect const&, Utf8View const& text, Font const&, TextAlignment, TextElision, TextWrapping, DrawGlyphFunction);
 };
 
 class PainterStateSaver {
@@ -169,5 +169,7 @@ public:
 private:
     Painter& m_painter;
 };
+
+String parse_ampersand_string(const StringView&, Optional<size_t>* underline_offset = nullptr);
 
 }

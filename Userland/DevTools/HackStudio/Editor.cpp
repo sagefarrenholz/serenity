@@ -1,32 +1,13 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  * 2018-2021, the SerenityOS developers
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Editor.h"
 #include "Debugger/Debugger.h"
+#include "Debugger/EvaluateExpressionDialog.h"
 #include "EditorWrapper.h"
 #include "HackStudio.h"
 #include "Language.h"
@@ -36,18 +17,22 @@
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
 #include <LibCpp/SyntaxHighlighter.h>
+#include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
+#include <LibGUI/GMLAutocompleteProvider.h>
 #include <LibGUI/GMLSyntaxHighlighter.h>
 #include <LibGUI/INISyntaxHighlighter.h>
 #include <LibGUI/Label.h>
+#include <LibGUI/MessageBox.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/ScrollBar.h>
+#include <LibGUI/Scrollbar.h>
 #include <LibGUI/Window.h>
 #include <LibJS/SyntaxHighlighter.h>
 #include <LibMarkdown/Document.h>
-#include <LibWeb/DOM/ElementFactory.h>
+#include <LibSQL/AST/SyntaxHighlighter.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/HTMLHeadElement.h>
+#include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/OutOfProcessWebView.h>
 #include <Shell/SyntaxHighlighter.h>
 #include <fcntl.h>
@@ -57,14 +42,49 @@ namespace HackStudio {
 Editor::Editor()
 {
     set_document(CodeDocument::create());
+    initialize_documentation_tooltip();
+    initialize_parameters_hint_tooltip();
+    m_evaluate_expression_action = GUI::Action::create("Evaluate expression", { Mod_Ctrl, Key_E }, [this](auto&) {
+        VERIFY(is_program_running());
+        auto dialog = EvaluateExpressionDialog::construct(window());
+        dialog->exec();
+    });
+    m_move_execution_to_line_action = GUI::Action::create("Set execution point to line", [this](auto&) {
+        VERIFY(is_program_running());
+        auto success = Debugger::the().set_execution_position(currently_open_file(), cursor().line());
+        if (success) {
+            set_execution_position(cursor().line());
+        } else {
+            GUI::MessageBox::show(window(), "Failed to set execution position", "Error", GUI::MessageBox::Type::Error);
+        }
+    });
+
+    set_debug_mode(false);
+
+    add_custom_context_menu_action(*m_evaluate_expression_action);
+    add_custom_context_menu_action(*m_move_execution_to_line_action);
+
+    set_gutter_visible(true);
+}
+
+Editor::~Editor()
+{
+}
+
+void Editor::initialize_documentation_tooltip()
+{
     m_documentation_tooltip_window = GUI::Window::construct();
     m_documentation_tooltip_window->set_rect(0, 0, 500, 400);
     m_documentation_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
     m_documentation_page_view = m_documentation_tooltip_window->set_main_widget<Web::OutOfProcessWebView>();
 }
 
-Editor::~Editor()
+void Editor::initialize_parameters_hint_tooltip()
 {
+    m_parameters_hint_tooltip_window = GUI::Window::construct();
+    m_parameters_hint_tooltip_window->set_rect(0, 0, 280, 35);
+    m_parameters_hint_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
+    m_parameter_hint_page_view = m_parameters_hint_tooltip_window->set_main_widget<Web::OutOfProcessWebView>();
 }
 
 EditorWrapper& Editor::wrapper()
@@ -90,15 +110,9 @@ void Editor::focusout_event(GUI::FocusEvent& event)
     GUI::TextEditor::focusout_event(event);
 }
 
-Gfx::IntRect Editor::breakpoint_icon_rect(size_t line_number) const
+Gfx::IntRect Editor::gutter_icon_rect(size_t line_number) const
 {
-    auto ruler_line_rect = ruler_content_rect(line_number);
-
-    auto scroll_value = vertical_scrollbar().value();
-    ruler_line_rect = ruler_line_rect.translated({ 0, -scroll_value });
-    auto center = ruler_line_rect.center().translated({ ruler_line_rect.width() - 10, -line_spacing() - 3 });
-    constexpr int size = 32;
-    return { center.x() - size / 2, center.y() - size / 2, size, size };
+    return gutter_content_rect(line_number).translated(ruler_width() + gutter_width() + frame_thickness(), -vertical_scrollbar().value());
 }
 
 void Editor::paint_event(GUI::PaintEvent& event)
@@ -117,19 +131,45 @@ void Editor::paint_event(GUI::PaintEvent& event)
         painter.draw_rect(rect, palette().selection());
     }
 
-    if (ruler_visible()) {
+    if (gutter_visible()) {
         size_t first_visible_line = text_position_at(event.rect().top_left()).line();
         size_t last_visible_line = text_position_at(event.rect().bottom_right()).line();
+
         for (size_t line : breakpoint_lines()) {
             if (line < first_visible_line || line > last_visible_line) {
                 continue;
             }
             const auto& icon = breakpoint_icon_bitmap();
-            painter.blit(breakpoint_icon_rect(line).center(), icon, icon.rect());
+            painter.blit(gutter_icon_rect(line).top_left(), icon, icon.rect());
         }
         if (execution_position().has_value()) {
             const auto& icon = current_position_icon_bitmap();
-            painter.blit(breakpoint_icon_rect(execution_position().value()).center(), icon, icon.rect());
+            painter.blit(gutter_icon_rect(execution_position().value()).top_left(), icon, icon.rect());
+        }
+
+        if (wrapper().git_repo()) {
+            for (auto& hunk : wrapper().hunks()) {
+                auto start_line = hunk.target_start_line;
+                auto finish_line = start_line + hunk.added_lines.size();
+
+                auto additions = hunk.added_lines.size();
+                auto deletions = hunk.removed_lines.size();
+
+                for (size_t line_offset = 0; line_offset < additions; line_offset++) {
+                    auto line = start_line + line_offset;
+                    if (line < first_visible_line || line > last_visible_line) {
+                        continue;
+                    }
+                    char const* sign = (line_offset < deletions) ? "!" : "+";
+                    painter.draw_text(gutter_icon_rect(line), sign, font(), Gfx::TextAlignment::Center);
+                }
+                if (additions < deletions) {
+                    auto deletions_line = min(finish_line, line_count() - 1);
+                    if (deletions_line <= last_visible_line) {
+                        painter.draw_text(gutter_icon_rect(deletions_line), "-", font(), Gfx::TextAlignment::Center);
+                    }
+                }
+            }
         }
     }
 }
@@ -141,8 +181,8 @@ static HashMap<String, String>& man_paths()
         // FIXME: This should also search man3, possibly other places..
         Core::DirIterator it("/usr/share/man/man2", Core::DirIterator::Flags::SkipDots);
         while (it.has_next()) {
-            auto path = String::formatted("/usr/share/man/man2/{}", it.next_path());
-            auto title = LexicalPath(path).title();
+            auto path = it.next_full_path();
+            auto title = LexicalPath::title(path);
             paths.set(title, path);
         }
     }
@@ -165,7 +205,7 @@ void Editor::show_documentation_tooltip_if_available(const String& hovered_token
 
     dbgln_if(EDITOR_DEBUG, "opening {}", it->value);
     auto file = Core::File::construct(it->value);
-    if (!file->open(Core::File::ReadOnly)) {
+    if (!file->open(Core::OpenMode::ReadOnly)) {
         dbgln("failed to open {}, {}", it->value, file->error_string());
         return;
     }
@@ -260,6 +300,8 @@ void Editor::mousemove_event(GUI::MouseEvent& event)
 
 void Editor::mousedown_event(GUI::MouseEvent& event)
 {
+    m_parameters_hint_tooltip_window->hide();
+
     auto highlighter = wrapper().editor().syntax_highlighter();
     if (!highlighter) {
         GUI::TextEditor::mousedown_event(event);
@@ -271,10 +313,10 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
     if (event.button() == GUI::MouseButton::Left && event.position().x() < ruler_line_rect.width()) {
         if (!breakpoint_lines().contains_slow(text_position.line())) {
             breakpoint_lines().append(text_position.line());
-            Debugger::on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Added);
+            Debugger::the().on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Added);
         } else {
             breakpoint_lines().remove_first_matching([&](size_t line) { return line == text_position.line(); });
-            Debugger::on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Removed);
+            Debugger::the().on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Removed);
         }
     }
 
@@ -300,6 +342,23 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
     }
 
     GUI::TextEditor::mousedown_event(event);
+}
+
+void Editor::drop_event(GUI::DropEvent& event)
+{
+    event.accept();
+
+    if (event.mime_data().has_urls()) {
+        auto urls = event.mime_data().urls();
+        if (urls.is_empty())
+            return;
+        window()->move_to_front();
+        if (urls.size() > 1) {
+            GUI::MessageBox::show(window(), "HackStudio can only open one file at a time!", "One at a time please!", GUI::MessageBox::Type::Error);
+            return;
+        }
+        open_file(urls.first().path());
+    }
 }
 
 void Editor::enter_event(Core::Event& event)
@@ -357,7 +416,7 @@ void Editor::set_execution_position(size_t line_number)
 {
     code_document().set_execution_position(line_number);
     scroll_position_into_view({ line_number, 0 });
-    update(breakpoint_icon_rect(line_number));
+    update(gutter_icon_rect(line_number));
 }
 
 void Editor::clear_execution_position()
@@ -367,18 +426,18 @@ void Editor::clear_execution_position()
     }
     size_t previous_position = execution_position().value();
     code_document().clear_execution_position();
-    update(breakpoint_icon_rect(previous_position));
+    update(gutter_icon_rect(previous_position));
 }
 
 const Gfx::Bitmap& Editor::breakpoint_icon_bitmap()
 {
-    static auto bitmap = Gfx::Bitmap::load_from_file("/res/icons/16x16/breakpoint.png");
+    static auto bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/breakpoint.png");
     return *bitmap;
 }
 
 const Gfx::Bitmap& Editor::current_position_icon_bitmap()
 {
-    static auto bitmap = Gfx::Bitmap::load_from_file("/res/icons/16x16/go-forward.png");
+    static auto bitmap = Gfx::Bitmap::try_load_from_file("/res/icons/16x16/go-forward.png");
     return *bitmap;
 }
 
@@ -396,33 +455,18 @@ CodeDocument& Editor::code_document()
 
 void Editor::set_document(GUI::TextDocument& doc)
 {
+    if (has_document() && &document() == &doc)
+        return;
+
     VERIFY(doc.is_code_document());
     GUI::TextEditor::set_document(doc);
 
     set_override_cursor(Gfx::StandardCursor::IBeam);
 
-    CodeDocument& code_document = static_cast<CodeDocument&>(doc);
-    switch (code_document.language()) {
-    case Language::Cpp:
-        set_syntax_highlighter(make<Cpp::SyntaxHighlighter>());
-        m_language_client = get_language_client<LanguageClients::Cpp::ServerConnection>(project().root_path());
-        break;
-    case Language::GML:
-        set_syntax_highlighter(make<GUI::GMLSyntaxHighlighter>());
-        break;
-    case Language::JavaScript:
-        set_syntax_highlighter(make<JS::SyntaxHighlighter>());
-        break;
-    case Language::Ini:
-        set_syntax_highlighter(make<GUI::IniSyntaxHighlighter>());
-        break;
-    case Language::Shell:
-        set_syntax_highlighter(make<Shell::SyntaxHighlighter>());
-        m_language_client = get_language_client<LanguageClients::Shell::ServerConnection>(project().root_path());
-        break;
-    default:
-        set_syntax_highlighter({});
-    }
+    auto& code_document = static_cast<CodeDocument&>(doc);
+
+    set_syntax_highlighter_for(code_document);
+    set_language_client_for(code_document);
 
     if (m_language_client) {
         set_autocomplete_provider(make<LanguageServerAidedAutocompleteProvider>(*m_language_client));
@@ -438,6 +482,8 @@ void Editor::set_document(GUI::TextDocument& doc)
         }
         m_language_client->open_file(code_document.file_path(), fd);
         close(fd);
+    } else {
+        set_autocomplete_provider_for(code_document);
     }
 }
 
@@ -466,13 +512,13 @@ void Editor::LanguageServerAidedAutocompleteProvider::provide_completions(Functi
         data.value().position.column());
 }
 
-void Editor::on_edit_action(const GUI::Command& command)
+void Editor::will_execute(GUI::TextDocumentUndoCommand const& command)
 {
     if (!m_language_client)
         return;
 
-    if (command.is_insert_text()) {
-        const GUI::InsertTextCommand& insert_command = static_cast<const GUI::InsertTextCommand&>(command);
+    if (is<GUI::InsertTextCommand>(command)) {
+        auto const& insert_command = static_cast<GUI::InsertTextCommand const&>(command);
         m_language_client->insert_text(
             code_document().file_path(),
             insert_command.text(),
@@ -481,8 +527,8 @@ void Editor::on_edit_action(const GUI::Command& command)
         return;
     }
 
-    if (command.is_remove_text()) {
-        const GUI::RemoveTextCommand& remove_command = static_cast<const GUI::RemoveTextCommand&>(command);
+    if (is<GUI::RemoveTextCommand>(command)) {
+        auto const& remove_command = static_cast<GUI::RemoveTextCommand const&>(command);
         m_language_client->remove_text(
             code_document().file_path(),
             remove_command.range().start().line(),
@@ -532,14 +578,122 @@ void Editor::on_identifier_click(const GUI::TextDocumentSpan& span)
     if (!m_language_client)
         return;
 
-    m_language_client->on_declaration_found = [this](const String& file, size_t line, size_t column) {
+    m_language_client->on_declaration_found = [](const String& file, size_t line, size_t column) {
         HackStudio::open_file(file, line, column);
     };
     m_language_client->search_declaration(code_document().file_path(), span.range.start().line(), span.range.start().column());
 }
+
 void Editor::set_cursor(const GUI::TextPosition& a_position)
 {
     TextEditor::set_cursor(a_position);
+}
+
+void Editor::set_syntax_highlighter_for(const CodeDocument& document)
+{
+    switch (document.language()) {
+    case Language::Cpp:
+        set_syntax_highlighter(make<Cpp::SyntaxHighlighter>());
+        break;
+    case Language::GML:
+        set_syntax_highlighter(make<GUI::GMLSyntaxHighlighter>());
+        break;
+    case Language::HTML:
+        set_syntax_highlighter(make<Web::HTML::SyntaxHighlighter>());
+        break;
+    case Language::JavaScript:
+        set_syntax_highlighter(make<JS::SyntaxHighlighter>());
+        break;
+    case Language::Ini:
+        set_syntax_highlighter(make<GUI::IniSyntaxHighlighter>());
+        break;
+    case Language::Shell:
+        set_syntax_highlighter(make<Shell::SyntaxHighlighter>());
+        break;
+    case Language::SQL:
+        set_syntax_highlighter(make<SQL::AST::SyntaxHighlighter>());
+        break;
+    default:
+        set_syntax_highlighter({});
+    }
+}
+
+void Editor::set_autocomplete_provider_for(CodeDocument const& document)
+{
+    switch (document.language()) {
+    case Language::GML:
+        set_autocomplete_provider(make<GUI::GMLAutocompleteProvider>());
+        break;
+    default:
+        set_autocomplete_provider({});
+    }
+}
+
+void Editor::set_language_client_for(const CodeDocument& document)
+{
+    if (m_language_client && m_language_client->language() == document.language())
+        return;
+
+    if (document.language() == Language::Cpp)
+        m_language_client = get_language_client<LanguageClients::Cpp::ServerConnection>(project().root_path());
+
+    if (document.language() == Language::Shell)
+        m_language_client = get_language_client<LanguageClients::Shell::ServerConnection>(project().root_path());
+}
+
+void Editor::keydown_event(GUI::KeyEvent& event)
+{
+    TextEditor::keydown_event(event);
+
+    m_parameters_hint_tooltip_window->hide();
+
+    if (!event.shift() && !event.alt() && event.ctrl() && event.key() == KeyCode::Key_P) {
+        handle_function_parameters_hint_request();
+    }
+}
+
+void Editor::handle_function_parameters_hint_request()
+{
+    VERIFY(m_language_client);
+
+    m_language_client->on_function_parameters_hint_result = [this](Vector<String> const& params, size_t argument_index) {
+        dbgln("on_function_parameters_hint_result");
+
+        StringBuilder html;
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (i == argument_index)
+                html.append("<b>");
+
+            html.appendff("{}", params[i]);
+
+            if (i == argument_index)
+                html.append("</b>");
+
+            if (i < params.size() - 1)
+                html.append(", ");
+        }
+        html.append("<style>body { background-color: #dac7b5; }</style>");
+
+        m_parameter_hint_page_view->load_html(html.build(), {});
+
+        auto cursor_rect = current_editor().cursor_content_rect().location().translated(screen_relative_rect().location());
+
+        Gfx::Rect content(cursor_rect.x(), cursor_rect.y(), m_parameter_hint_page_view->children_clip_rect().width(), m_parameter_hint_page_view->children_clip_rect().height());
+        m_parameters_hint_tooltip_window->move_to(cursor_rect.x(), cursor_rect.y() - m_parameters_hint_tooltip_window->height() - vertical_scrollbar().value());
+
+        m_parameters_hint_tooltip_window->show();
+    };
+
+    m_language_client->get_parameters_hint(
+        code_document().file_path(),
+        cursor().line(),
+        cursor().column());
+}
+
+void Editor::set_debug_mode(bool enabled)
+{
+    m_evaluate_expression_action->set_enabled(enabled);
+    m_move_execution_to_line_action->set_enabled(enabled);
 }
 
 }

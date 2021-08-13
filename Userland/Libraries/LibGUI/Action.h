@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -62,6 +42,12 @@ NonnullRefPtr<Action> make_go_forward_action(Function<void(Action&)>, Core::Obje
 NonnullRefPtr<Action> make_go_home_action(Function<void(Action&)> callback, Core::Object* parent = nullptr);
 NonnullRefPtr<Action> make_reload_action(Function<void(Action&)>, Core::Object* parent = nullptr);
 NonnullRefPtr<Action> make_select_all_action(Function<void(Action&)>, Core::Object* parent = nullptr);
+NonnullRefPtr<Action> make_rename_action(Function<void(Action&)>, Core::Object* parent = nullptr);
+NonnullRefPtr<Action> make_properties_action(Function<void(Action&)>, Core::Object* parent = nullptr);
+NonnullRefPtr<Action> make_zoom_in_action(Function<void(Action&)>, Core::Object* parent = nullptr);
+NonnullRefPtr<Action> make_zoom_out_action(Function<void(Action&)>, Core::Object* parent = nullptr);
+NonnullRefPtr<Action> make_reset_zoom_action(Function<void(Action&)>, Core::Object* parent = nullptr);
+
 };
 
 class Action final : public Core::Object {
@@ -76,7 +62,9 @@ public:
     static NonnullRefPtr<Action> create(String text, Function<void(Action&)> callback, Core::Object* parent = nullptr);
     static NonnullRefPtr<Action> create(String text, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent = nullptr);
     static NonnullRefPtr<Action> create(String text, const Shortcut& shortcut, Function<void(Action&)> callback, Core::Object* parent = nullptr);
+    static NonnullRefPtr<Action> create(String text, const Shortcut& shortcut, const Shortcut& alternate_shortcut, Function<void(Action&)> callback, Core::Object* parent = nullptr);
     static NonnullRefPtr<Action> create(String text, const Shortcut& shortcut, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent = nullptr);
+    static NonnullRefPtr<Action> create(String text, const Shortcut& shortcut, const Shortcut& alternate_shortcut, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent = nullptr);
     static NonnullRefPtr<Action> create_checkable(String text, Function<void(Action&)> callback, Core::Object* parent = nullptr);
     static NonnullRefPtr<Action> create_checkable(String text, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> callback, Core::Object* parent = nullptr);
     static NonnullRefPtr<Action> create_checkable(String text, const Shortcut& shortcut, Function<void(Action&)> callback, Core::Object* parent = nullptr);
@@ -85,8 +73,13 @@ public:
     virtual ~Action() override;
 
     String text() const { return m_text; }
-    void set_text(String text) { m_text = move(text); }
-    Shortcut shortcut() const { return m_shortcut; }
+    void set_text(String);
+
+    String const& status_tip() const { return m_status_tip; }
+    void set_status_tip(String status_tip) { m_status_tip = move(status_tip); }
+
+    Shortcut const& shortcut() const { return m_shortcut; }
+    Shortcut const& alternate_shortcut() const { return m_alternate_shortcut; }
     const Gfx::Bitmap* icon() const { return m_icon.ptr(); }
     void set_icon(const Gfx::Bitmap*);
 
@@ -124,7 +117,8 @@ public:
 private:
     Action(String, Function<void(Action&)> = nullptr, Core::Object* = nullptr, bool checkable = false);
     Action(String, const Shortcut&, Function<void(Action&)> = nullptr, Core::Object* = nullptr, bool checkable = false);
-    Action(String, const Shortcut&, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> = nullptr, Core::Object* = nullptr, bool checkable = false);
+    Action(String, const Shortcut&, const Shortcut&, Function<void(Action&)> = nullptr, Core::Object* = nullptr, bool checkable = false);
+    Action(String, const Shortcut&, const Shortcut&, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> = nullptr, Core::Object* = nullptr, bool checkable = false);
     Action(String, RefPtr<Gfx::Bitmap> icon, Function<void(Action&)> = nullptr, Core::Object* = nullptr, bool checkable = false);
 
     template<typename Callback>
@@ -133,8 +127,10 @@ private:
     void for_each_menu_item(Callback);
 
     String m_text;
+    String m_status_tip;
     RefPtr<Gfx::Bitmap> m_icon;
     Shortcut m_shortcut;
+    Shortcut m_alternate_shortcut;
     bool m_enabled { true };
     bool m_checkable { false };
     bool m_checked { false };

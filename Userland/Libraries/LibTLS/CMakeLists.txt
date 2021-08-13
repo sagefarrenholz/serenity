@@ -1,7 +1,11 @@
+add_compile_options(-Wvla)
+
 set(SOURCES
-    ClientHandshake.cpp
-    Exchange.cpp
+    Certificate.cpp
     Handshake.cpp
+    HandshakeCertificate.cpp
+    HandshakeClient.cpp
+    HandshakeServer.cpp
     Record.cpp
     Socket.cpp
     TLSv12.cpp

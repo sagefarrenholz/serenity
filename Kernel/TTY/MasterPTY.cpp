@@ -1,51 +1,51 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "MasterPTY.h"
-#include "PTYMultiplexer.h"
-#include "SlavePTY.h"
+#include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Process.h>
+#include <Kernel/TTY/MasterPTY.h>
+#include <Kernel/TTY/PTYMultiplexer.h>
+#include <Kernel/TTY/SlavePTY.h>
 #include <LibC/errno_numbers.h>
 #include <LibC/signal_numbers.h>
 #include <LibC/sys/ioctl_numbers.h>
 
 namespace Kernel {
 
-MasterPTY::MasterPTY(unsigned index)
+RefPtr<MasterPTY> MasterPTY::try_create(unsigned int index)
+{
+    auto buffer = DoubleBuffer::try_create();
+    if (!buffer)
+        return {};
+
+    auto master_pty = adopt_ref_if_nonnull(new (nothrow) MasterPTY(index, buffer.release_nonnull()));
+    if (!master_pty)
+        return {};
+
+    auto slave_pty = adopt_ref_if_nonnull(new (nothrow) SlavePTY(*master_pty, index));
+    if (!slave_pty)
+        return {};
+
+    master_pty->m_slave = slave_pty;
+
+    return master_pty;
+}
+
+MasterPTY::MasterPTY(unsigned index, NonnullOwnPtr<DoubleBuffer> buffer)
     : CharacterDevice(200, index)
-    , m_slave(adopt(*new SlavePTY(*this, index)))
     , m_index(index)
+    , m_buffer(move(buffer))
 {
     m_pts_name = String::formatted("/dev/pts/{}", m_index);
     auto process = Process::current();
     set_uid(process->uid());
     set_gid(process->gid());
 
-    m_buffer.set_unblock_callback([this]() {
+    m_buffer->set_unblock_callback([this]() {
         if (m_slave)
             evaluate_block_conditions();
     });
@@ -64,9 +64,9 @@ String MasterPTY::pts_name() const
 
 KResultOr<size_t> MasterPTY::read(FileDescription&, u64, UserOrKernelBuffer& buffer, size_t size)
 {
-    if (!m_slave && m_buffer.is_empty())
+    if (!m_slave && m_buffer->is_empty())
         return 0;
-    return m_buffer.read(buffer, size);
+    return m_buffer->read(buffer, size);
 }
 
 KResultOr<size_t> MasterPTY::write(FileDescription&, u64, const UserOrKernelBuffer& buffer, size_t size)
@@ -81,7 +81,7 @@ bool MasterPTY::can_read(const FileDescription&, size_t) const
 {
     if (!m_slave)
         return true;
-    return !m_buffer.is_empty();
+    return !m_buffer->is_empty();
 }
 
 bool MasterPTY::can_write(const FileDescription&, size_t) const
@@ -98,42 +98,41 @@ void MasterPTY::notify_slave_closed(Badge<SlavePTY>)
         m_slave = nullptr;
 }
 
-ssize_t MasterPTY::on_slave_write(const UserOrKernelBuffer& data, ssize_t size)
+KResultOr<size_t> MasterPTY::on_slave_write(const UserOrKernelBuffer& data, size_t size)
 {
     if (m_closed)
-        return -EIO;
-    return m_buffer.write(data, size);
+        return EIO;
+    return m_buffer->write(data, size);
 }
 
 bool MasterPTY::can_write_from_slave() const
 {
     if (m_closed)
         return true;
-    return m_buffer.space_for_writing();
+    return m_buffer->space_for_writing();
 }
 
 KResult MasterPTY::close()
 {
-    if (ref_count() == 2) {
-        InterruptDisabler disabler;
-        // After the closing FileDescription dies, slave is the only thing keeping me alive.
-        // From this point, let's consider ourselves closed.
-        m_closed = true;
+    InterruptDisabler disabler;
+    // After the closing FileDescription dies, slave is the only thing keeping me alive.
+    // From this point, let's consider ourselves closed.
+    m_closed = true;
 
+    if (m_slave)
         m_slave->hang_up();
-    }
 
     return KSuccess;
 }
 
-int MasterPTY::ioctl(FileDescription& description, unsigned request, FlatPtr arg)
+KResult MasterPTY::ioctl(FileDescription& description, unsigned request, Userspace<void*> arg)
 {
     REQUIRE_PROMISE(tty);
     if (!m_slave)
-        return -EIO;
+        return EIO;
     if (request == TIOCSWINSZ || request == TIOCGPGRP)
         return m_slave->ioctl(description, request, arg);
-    return -EINVAL;
+    return EINVAL;
 }
 
 String MasterPTY::absolute_path(const FileDescription&) const

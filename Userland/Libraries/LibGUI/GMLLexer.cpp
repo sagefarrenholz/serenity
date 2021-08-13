@@ -1,36 +1,16 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "GMLLexer.h"
+#include <AK/CharacterTypes.h>
 #include <AK/Vector.h>
-#include <ctype.h>
 
 namespace GUI {
 
-GMLLexer::GMLLexer(const StringView& input)
+GMLLexer::GMLLexer(StringView const& input)
     : m_input(input)
 {
 }
@@ -46,7 +26,6 @@ char GMLLexer::consume()
 {
     VERIFY(m_index < m_input.length());
     char ch = m_input[m_index++];
-    m_previous_position = m_position;
     if (ch == '\n') {
         m_position.line++;
         m_position.column = 0;
@@ -56,19 +35,19 @@ char GMLLexer::consume()
     return ch;
 }
 
-static bool is_valid_identifier_start(char ch)
+constexpr bool is_valid_identifier_start(char ch)
 {
-    return isalpha(ch) || ch == '_';
+    return is_ascii_alpha(ch) || ch == '_';
 }
 
-static bool is_valid_identifier_character(char ch)
+constexpr bool is_valid_identifier_character(char ch)
 {
-    return isalnum(ch) || ch == '_';
+    return is_ascii_alphanumeric(ch) || ch == '_';
 }
 
-static bool is_valid_class_character(char ch)
+constexpr bool is_valid_class_character(char ch)
 {
-    return isalnum(ch) || ch == '_' || ch == ':';
+    return is_ascii_alphanumeric(ch) || ch == '_' || ch == ':';
 }
 
 Vector<GMLToken> GMLLexer::lex()
@@ -88,7 +67,7 @@ Vector<GMLToken> GMLLexer::lex()
         token.m_view = m_input.substring_view(token_start_index, m_index - token_start_index);
         token.m_type = type;
         token.m_start = token_start_position;
-        token.m_end = m_previous_position;
+        token.m_end = m_position;
         tokens.append(token);
     };
 
@@ -103,9 +82,9 @@ Vector<GMLToken> GMLLexer::lex()
     };
 
     while (m_index < m_input.length()) {
-        if (isspace(peek(0))) {
+        if (is_ascii_space(peek(0))) {
             begin_token();
-            while (isspace(peek()))
+            while (is_ascii_space(peek()))
                 consume();
             continue;
         }
@@ -152,7 +131,7 @@ Vector<GMLToken> GMLLexer::lex()
             consume();
             commit_token(GMLToken::Type::Colon);
 
-            while (isspace(peek()))
+            while (is_ascii_space(peek()))
                 consume();
 
             if (peek(0) == '@') {

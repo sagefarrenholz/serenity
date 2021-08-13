@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "AST.h"
@@ -153,11 +133,11 @@ static inline Vector<Command> join_commands(Vector<Command> left, Vector<Command
     auto last_in_left = left.take_last();
     auto first_in_right = right.take_first();
 
-    command.argv.append(last_in_left.argv);
-    command.argv.append(first_in_right.argv);
+    command.argv.extend(last_in_left.argv);
+    command.argv.extend(first_in_right.argv);
 
-    command.redirections.append(last_in_left.redirections);
-    command.redirections.append(first_in_right.redirections);
+    command.redirections.extend(last_in_left.redirections);
+    command.redirections.extend(first_in_right.redirections);
 
     command.should_wait = first_in_right.should_wait && last_in_left.should_wait;
     command.is_pipe_source = first_in_right.is_pipe_source;
@@ -166,9 +146,9 @@ static inline Vector<Command> join_commands(Vector<Command> left, Vector<Command
     command.position = merge_positions(last_in_left.position, first_in_right.position);
 
     Vector<Command> commands;
-    commands.append(left);
+    commands.extend(left);
     commands.append(command);
-    commands.append(right);
+    commands.extend(right);
 
     return commands;
 }
@@ -268,6 +248,25 @@ static Vector<String> resolve_slices(RefPtr<Shell> shell, Vector<String>&& value
     return move(values);
 }
 
+void Node::clear_syntax_error()
+{
+    m_syntax_error_node->clear_syntax_error();
+}
+
+void Node::set_is_syntax_error(const SyntaxError& error_node)
+{
+    if (!m_syntax_error_node) {
+        m_syntax_error_node = error_node;
+    } else {
+        m_syntax_error_node->set_is_syntax_error(error_node);
+    }
+}
+
+bool Node::is_syntax_error() const
+{
+    return m_syntax_error_node && m_syntax_error_node->is_syntax_error();
+}
+
 void Node::for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback)
 {
     auto value = run(shell)->resolve_without_cast(shell);
@@ -336,7 +335,7 @@ Vector<Line::CompletionSuggestion> Node::complete_for_editor(Shell& shell, size_
 
             // If the literal isn't an option, treat it as a path.
             if (!(text.starts_with("-") || text == "--" || text == "-"))
-                return shell.complete_path("", text, corrected_offset);
+                return shell.complete_path("", text, corrected_offset, Shell::ExecutableOnly::No);
 
             // If the literal is an option, we have to know the program name
             // should we have no way to get that, bail early.
@@ -403,9 +402,6 @@ void And::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMetad
 
 HitTestResult And::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_left->hit_test_position(offset);
     if (result.matching_node) {
         if (!result.closest_command_node)
@@ -467,7 +463,7 @@ RefPtr<Value> ListConcatenate::run(RefPtr<Shell> shell)
             NonnullRefPtrVector<Value> values;
 
             if (result->is_list_without_resolution()) {
-                values.append(static_cast<ListValue*>(result.ptr())->values());
+                values.extend(static_cast<ListValue*>(result.ptr())->values());
             } else {
                 for (auto& result : result->resolve_as_list(shell))
                     values.append(create<StringValue>(result));
@@ -509,9 +505,6 @@ void ListConcatenate::highlight_in_editor(Line::Editor& editor, Shell& shell, Hi
 
 HitTestResult ListConcatenate::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     bool first = true;
     for (auto& element : m_list) {
         auto result = element->hit_test_position(offset);
@@ -571,9 +564,6 @@ void Background::highlight_in_editor(Line::Editor& editor, Shell& shell, Highlig
 
 HitTestResult Background::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     return m_command->hit_test_position(offset);
 }
 
@@ -621,7 +611,7 @@ void BarewordLiteral::highlight_in_editor(Line::Editor& editor, Shell& shell, Hi
             return;
 
         if (m_text.starts_with("--")) {
-            auto index = m_text.index_of("=").value_or(m_text.length() - 1) + 1;
+            auto index = m_text.find('=').value_or(m_text.length() - 1) + 1;
             editor.stylize({ m_position.start_offset, m_position.start_offset + index }, { Line::Style::Foreground(Line::Style::XtermColor::Cyan) });
         } else {
             editor.stylize({ m_position.start_offset, m_position.end_offset }, { Line::Style::Foreground(Line::Style::XtermColor::Cyan) });
@@ -666,9 +656,6 @@ RefPtr<Value> BraceExpansion::run(RefPtr<Shell> shell)
 
 HitTestResult BraceExpansion::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     for (auto& entry : m_entries) {
         auto result = entry.hit_test_position(offset);
         if (result.matching_node) {
@@ -731,9 +718,6 @@ void CastToCommand::highlight_in_editor(Line::Editor& editor, Shell& shell, High
 
 HitTestResult CastToCommand::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_inner->hit_test_position(offset);
     if (!result.closest_node_with_semantic_meaning)
         result.closest_node_with_semantic_meaning = this;
@@ -813,9 +797,6 @@ void CastToList::highlight_in_editor(Line::Editor& editor, Shell& shell, Highlig
 
 HitTestResult CastToList::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (!m_inner)
         return {};
 
@@ -842,14 +823,14 @@ CastToList::~CastToList()
 void CloseFdRedirection::dump(int level) const
 {
     Node::dump(level);
-    print_indented(String::format("%d -> Close", m_fd), level);
+    print_indented(String::formatted("{} -> Close", m_fd), level);
 }
 
 RefPtr<Value> CloseFdRedirection::run(RefPtr<Shell>)
 {
     Command command;
     command.position = position();
-    command.redirections.append(adopt(*new CloseRedirection(m_fd)));
+    command.redirections.append(adopt_ref(*new CloseRedirection(m_fd)));
     return create<CommandValue>(move(command));
 }
 
@@ -967,9 +948,6 @@ void DoubleQuotedString::highlight_in_editor(Line::Editor& editor, Shell& shell,
 
 HitTestResult DoubleQuotedString::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     return m_inner->hit_test_position(offset);
 }
 
@@ -1015,9 +993,6 @@ void DynamicEvaluate::highlight_in_editor(Line::Editor& editor, Shell& shell, Hi
 
 HitTestResult DynamicEvaluate::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     return m_inner->hit_test_position(offset);
 }
 
@@ -1036,7 +1011,7 @@ DynamicEvaluate::~DynamicEvaluate()
 void Fd2FdRedirection::dump(int level) const
 {
     Node::dump(level);
-    print_indented(String::format("%d -> %d", m_old_fd, m_new_fd), level);
+    print_indented(String::formatted("{} -> {}", m_old_fd, m_new_fd), level);
 }
 
 RefPtr<Value> Fd2FdRedirection::run(RefPtr<Shell>)
@@ -1066,10 +1041,10 @@ Fd2FdRedirection::~Fd2FdRedirection()
 void FunctionDeclaration::dump(int level) const
 {
     Node::dump(level);
-    print_indented(String::format("(name: %s)\n", m_name.name.characters()), level + 1);
-    print_indented("(argument namess)", level + 1);
+    print_indented(String::formatted("(name: {})\n", m_name.name), level + 1);
+    print_indented("(argument names)", level + 1);
     for (auto& arg : m_arguments)
-        print_indented(String::format("(name: %s)\n", arg.name.characters()), level + 2);
+        print_indented(String::formatted("(name: {})\n", arg.name), level + 2);
 
     print_indented("(body)", level + 1);
     if (m_block)
@@ -1103,9 +1078,6 @@ void FunctionDeclaration::highlight_in_editor(Line::Editor& editor, Shell& shell
 
 HitTestResult FunctionDeclaration::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (!m_block)
         return {};
 
@@ -1135,7 +1107,7 @@ Vector<Line::CompletionSuggestion> FunctionDeclaration::complete_for_editor(Shel
             results.append(arg.name);
     }
 
-    results.append(matching_node->complete_for_editor(shell, offset, hit_test_result));
+    results.extend(matching_node->complete_for_editor(shell, offset, hit_test_result));
 
     return results;
 }
@@ -1276,9 +1248,6 @@ void ForLoop::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightM
 
 HitTestResult ForLoop::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (m_iterated_expression) {
         if (auto result = m_iterated_expression->hit_test_position(offset); result.matching_node)
             return result;
@@ -1335,6 +1304,78 @@ Glob::Glob(Position position, String text)
 }
 
 Glob::~Glob()
+{
+}
+
+void Heredoc::dump(int level) const
+{
+    Node::dump(level);
+    print_indented("(End Key)", level + 1);
+    print_indented(m_end, level + 2);
+    print_indented("(Allows Interpolation)", level + 1);
+    print_indented(String::formatted("{}", m_allows_interpolation), level + 2);
+    print_indented("(Contents)", level + 1);
+    if (m_contents)
+        m_contents->dump(level + 2);
+    else
+        print_indented("(null)", level + 2);
+}
+
+RefPtr<Value> Heredoc::run(RefPtr<Shell> shell)
+{
+    if (!m_deindent)
+        return m_contents->run(shell);
+
+    // To deindent, first split to lines...
+    auto value = m_contents->run(shell);
+    if (!value)
+        return value;
+    auto list = value->resolve_as_list(shell);
+    // The list better have one entry, otherwise we've put the wrong kind of node inside this heredoc
+    VERIFY(list.size() == 1);
+    auto lines = list.first().split_view('\n');
+
+    // Now just trim each line and put them back in a string
+    StringBuilder builder { list.first().length() };
+    for (auto& line : lines) {
+        builder.append(line.trim_whitespace(TrimMode::Left));
+        builder.append('\n');
+    }
+
+    return create<StringValue>(builder.to_string());
+}
+
+void Heredoc::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMetadata metadata)
+{
+    Line::Style content_style { Line::Style::Foreground(Line::Style::XtermColor::Yellow) };
+    if (metadata.is_first_in_list)
+        content_style.unify_with({ Line::Style::Bold });
+
+    if (!m_contents)
+        content_style.unify_with({ Line::Style::Foreground(Line::Style::XtermColor::Red) }, true);
+
+    editor.stylize({ m_position.start_offset, m_position.end_offset }, content_style);
+    if (m_contents)
+        m_contents->highlight_in_editor(editor, shell, metadata);
+}
+
+HitTestResult Heredoc::hit_test_position(size_t offset) const
+{
+    if (!m_contents)
+        return {};
+
+    return m_contents->hit_test_position(offset);
+}
+
+Heredoc::Heredoc(Position position, String end, bool allow_interpolation, bool deindent)
+    : Node(move(position))
+    , m_end(move(end))
+    , m_allows_interpolation(allow_interpolation)
+    , m_deindent(deindent)
+{
+}
+
+Heredoc::~Heredoc()
 {
 }
 
@@ -1677,9 +1718,6 @@ void Execute::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightM
 
 HitTestResult Execute::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_command->hit_test_position(offset);
     if (!result.closest_node_with_semantic_meaning)
         result.closest_node_with_semantic_meaning = this;
@@ -1737,7 +1775,7 @@ RefPtr<Value> IfCond::run(RefPtr<Shell> shell)
 {
     auto cond = m_condition->run(shell)->resolve_without_cast(shell);
     // The condition could be a builtin, in which case it has already run and exited.
-    if (cond && cond->is_job()) {
+    if (cond->is_job()) {
         auto cond_job_value = static_cast<const JobValue*>(cond.ptr());
         auto cond_job = cond_job_value->job();
 
@@ -1771,9 +1809,6 @@ void IfCond::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMe
 
 HitTestResult IfCond::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (auto result = m_condition->hit_test_position(offset); result.matching_node)
         return result;
 
@@ -1884,9 +1919,6 @@ Vector<Line::CompletionSuggestion> ImmediateExpression::complete_for_editor(Shel
 
 HitTestResult ImmediateExpression::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (m_function.position.contains(offset))
         return { this, this, this };
 
@@ -1904,7 +1936,7 @@ ImmediateExpression::ImmediateExpression(Position position, NameWithPosition fun
     , m_function(move(function))
     , m_closing_brace_position(move(closing_brace_position))
 {
-    if (m_is_syntax_error)
+    if (is_syntax_error())
         return;
 
     for (auto& argument : m_arguments) {
@@ -1944,9 +1976,6 @@ void Join::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMeta
 
 HitTestResult Join::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_left->hit_test_position(offset);
     if (result.matching_node)
         return result;
@@ -2040,7 +2069,7 @@ RefPtr<Value> MatchExpr::run(RefPtr<Shell> shell)
         } else {
             auto list = option.run(shell);
             option.for_each_entry(shell, [&](auto&& value) {
-                pattern.append(value->resolve_as_list(nullptr)); // Note: 'nullptr' incurs special behaviour,
+                pattern.extend(value->resolve_as_list(nullptr)); // Note: 'nullptr' incurs special behaviour,
                                                                  //       asking the node for a 'raw' value.
                 return IterationDecision::Continue;
             });
@@ -2106,9 +2135,6 @@ void MatchExpr::highlight_in_editor(Line::Editor& editor, Shell& shell, Highligh
 
 HitTestResult MatchExpr::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_matched_expr->hit_test_position(offset);
     if (result.matching_node)
         return result;
@@ -2171,9 +2197,6 @@ void Or::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMetada
 
 HitTestResult Or::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_left->hit_test_position(offset);
     if (result.matching_node) {
         if (!result.closest_command_node)
@@ -2220,8 +2243,27 @@ RefPtr<Value> Pipe::run(RefPtr<Shell> shell)
 
     auto pipe_read_end = FdRedirection::create(-1, STDIN_FILENO, Rewiring::Close::Old);
     auto pipe_write_end = FdRedirection::create(-1, STDOUT_FILENO, pipe_read_end, Rewiring::Close::RefreshOld);
-    first_in_right.redirections.append(pipe_read_end);
-    last_in_left.redirections.append(pipe_write_end);
+
+    auto insert_at_start_or_after_last_pipe = [&](auto& pipe, auto& command) {
+        size_t insert_index = 0;
+        auto& redirections = command.redirections;
+        for (ssize_t i = redirections.size() - 1; i >= 0; --i) {
+            auto& redirection = redirections[i];
+            if (!redirection.is_fd_redirection())
+                continue;
+            auto& fd_redirection = static_cast<FdRedirection&>(redirection);
+            if (fd_redirection.old_fd == -1) {
+                insert_index = i;
+                break;
+            }
+        }
+
+        redirections.insert(insert_index, pipe);
+    };
+
+    insert_at_start_or_after_last_pipe(pipe_read_end, first_in_right);
+    insert_at_start_or_after_last_pipe(pipe_write_end, last_in_left);
+
     last_in_left.should_wait = false;
     last_in_left.is_pipe_source = true;
 
@@ -2234,10 +2276,10 @@ RefPtr<Value> Pipe::run(RefPtr<Shell> shell)
     }
 
     Vector<Command> commands;
-    commands.append(left);
+    commands.extend(left);
     commands.append(last_in_left);
     commands.append(first_in_right);
-    commands.append(right);
+    commands.extend(right);
 
     return create<CommandSequenceValue>(move(commands));
 }
@@ -2250,9 +2292,6 @@ void Pipe::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMeta
 
 HitTestResult Pipe::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_left->hit_test_position(offset);
     if (result.matching_node) {
         if (!result.closest_command_node)
@@ -2300,7 +2339,7 @@ void PathRedirectionNode::highlight_in_editor(Line::Editor& editor, Shell& shell
         auto& position = m_path->position();
         auto& path = path_text[0];
         if (!path.starts_with('/'))
-            path = String::format("%s/%s", shell.cwd.characters(), path.characters());
+            path = String::formatted("{}/{}", shell.cwd, path);
         auto url = URL::create_with_file_protocol(path);
         url.set_host(shell.hostname);
         editor.stylize({ position.start_offset, position.end_offset }, { Line::Style::Hyperlink(url.to_string()) });
@@ -2309,9 +2348,6 @@ void PathRedirectionNode::highlight_in_editor(Line::Editor& editor, Shell& shell
 
 HitTestResult PathRedirectionNode::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_path->hit_test_position(offset);
     if (!result.closest_node_with_semantic_meaning)
         result.closest_node_with_semantic_meaning = this;
@@ -2330,7 +2366,7 @@ Vector<Line::CompletionSuggestion> PathRedirectionNode::complete_for_editor(Shel
     if (corrected_offset > node->text().length())
         return {};
 
-    return shell.complete_path("", node->text(), corrected_offset);
+    return shell.complete_path("", node->text(), corrected_offset, Shell::ExecutableOnly::No);
 }
 
 PathRedirectionNode::~PathRedirectionNode()
@@ -2424,9 +2460,6 @@ void Range::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMet
 
 HitTestResult Range::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_start->hit_test_position(offset);
     if (result.matching_node) {
         if (!result.closest_command_node)
@@ -2459,7 +2492,7 @@ void ReadRedirection::dump(int level) const
 {
     Node::dump(level);
     m_path->dump(level + 1);
-    print_indented(String::format("To %d", m_fd), level + 1);
+    print_indented(String::formatted("To {}", m_fd), level + 1);
 }
 
 RefPtr<Value> ReadRedirection::run(RefPtr<Shell> shell)
@@ -2486,7 +2519,7 @@ void ReadWriteRedirection::dump(int level) const
 {
     Node::dump(level);
     m_path->dump(level + 1);
-    print_indented(String::format("To/From %d", m_fd), level + 1);
+    print_indented(String::formatted("To/From {}", m_fd), level + 1);
 }
 
 RefPtr<Value> ReadWriteRedirection::run(RefPtr<Shell> shell)
@@ -2523,7 +2556,7 @@ RefPtr<Value> Sequence::run(RefPtr<Shell> shell)
     for (auto& entry : m_entries) {
         if (!last_command_in_sequence) {
             auto commands = entry.to_lazy_evaluated_commands(shell);
-            all_commands.append(move(commands));
+            all_commands.extend(move(commands));
             last_command_in_sequence = &all_commands.last();
             continue;
         }
@@ -2531,7 +2564,7 @@ RefPtr<Value> Sequence::run(RefPtr<Shell> shell)
         if (last_command_in_sequence->should_wait) {
             last_command_in_sequence->next_chain.append(NodeWithAction { entry, NodeWithAction::Sequence });
         } else {
-            all_commands.append(entry.to_lazy_evaluated_commands(shell));
+            all_commands.extend(entry.to_lazy_evaluated_commands(shell));
             last_command_in_sequence = &all_commands.last();
         }
     }
@@ -2547,9 +2580,6 @@ void Sequence::highlight_in_editor(Line::Editor& editor, Shell& shell, Highlight
 
 HitTestResult Sequence::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     for (auto& entry : m_entries) {
         auto result = entry.hit_test_position(offset);
         if (result.matching_node) {
@@ -2603,9 +2633,6 @@ void Subshell::highlight_in_editor(Line::Editor& editor, Shell& shell, Highlight
 
 HitTestResult Subshell::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (m_block)
         return m_block->hit_test_position(offset);
 
@@ -2695,9 +2722,6 @@ void SimpleVariable::highlight_in_editor(Line::Editor& editor, Shell& shell, Hig
 
 HitTestResult SimpleVariable::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (m_slice && m_slice->position().contains(offset))
         return m_slice->hit_test_position(offset);
 
@@ -2765,9 +2789,6 @@ Vector<Line::CompletionSuggestion> SpecialVariable::complete_for_editor(Shell&, 
 
 HitTestResult SpecialVariable::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     if (m_slice && m_slice->position().contains(offset))
         return m_slice->hit_test_position(offset);
 
@@ -2876,7 +2897,7 @@ Vector<Line::CompletionSuggestion> Juxtaposition::complete_for_editor(Shell& she
 
         auto text = node->text().substring(1, node->text().length() - 1);
 
-        return shell.complete_path(tilde_value, text, corrected_offset - 1);
+        return shell.complete_path(tilde_value, text, corrected_offset - 1, Shell::ExecutableOnly::No);
     }
 
     return Node::complete_for_editor(shell, offset, hit_test_result);
@@ -2884,9 +2905,6 @@ Vector<Line::CompletionSuggestion> Juxtaposition::complete_for_editor(Shell& she
 
 HitTestResult Juxtaposition::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_left->hit_test_position(offset);
     if (!result.closest_node_with_semantic_meaning)
         result.closest_node_with_semantic_meaning = this;
@@ -2973,9 +2991,6 @@ void StringPartCompose::highlight_in_editor(Line::Editor& editor, Shell& shell, 
 
 HitTestResult StringPartCompose::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     auto result = m_left->hit_test_position(offset);
     if (result.matching_node)
         return result;
@@ -3022,7 +3037,6 @@ SyntaxError::SyntaxError(Position position, String error, bool is_continuable)
     , m_syntax_error_text(move(error))
     , m_is_continuable(is_continuable)
 {
-    m_is_syntax_error = true;
 }
 
 const SyntaxError& SyntaxError::syntax_error_node() const
@@ -3116,7 +3130,7 @@ void WriteAppendRedirection::dump(int level) const
 {
     Node::dump(level);
     m_path->dump(level + 1);
-    print_indented(String::format("From %d", m_fd), level + 1);
+    print_indented(String::formatted("From {}", m_fd), level + 1);
 }
 
 RefPtr<Value> WriteAppendRedirection::run(RefPtr<Shell> shell)
@@ -3143,7 +3157,7 @@ void WriteRedirection::dump(int level) const
 {
     Node::dump(level);
     m_path->dump(level + 1);
-    print_indented(String::format("From %d", m_fd), level + 1);
+    print_indented(String::formatted("From {}", m_fd), level + 1);
 }
 
 RefPtr<Value> WriteRedirection::run(RefPtr<Shell> shell)
@@ -3202,9 +3216,6 @@ void VariableDeclarations::highlight_in_editor(Line::Editor& editor, Shell& shel
 
 HitTestResult VariableDeclarations::hit_test_position(size_t offset) const
 {
-    if (!position().contains(offset))
-        return {};
-
     for (auto decl : m_variables) {
         auto result = decl.value->hit_test_position(offset);
         if (result.matching_node)
@@ -3250,7 +3261,7 @@ ListValue::ListValue(Vector<String> values)
         return;
     m_contained_values.ensure_capacity(values.size());
     for (auto& str : values)
-        m_contained_values.append(adopt(*new StringValue(move(str))));
+        m_contained_values.append(adopt_ref(*new StringValue(move(str))));
 }
 
 NonnullRefPtr<Value> Value::with_slices(NonnullRefPtr<Slice> slice) const&
@@ -3263,7 +3274,7 @@ NonnullRefPtr<Value> Value::with_slices(NonnullRefPtr<Slice> slice) const&
 NonnullRefPtr<Value> Value::with_slices(NonnullRefPtrVector<Slice> slices) const&
 {
     auto value = clone();
-    value->m_slices.append(move(slices));
+    value->m_slices.extend(move(slices));
     return value;
 }
 
@@ -3275,7 +3286,7 @@ Vector<String> ListValue::resolve_as_list(RefPtr<Shell> shell)
 {
     Vector<String> values;
     for (auto& value : m_contained_values)
-        values.append(value.resolve_as_list(shell));
+        values.extend(value.resolve_as_list(shell));
 
     return resolve_slices(shell, move(values), m_slices);
 }
@@ -3448,7 +3459,7 @@ Vector<String> TildeValue::resolve_as_list(RefPtr<Shell> shell)
 
 Result<NonnullRefPtr<Rewiring>, String> CloseRedirection::apply() const
 {
-    return adopt(*new Rewiring(fd, fd, Rewiring::Close::ImmediatelyCloseNew));
+    return adopt_ref(*new Rewiring(fd, fd, Rewiring::Close::ImmediatelyCloseNew));
 }
 
 CloseRedirection::~CloseRedirection()
@@ -3463,7 +3474,7 @@ Result<NonnullRefPtr<Rewiring>, String> PathRedirection::apply() const
             dbgln("open() failed for '{}' with {}", path, error);
             return error;
         }
-        return adopt(*new Rewiring(fd, my_fd, Rewiring::Close::Old));
+        return adopt_ref(*new Rewiring(fd, my_fd, Rewiring::Close::Old));
     };
     switch (direction) {
     case AST::PathRedirection::WriteAppend:

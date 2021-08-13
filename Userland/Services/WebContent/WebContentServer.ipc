@@ -1,27 +1,35 @@
-endpoint WebContentServer = 89
+#include <AK/URL.h>
+#include <LibCore/AnonymousBuffer.h>
+#include <LibGfx/ShareableBitmap.h>
+
+endpoint WebContentServer
 {
-    Greet() => ()
+    update_system_theme(Core::AnonymousBuffer theme_buffer) =|
+    update_system_fonts(String default_font_query, String fixed_width_font_query) =|
+    update_screen_rects(Vector<Gfx::IntRect> rects, u32 main_screen_index) =|
 
-    UpdateSystemTheme(Core::AnonymousBuffer theme_buffer) =|
+    load_url(URL url) =|
+    load_html(String html, URL url) =|
 
-    LoadURL(URL url) =|
-    LoadHTML(String html, URL url) =|
+    add_backing_store(i32 backing_store_id, Gfx::ShareableBitmap bitmap) =|
+    remove_backing_store(i32 backing_store_id) =|
 
-    AddBackingStore(i32 backing_store_id, Gfx::ShareableBitmap bitmap) =|
-    RemoveBackingStore(i32 backing_store_id) =|
+    paint(Gfx::IntRect content_rect, i32 backing_store_id) =|
+    set_viewport_rect(Gfx::IntRect rect) =|
 
-    Paint(Gfx::IntRect content_rect, i32 backing_store_id) =|
-    SetViewportRect(Gfx::IntRect rect) =|
+    mouse_down(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers) =|
+    mouse_move(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers) =|
+    mouse_up(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers) =|
+    mouse_wheel(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers, i32 wheel_delta) =|
 
-    MouseDown(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers) =|
-    MouseMove(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers) =|
-    MouseUp(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers) =|
-    MouseWheel(Gfx::IntPoint position, unsigned button, unsigned buttons, unsigned modifiers, i32 wheel_delta) =|
+    key_down(i32 key, unsigned modifiers, u32 code_point) =|
 
-    KeyDown(i32 key, unsigned modifiers, u32 code_point) =|
+    debug_request(String request, String argument) =|
+    get_source() =|
+    inspect_dom_tree() =|
+    js_console_initialize() =|
+    js_console_input(String js_source) =|
 
-    DebugRequest(String request, String argument) =|
-    GetSource() =|
-    JSConsoleInitialize() =|
-    JSConsoleInput(String js_source) =|
+    get_selected_text() => (String selection)
+    select_all() =|
 }

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,7 +15,7 @@
 
 namespace Chess {
 
-enum class Type {
+enum class Type : u8 {
     Pawn,
     Knight,
     Bishop,
@@ -48,7 +28,7 @@ enum class Type {
 String char_for_piece(Type type);
 Chess::Type piece_for_char_promotion(const StringView& str);
 
-enum class Color {
+enum class Color : u8 {
     White,
     Black,
     None,
@@ -75,10 +55,10 @@ struct Piece {
 constexpr Piece EmptyPiece = { Color::None, Type::None };
 
 struct Square {
-    unsigned rank; // zero indexed;
-    unsigned file;
+    i8 rank; // zero indexed;
+    i8 file;
     Square(const StringView& name);
-    Square(const unsigned& rank, const unsigned& file)
+    Square(const int& rank, const int& file)
         : rank(rank)
         , file(file)
     {
@@ -96,7 +76,7 @@ struct Square {
         }
     }
 
-    bool in_bounds() const { return rank < 8 && file < 8; }
+    bool in_bounds() const { return rank >= 0 && file >= 0 && rank < 8 && file < 8; }
     bool is_light() const { return (rank % 2) != (file % 2); }
     String to_algebraic() const;
 };
@@ -108,10 +88,10 @@ struct Move {
     Square to;
     Type promote_to;
     Piece piece;
-    bool is_check = false;
-    bool is_mate = false;
-    bool is_capture = false;
-    bool is_ambiguous = false;
+    bool is_check : 1 = false;
+    bool is_mate : 1 = false;
+    bool is_capture : 1 = false;
+    bool is_ambiguous : 1 = false;
     Square ambiguous { 50, 50 };
     Move(const StringView& long_algebraic);
     Move(const Square& from, const Square& to, const Type& promote_to = Type::None)
@@ -181,18 +161,20 @@ private:
     bool apply_illegal_move(const Move&, Color color);
 
     Piece m_board[8][8];
-    Color m_turn { Color::White };
-    Color m_resigned { Color::None };
     Optional<Move> m_last_move;
-    int m_moves_since_capture { 0 };
-    int m_moves_since_pawn_advance { 0 };
+    short m_moves_since_capture { 0 };
+    short m_moves_since_pawn_advance { 0 };
 
-    bool m_white_can_castle_kingside { true };
-    bool m_white_can_castle_queenside { true };
-    bool m_black_can_castle_kingside { true };
-    bool m_black_can_castle_queenside { true };
+    Color m_turn : 2 { Color::White };
+    Color m_resigned : 2 { Color::None };
 
-    HashMap<Board, int> m_previous_states;
+    bool m_white_can_castle_kingside : 1 { true };
+    bool m_white_can_castle_queenside : 1 { true };
+    bool m_black_can_castle_kingside : 1 { true };
+    bool m_black_can_castle_queenside : 1 { true };
+
+    // We trust that hash collisions will not happen to save lots of memory and time.
+    HashMap<unsigned, int> m_previous_states;
     Vector<Move> m_moves;
     friend struct Traits<Board>;
 };
@@ -296,7 +278,7 @@ void Board::generate_moves(Callback callback, Color color) const
 
 template<>
 struct AK::Traits<Chess::Piece> : public GenericTraits<Chess::Piece> {
-    static unsigned hash(Chess::Piece piece)
+    static unsigned hash(Chess::Piece const& piece)
     {
         return pair_int_hash(static_cast<u32>(piece.color), static_cast<u32>(piece.type));
     }
@@ -304,14 +286,12 @@ struct AK::Traits<Chess::Piece> : public GenericTraits<Chess::Piece> {
 
 template<>
 struct AK::Traits<Chess::Board> : public GenericTraits<Chess::Board> {
-    static unsigned hash(Chess::Board chess)
+    static unsigned hash(Chess::Board const& chess)
     {
         unsigned hash = 0;
         hash = pair_int_hash(hash, static_cast<u32>(chess.m_white_can_castle_queenside));
         hash = pair_int_hash(hash, static_cast<u32>(chess.m_white_can_castle_kingside));
         hash = pair_int_hash(hash, static_cast<u32>(chess.m_black_can_castle_queenside));
-        hash = pair_int_hash(hash, static_cast<u32>(chess.m_black_can_castle_kingside));
-
         hash = pair_int_hash(hash, static_cast<u32>(chess.m_black_can_castle_kingside));
 
         Chess::Square::for_each([&](Chess::Square sq) {

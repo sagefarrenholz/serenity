@@ -14,15 +14,18 @@ interface Document : Node {
     attribute DOMString cookie;
 
     Element? getElementById(DOMString id);
-    ArrayFromVector getElementsByName(DOMString name);
-    ArrayFromVector getElementsByTagName(DOMString tagName);
-    ArrayFromVector getElementsByClassName(DOMString className);
+    HTMLCollection getElementsByName(DOMString name);
+    HTMLCollection getElementsByTagName(DOMString tagName);
+    HTMLCollection getElementsByClassName(DOMString className);
 
-    readonly attribute Element? firstElementChild;
-    readonly attribute Element? lastElementChild;
-
-    Element? querySelector(DOMString selectors);
-    ArrayFromVector querySelectorAll(DOMString selectors);
+    readonly attribute HTMLCollection applets;
+    readonly attribute HTMLCollection anchors;
+    readonly attribute HTMLCollection images;
+    readonly attribute HTMLCollection embeds;
+    readonly attribute HTMLCollection plugins;
+    readonly attribute HTMLCollection links;
+    readonly attribute HTMLCollection forms;
+    readonly attribute HTMLCollection scripts;
 
     Element createElement(DOMString tagName);
     Element createElementNS(DOMString? namespace, DOMString qualifiedName);
@@ -30,6 +33,9 @@ interface Document : Node {
     Text createTextNode(DOMString data);
     Comment createComment(DOMString data);
     Range createRange();
+    Event createEvent(DOMString interface);
+
+    [CEReactions, ImplementedAs=adopt_node_binding] Node adoptNode(Node node);
 
     [ImplementedAs=style_sheets_for_bindings] readonly attribute StyleSheetList styleSheets;
 
@@ -44,6 +50,14 @@ interface Document : Node {
     readonly attribute DOMString readyState;
 
     attribute DOMString title;
+
+    // FIXME: These should all come from a ParentNode mixin
+    readonly attribute Element? firstElementChild;
+    readonly attribute Element? lastElementChild;
+    readonly attribute unsigned long childElementCount;
+
+    Element? querySelector(DOMString selectors);
+    ArrayFromVector querySelectorAll(DOMString selectors);
 
     // FIXME: These should all come from a GlobalEventHandlers mixin
     attribute EventHandler onabort;

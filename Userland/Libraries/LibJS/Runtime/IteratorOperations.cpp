@@ -1,46 +1,27 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/IteratorOperations.h>
 
 namespace JS {
 
-Object* get_iterator(GlobalObject& global_object, Value value, String hint, Value method)
+// 7.4.1 GetIterator ( obj [ , hint [ , method ] ] ), https://tc39.es/ecma262/#sec-getiterator
+Object* get_iterator(GlobalObject& global_object, Value value, IteratorHint hint, Value method)
 {
     auto& vm = global_object.vm();
-    VERIFY(hint == "sync" || hint == "async");
     if (method.is_empty()) {
-        if (hint == "async")
+        if (hint == IteratorHint::Async)
             TODO();
         auto object = value.to_object(global_object);
         if (!object)
             return {};
-        method = object->get(global_object.vm().well_known_symbol_iterator());
+        method = object->get(*vm.well_known_symbol_iterator());
         if (vm.exception())
             return {};
     }
@@ -58,10 +39,12 @@ Object* get_iterator(GlobalObject& global_object, Value value, String hint, Valu
     return &iterator.as_object();
 }
 
+// 7.4.2 IteratorNext ( iteratorRecord [ , value ] ), https://tc39.es/ecma262/#sec-iteratornext
 Object* iterator_next(Object& iterator, Value value)
 {
     auto& vm = iterator.vm();
     auto& global_object = iterator.global_object();
+
     auto next_method = iterator.get(vm.names.next);
     if (vm.exception())
         return {};
@@ -87,25 +70,111 @@ Object* iterator_next(Object& iterator, Value value)
     return &result.as_object();
 }
 
-void iterator_close([[maybe_unused]] Object& iterator)
+// 7.4.3 IteratorComplete ( iterResult ), https://tc39.es/ecma262/#sec-iteratorcomplete
+bool iterator_complete(GlobalObject& global_object, Object& iterator_result)
 {
-    TODO();
+    auto& vm = global_object.vm();
+    auto done = iterator_result.get(vm.names.done);
+    if (vm.exception())
+        return {};
+    return done.to_boolean();
 }
 
+// 7.4.4 IteratorValue ( iterResult ), https://tc39.es/ecma262/#sec-iteratorvalue
+Value iterator_value(GlobalObject& global_object, Object& iterator_result)
+{
+    auto& vm = global_object.vm();
+    auto value = iterator_result.get(vm.names.value);
+    if (vm.exception())
+        return {};
+    return value;
+}
+
+// 7.4.5 IteratorStep ( iteratorRecord ), https://tc39.es/ecma262/#sec-iteratorstep
+Object* iterator_step(GlobalObject& global_object, Object& iterator)
+{
+    auto& vm = global_object.vm();
+
+    auto result = iterator_next(iterator);
+    if (vm.exception())
+        return {};
+
+    auto done = iterator_complete(global_object, *result);
+    if (vm.exception())
+        return {};
+
+    if (done)
+        return nullptr;
+
+    return result;
+}
+
+// 7.4.6 IteratorClose ( iteratorRecord, completion ), https://tc39.es/ecma262/#sec-iteratorclose
+void iterator_close(Object& iterator)
+{
+    auto& vm = iterator.vm();
+    auto& global_object = iterator.global_object();
+
+    // Emulates `completion` behaviour
+    auto* completion_exception = vm.exception();
+    vm.clear_exception();
+    auto unwind_until = vm.unwind_until();
+    auto unwind_until_label = vm.unwind_until_label();
+    vm.stop_unwind();
+    auto restore_completion = [&]() {
+        if (completion_exception)
+            vm.set_exception(*completion_exception);
+        if (unwind_until != ScopeType::None)
+            vm.unwind(unwind_until, unwind_until_label);
+    };
+
+    auto return_method = Value(&iterator).get_method(global_object, vm.names.return_);
+    if (!return_method)
+        return restore_completion(); // If return is undefined, return Completion(completion).
+
+    auto result = vm.call(*return_method, &iterator);
+    if (completion_exception)
+        return restore_completion(); // If completion.[[Type]] is throw, return Completion(completion).
+    if (vm.exception())
+        return; // If innerResult.[[Type]] is throw, return Completion(innerResult).
+    if (!result.is_object()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::IterableReturnBadReturn);
+        return; // If Type(innerResult.[[Value]]) is not Object, throw a TypeError exception.
+    }
+    restore_completion(); // Return Completion(completion).
+}
+
+// 7.4.8 CreateIterResultObject ( value, done ), https://tc39.es/ecma262/#sec-createiterresultobject
 Value create_iterator_result_object(GlobalObject& global_object, Value value, bool done)
 {
     auto& vm = global_object.vm();
-    auto* object = Object::create_empty(global_object);
-    object->define_property(vm.names.value, value);
-    object->define_property(vm.names.done, Value(done));
+    auto* object = Object::create(global_object, global_object.object_prototype());
+    object->create_data_property_or_throw(vm.names.value, value);
+    object->create_data_property_or_throw(vm.names.done, Value(done));
     return object;
 }
 
-void get_iterator_values(GlobalObject& global_object, Value value, AK::Function<IterationDecision(Value)> callback)
+// 7.4.10 IterableToList ( items [ , method ] ), https://tc39.es/ecma262/#sec-iterabletolist
+MarkedValueList iterable_to_list(GlobalObject& global_object, Value iterable, Value method)
+{
+    auto& vm = global_object.vm();
+    MarkedValueList values(vm.heap());
+    get_iterator_values(
+        global_object, iterable, [&](auto value) {
+            if (vm.exception())
+                return IterationDecision::Break;
+            values.append(value);
+            return IterationDecision::Continue;
+        },
+        method, CloseOnAbrupt::No);
+    return values;
+}
+
+void get_iterator_values(GlobalObject& global_object, Value value, Function<IterationDecision(Value)> callback, Value method, CloseOnAbrupt close_on_abrupt)
 {
     auto& vm = global_object.vm();
 
-    auto iterator = get_iterator(global_object, value);
+    auto iterator = get_iterator(global_object, value, IteratorHint::Sync, method);
     if (!iterator)
         return;
 
@@ -126,8 +195,11 @@ void get_iterator_values(GlobalObject& global_object, Value value, AK::Function<
             return;
 
         auto result = callback(next_value);
-        if (result == IterationDecision::Break)
+        if (result == IterationDecision::Break) {
+            if (close_on_abrupt == CloseOnAbrupt::Yes)
+                iterator_close(*iterator);
             return;
+        }
         VERIFY(result == IterationDecision::Continue);
     }
 }

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -30,6 +10,7 @@
 #include <AK/NonnullRefPtr.h>
 #include <LibGfx/Font.h>
 #include <LibGfx/Forward.h>
+#include <LibWeb/CSS/ComputedValues.h>
 #include <LibWeb/CSS/LengthBox.h>
 #include <LibWeb/CSS/StyleValue.h>
 
@@ -41,7 +22,7 @@ public:
 
     explicit StyleProperties(const StyleProperties&);
 
-    static NonnullRefPtr<StyleProperties> create() { return adopt(*new StyleProperties); }
+    static NonnullRefPtr<StyleProperties> create() { return adopt_ref(*new StyleProperties); }
 
     NonnullRefPtr<StyleProperties> clone() const;
 
@@ -71,8 +52,17 @@ public:
     Optional<CSS::TextTransform> text_transform() const;
     Optional<CSS::ListStyleType> list_style_type() const;
     Optional<CSS::FlexDirection> flex_direction() const;
+    Optional<CSS::FlexWrap> flex_wrap() const;
+    Optional<CSS::FlexBasisData> flex_basis() const;
+    Optional<float> flex_grow_factor() const;
+    Optional<float> flex_shrink_factor() const;
+    Optional<float> opacity() const;
+    Optional<CSS::JustifyContent> justify_content() const;
     Optional<CSS::Overflow> overflow_x() const;
     Optional<CSS::Overflow> overflow_y() const;
+    Optional<CSS::Repeat> background_repeat_x() const;
+    Optional<CSS::Repeat> background_repeat_y() const;
+    Optional<CSS::BoxShadowData> box_shadow() const;
 
     const Gfx::Font& font() const
     {
@@ -94,6 +84,7 @@ private:
     Optional<CSS::Overflow> overflow(CSS::PropertyID) const;
 
     void load_font() const;
+    RefPtr<Gfx::Font> font_fallback(bool monospace, bool bold) const;
 
     mutable RefPtr<Gfx::Font> m_font;
 };

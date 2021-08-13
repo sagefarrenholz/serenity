@@ -1,27 +1,8 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Painter.h"
@@ -33,7 +14,9 @@
 #include <AK/Assertions.h>
 #include <AK/Debug.h>
 #include <AK/Function.h>
+#include <AK/Math.h>
 #include <AK/Memory.h>
+#include <AK/Queue.h>
 #include <AK/QuickSort.h>
 #include <AK/StdLibExtras.h>
 #include <AK/StringBuilder.h>
@@ -42,7 +25,8 @@
 #include <LibGfx/CharacterBitmap.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/Path.h>
-#include <math.h>
+#include <LibGfx/TextDirection.h>
+#include <LibGfx/TextLayout.h>
 #include <stdio.h>
 
 #if defined(__GNUC__) && !defined(__clang__)
@@ -172,7 +156,7 @@ void Painter::fill_rect_with_dither_pattern(const IntRect& a_rect, Color color_a
 
     for (int i = 0; i < rect.height(); ++i) {
         for (int j = 0; j < rect.width(); ++j) {
-            bool checkboard_use_a = (i & 1) ^ (j & 1);
+            bool checkboard_use_a = ((rect.left() + i) & 1) ^ ((rect.top() + j) & 1);
             if (checkboard_use_a && !color_a.alpha())
                 continue;
             if (!checkboard_use_a && !color_b.alpha())
@@ -194,12 +178,45 @@ void Painter::fill_rect_with_checkerboard(const IntRect& a_rect, const IntSize& 
     RGBA32* dst = m_target->scanline(rect.top()) + rect.left();
     const size_t dst_skip = m_target->pitch() / sizeof(RGBA32);
 
+    int first_cell_column = rect.x() / cell_size.width();
+    int prologue_length = min(rect.width(), cell_size.width() - (rect.x() % cell_size.width()));
+    int number_of_aligned_strips = (rect.width() - prologue_length) / cell_size.width();
+
     for (int i = 0; i < rect.height(); ++i) {
-        for (int j = 0; j < rect.width(); ++j) {
-            int cell_row = i / cell_size.height();
-            int cell_col = j / cell_size.width();
-            dst[j] = ((cell_row % 2) ^ (cell_col % 2)) ? color_light.value() : color_dark.value();
+        int y = rect.y() + i;
+        int cell_row = y / cell_size.height();
+        bool odd_row = cell_row & 1;
+
+        // Prologue: Paint the unaligned part up to the first intersection.
+        int j = 0;
+        int cell_column = first_cell_column;
+
+        {
+            bool odd_cell = cell_column & 1;
+            auto color = (odd_row ^ odd_cell) ? color_light.value() : color_dark.value();
+            fast_u32_fill(&dst[j], color, prologue_length);
+            j += prologue_length;
         }
+
+        // Aligned run: Paint the maximum number of aligned cell strips.
+        for (int strip = 0; strip < number_of_aligned_strips; ++strip) {
+            ++cell_column;
+            bool odd_cell = cell_column & 1;
+            auto color = (odd_row ^ odd_cell) ? color_light.value() : color_dark.value();
+            fast_u32_fill(&dst[j], color, cell_size.width());
+            j += cell_size.width();
+        }
+
+        // Epilogue: Paint the unaligned part until the end of the rect.
+        if (j != rect.width()) {
+            ++cell_column;
+            bool odd_cell = cell_column & 1;
+            auto color = (odd_row ^ odd_cell) ? color_light.value() : color_dark.value();
+            int epilogue_length = rect.width() - j;
+            fast_u32_fill(&dst[j], color, epilogue_length);
+            j += epilogue_length;
+        }
+
         dst += dst_skip;
     }
 }
@@ -262,6 +279,195 @@ void Painter::fill_rect_with_gradient(const IntRect& a_rect, Color gradient_star
     return fill_rect_with_gradient(Orientation::Horizontal, a_rect, gradient_start, gradient_end);
 }
 
+void Painter::fill_rect_with_rounded_corners(const IntRect& a_rect, Color color, int radius)
+{
+    return fill_rect_with_rounded_corners(a_rect, color, radius, radius, radius, radius);
+}
+
+void Painter::fill_rect_with_rounded_corners(const IntRect& a_rect, Color color, int top_left_radius, int top_right_radius, int bottom_right_radius, int bottom_left_radius)
+{
+    // Fasttrack for rects without any border radii
+    if (!top_left_radius && !top_right_radius && !bottom_right_radius && !bottom_left_radius)
+        return fill_rect(a_rect, color);
+
+    // Fully transparent, dont care.
+    if (color.alpha() == 0)
+        return;
+
+    // FIXME: Allow for elliptically rounded corners
+    IntRect top_left_corner = {
+        a_rect.x(),
+        a_rect.y(),
+        top_left_radius,
+        top_left_radius
+    };
+    IntRect top_right_corner = {
+        a_rect.x() + a_rect.width() - top_right_radius,
+        a_rect.y(),
+        top_right_radius,
+        top_right_radius
+    };
+    IntRect bottom_right_corner = {
+        a_rect.x() + a_rect.width() - bottom_right_radius,
+        a_rect.y() + a_rect.height() - bottom_right_radius,
+        bottom_right_radius,
+        bottom_right_radius
+    };
+    IntRect bottom_left_corner = {
+        a_rect.x(),
+        a_rect.y() + a_rect.height() - bottom_left_radius,
+        bottom_left_radius,
+        bottom_left_radius
+    };
+
+    IntRect top_rect = {
+        a_rect.x() + top_left_radius,
+        a_rect.y(),
+        a_rect.width() - top_left_radius - top_right_radius, top_left_radius
+    };
+    IntRect right_rect = {
+        a_rect.x() + a_rect.width() - top_right_radius,
+        a_rect.y() + top_right_radius,
+        top_right_radius,
+        a_rect.height() - top_right_radius - bottom_right_radius
+    };
+    IntRect bottom_rect = {
+        a_rect.x() + bottom_left_radius,
+        a_rect.y() + a_rect.height() - bottom_right_radius,
+        a_rect.width() - bottom_left_radius - bottom_right_radius,
+        bottom_right_radius
+    };
+    IntRect left_rect = {
+        a_rect.x(),
+        a_rect.y() + top_left_radius,
+        bottom_left_radius,
+        a_rect.height() - top_left_radius - bottom_left_radius
+    };
+
+    IntRect inner = {
+        left_rect.x() + left_rect.width(),
+        left_rect.y(),
+        a_rect.width() - left_rect.width() - right_rect.width(),
+        a_rect.height() - top_rect.height() - bottom_rect.height()
+    };
+
+    fill_rect(top_rect, color);
+    fill_rect(right_rect, color);
+    fill_rect(bottom_rect, color);
+    fill_rect(left_rect, color);
+
+    fill_rect(inner, color);
+
+    if (top_left_radius)
+        fill_rounded_corner(top_left_corner, top_left_radius, color, CornerOrientation::TopLeft);
+    if (top_right_radius)
+        fill_rounded_corner(top_right_corner, top_right_radius, color, CornerOrientation::TopRight);
+    if (bottom_left_radius)
+        fill_rounded_corner(bottom_left_corner, bottom_left_radius, color, CornerOrientation::BottomLeft);
+    if (bottom_right_radius)
+        fill_rounded_corner(bottom_right_corner, bottom_right_radius, color, CornerOrientation::BottomRight);
+}
+
+void Painter::fill_rounded_corner(const IntRect& a_rect, int radius, Color color, CornerOrientation orientation)
+{
+    // Care about clipping
+    auto translated_a_rect = a_rect.translated(translation());
+    auto rect = translated_a_rect.intersected(clip_rect());
+
+    if (rect.is_empty())
+        return;
+    VERIFY(m_target->rect().contains(rect));
+
+    // We got cut on the top!
+    // FIXME: Also account for clipping on the x-axis
+    int clip_offset = 0;
+    if (translated_a_rect.y() < rect.y())
+        clip_offset = rect.y() - translated_a_rect.y();
+
+    radius *= scale();
+    rect *= scale();
+    clip_offset *= scale();
+
+    RGBA32* dst = m_target->scanline(rect.top()) + rect.left();
+    const size_t dst_skip = m_target->pitch() / sizeof(RGBA32);
+
+    IntPoint circle_center;
+    switch (orientation) {
+    case CornerOrientation::TopLeft:
+        circle_center = { radius, radius + 1 };
+        break;
+    case CornerOrientation::TopRight:
+        circle_center = { -1, radius + 1 };
+        break;
+    case CornerOrientation::BottomRight:
+        circle_center = { -1, 0 };
+        break;
+    case CornerOrientation::BottomLeft:
+        circle_center = { radius, 0 };
+        break;
+    default:
+        VERIFY_NOT_REACHED();
+    }
+
+    int radius2 = radius * radius;
+    auto is_in_circle = [&](int x, int y) {
+        int distance2 = (circle_center.x() - x) * (circle_center.x() - x) + (circle_center.y() - y) * (circle_center.y() - y);
+        // To reflect the grid and be compatible with the draw_circle_arc_intersecting algorithm
+        // add 1/2 to the radius
+        return distance2 <= (radius2 + radius + 0.25);
+    };
+
+    for (int i = rect.height() - 1; i >= 0; --i) {
+        for (int j = 0; j < rect.width(); ++j)
+            if (is_in_circle(j, rect.height() - i + clip_offset))
+                dst[j] = Color::from_rgba(dst[j]).blend(color).value();
+        dst += dst_skip;
+    }
+}
+
+void Painter::draw_circle_arc_intersecting(const IntRect& a_rect, const IntPoint& center, int radius, Color color, int thickness)
+{
+    if (thickness <= 0)
+        return;
+
+    // Care about clipping
+    auto translated_a_rect = a_rect.translated(translation());
+    auto rect = translated_a_rect.intersected(clip_rect());
+
+    if (rect.is_empty())
+        return;
+    VERIFY(m_target->rect().contains(rect));
+
+    // We got cut on the top!
+    // FIXME: Also account for clipping on the x-axis
+    int clip_offset = 0;
+    if (translated_a_rect.y() < rect.y())
+        clip_offset = rect.y() - translated_a_rect.y();
+
+    if (thickness > radius)
+        thickness = radius;
+
+    int radius2 = radius * radius;
+    auto is_on_arc = [&](int x, int y) {
+        int distance2 = (center.x() - x) * (center.x() - x) + (center.y() - y) * (center.y() - y);
+        // Is within a circle of radius 1/2 around (x,y), so basically within the current pixel.
+        // Technically this is angle-dependent and should be between 1/2 and sqrt(2)/2, but this works.
+        return distance2 <= (radius2 + radius + 0.25) && distance2 >= (radius2 - radius + 0.25);
+    };
+
+    RGBA32* dst = m_target->scanline(rect.top()) + rect.left();
+    const size_t dst_skip = m_target->pitch() / sizeof(RGBA32);
+
+    for (int i = rect.height() - 1; i >= 0; --i) {
+        for (int j = 0; j < rect.width(); ++j)
+            if (is_on_arc(j, rect.height() - i + clip_offset))
+                dst[j] = Color::from_rgba(dst[j]).blend(color).value();
+        dst += dst_skip;
+    }
+
+    return draw_circle_arc_intersecting(a_rect, center, radius - 1, color, thickness - 1);
+}
+
 void Painter::fill_ellipse(const IntRect& a_rect, Color color)
 {
     VERIFY(scale() == 1); // FIXME: Add scaling support.
@@ -272,14 +478,10 @@ void Painter::fill_ellipse(const IntRect& a_rect, Color color)
 
     VERIFY(m_target->rect().contains(rect));
 
-    RGBA32* dst = m_target->scanline(rect.top()) + rect.left() + rect.width() / 2;
-    const size_t dst_skip = m_target->pitch() / sizeof(RGBA32);
-
-    for (int i = 0; i < rect.height(); i++) {
-        double y = rect.height() * 0.5 - i;
-        double x = rect.width() * sqrt(0.25 - y * y / rect.height() / rect.height());
-        fast_u32_fill(dst - (int)x, color.value(), 2 * (int)x);
-        dst += dst_skip;
+    for (int i = 1; i < a_rect.height(); i++) {
+        double y = a_rect.height() * 0.5 - i;
+        double x = a_rect.width() * sqrt(0.25 - y * y / a_rect.height() / a_rect.height());
+        draw_line({ a_rect.x() + a_rect.width() / 2 - (int)x, a_rect.y() + i }, { a_rect.x() + a_rect.width() / 2 + (int)x - 1, a_rect.y() + i }, color);
     }
 }
 
@@ -291,14 +493,14 @@ void Painter::draw_ellipse_intersecting(const IntRect& rect, Color color, int th
     double increment = M_PI / number_samples;
 
     auto ellipse_x = [&](double theta) -> int {
-        return (cos(theta) * rect.width() / sqrt(2)) + rect.center().x();
+        return (AK::cos(theta) * rect.width() / AK::sqrt(2.)) + rect.center().x();
     };
 
     auto ellipse_y = [&](double theta) -> int {
-        return (sin(theta) * rect.height() / sqrt(2)) + rect.center().y();
+        return (AK::sin(theta) * rect.height() / AK::sqrt(2.)) + rect.center().y();
     };
 
-    for (float theta = 0; theta < 2 * M_PI; theta += increment) {
+    for (auto theta = 0.0; theta < 2 * M_PI; theta += increment) {
         draw_line({ ellipse_x(theta), ellipse_y(theta) }, { ellipse_x(theta + increment), ellipse_y(theta + increment) }, color, thickness);
     }
 }
@@ -959,7 +1161,7 @@ FLATTEN void Painter::draw_glyph(const IntPoint& point, u32 code_point, Color co
 FLATTEN void Painter::draw_glyph(const IntPoint& point, u32 code_point, const Font& font, Color color)
 {
     auto glyph = font.glyph(code_point);
-    auto top_left = point + IntPoint(glyph.left_bearing(), font.glyph_height() - glyph.ascent());
+    auto top_left = point + IntPoint(glyph.left_bearing(), 0);
 
     if (glyph.is_glyph_bitmap()) {
         draw_bitmap(top_left, glyph.glyph_bitmap(), color);
@@ -1003,80 +1205,24 @@ void Painter::draw_glyph_or_emoji(const IntPoint& point, u32 code_point, const F
     draw_emoji(point, *emoji, font);
 }
 
-static void apply_elision(Utf8View& final_text, String& elided_text, size_t offset)
-{
-    StringBuilder builder;
-    builder.append(final_text.substring_view(0, offset).as_string());
-    builder.append("...");
-    elided_text = builder.to_string();
-    final_text = Utf8View { elided_text };
-}
-
-static void apply_elision(Utf32View& final_text, Vector<u32>& elided_text, size_t offset)
-{
-    elided_text.append(final_text.code_points(), offset);
-    elided_text.append('.');
-    elided_text.append('.');
-    elided_text.append('.');
-    final_text = Utf32View { elided_text.data(), elided_text.size() };
-}
-
-template<typename TextType>
-struct ElidedText {
-};
-
-template<>
-struct ElidedText<Utf8View> {
-    typedef String Type;
-};
-
-template<>
-struct ElidedText<Utf32View> {
-    typedef Vector<u32> Type;
-};
-
-template<typename TextType, typename DrawGlyphFunction>
-void draw_text_line(const IntRect& a_rect, const TextType& text, const Font& font, TextAlignment alignment, TextElision elision, DrawGlyphFunction draw_glyph)
+template<typename DrawGlyphFunction>
+void draw_text_line(IntRect const& a_rect, Utf8View const& text, Font const& font, TextAlignment alignment, TextDirection direction, DrawGlyphFunction draw_glyph)
 {
     auto rect = a_rect;
-    TextType final_text(text);
-    typename ElidedText<TextType>::Type elided_text;
-    if (elision == TextElision::Right) {
-        int text_width = font.width(final_text);
-        if (font.width(final_text) > rect.width()) {
-            int glyph_spacing = font.glyph_spacing();
-            int new_width = font.width("...");
-            if (new_width < text_width) {
-                size_t offset = 0;
-                for (auto it = text.begin(); it != text.end(); ++it) {
-                    auto code_point = *it;
-                    int glyph_width = font.glyph_or_emoji_width(code_point);
-                    // NOTE: Glyph spacing should not be added after the last glyph on the line,
-                    //       but since we are here because the last glyph does not actually fit on the line,
-                    //       we don't have to worry about spacing.
-                    int width_with_this_glyph_included = new_width + glyph_width + glyph_spacing;
-                    if (width_with_this_glyph_included > rect.width())
-                        break;
-                    new_width += glyph_width + glyph_spacing;
-                    offset = text.iterator_offset(it);
-                }
-                apply_elision(final_text, elided_text, offset);
-            }
-        }
-    }
 
     switch (alignment) {
     case TextAlignment::TopLeft:
     case TextAlignment::CenterLeft:
+    case TextAlignment::BottomLeft:
         break;
     case TextAlignment::TopRight:
     case TextAlignment::CenterRight:
     case TextAlignment::BottomRight:
-        rect.set_x(rect.right() - font.width(final_text));
+        rect.set_x(rect.right() - font.width(text));
         break;
     case TextAlignment::Center: {
         auto shrunken_rect = rect;
-        shrunken_rect.set_width(font.width(final_text));
+        shrunken_rect.set_width(font.width(text));
         shrunken_rect.center_within(rect);
         rect = shrunken_rect;
         break;
@@ -1087,31 +1233,29 @@ void draw_text_line(const IntRect& a_rect, const TextType& text, const Font& fon
 
     if (is_vertically_centered_text_alignment(alignment)) {
         int distance_from_baseline_to_bottom = (font.glyph_height() - 1) - font.baseline();
-        rect.move_by(0, distance_from_baseline_to_bottom / 2);
+        rect.translate_by(0, distance_from_baseline_to_bottom / 2);
     }
 
     auto point = rect.location();
     int space_width = font.glyph_width(' ') + font.glyph_spacing();
 
-    for (u32 code_point : final_text) {
+    if (direction == TextDirection::RTL) {
+        point.translate_by(rect.width(), 0); // Start drawing from the end
+        space_width = -space_width;          // Draw spaces backwards
+    }
+
+    for (u32 code_point : text) {
         if (code_point == ' ') {
-            point.move_by(space_width, 0);
+            point.translate_by(space_width, 0);
             continue;
         }
         IntSize glyph_size(font.glyph_or_emoji_width(code_point) + font.glyph_spacing(), font.glyph_height());
+        if (direction == TextDirection::RTL)
+            point.translate_by(-glyph_size.width(), 0); // If we are drawing right to left, we have to move backwards before drawing the glyph
         draw_glyph({ point, glyph_size }, code_point);
-        point.move_by(glyph_size.width(), 0);
+        if (direction == TextDirection::LTR)
+            point.translate_by(glyph_size.width(), 0);
     }
-}
-
-static inline size_t draw_text_iterator_offset(const Utf8View& text, const Utf8View::Iterator& it)
-{
-    return text.byte_offset_of(it);
-}
-
-static inline size_t draw_text_iterator_offset(const Utf32View& text, const Utf32View::Iterator& it)
-{
-    return it - text.begin();
 }
 
 static inline size_t draw_text_get_length(const Utf8View& text)
@@ -1119,41 +1263,175 @@ static inline size_t draw_text_get_length(const Utf8View& text)
     return text.byte_length();
 }
 
-static inline size_t draw_text_get_length(const Utf32View& text)
+Vector<DirectionalRun> Painter::split_text_into_directional_runs(Utf8View const& text, TextDirection initial_direction)
 {
-    return text.length();
-}
+    // FIXME: This is a *very* simplified version of the UNICODE BIDIRECTIONAL ALGORITHM (https://www.unicode.org/reports/tr9/), that can render most bidirectional text
+    //  but also produces awkward results in a large amount of edge cases. This should probably be replaced with a fully spec compliant implementation at some point.
 
-template<typename TextType, typename DrawGlyphFunction>
-void do_draw_text(const IntRect& rect, const TextType& text, const Font& font, TextAlignment alignment, TextElision elision, DrawGlyphFunction draw_glyph)
-{
-    Vector<TextType, 32> lines;
+    // FIXME: Support HTML "dir" attribute (how?)
+    u8 paragraph_embedding_level = initial_direction == TextDirection::LTR ? 0 : 1;
+    Vector<u8> embedding_levels;
+    embedding_levels.ensure_capacity(text.length());
+    for (size_t i = 0; i < text.length(); i++)
+        embedding_levels.unchecked_append(paragraph_embedding_level);
 
-    size_t start_of_current_line = 0;
-    for (auto it = text.begin(); it != text.end(); ++it) {
-        u32 code_point = *it;
-        if (code_point == '\n') {
-            auto offset = draw_text_iterator_offset(text, it);
-            TextType line = text.substring_view(start_of_current_line, offset - start_of_current_line);
-            lines.append(line);
-            start_of_current_line = offset + 1;
+    // FIXME: Support Explicit Directional Formatting Characters
+
+    Vector<BidirectionalClass> character_classes;
+    character_classes.ensure_capacity(text.length());
+    for (u32 code_point : text)
+        character_classes.unchecked_append(get_char_bidi_class(code_point));
+
+    // resolving weak types
+    BidirectionalClass paragraph_class = initial_direction == TextDirection::LTR ? BidirectionalClass::STRONG_LTR : BidirectionalClass::STRONG_RTL;
+    for (size_t i = 0; i < character_classes.size(); i++) {
+        if (character_classes[i] != BidirectionalClass::WEAK_SEPARATORS)
+            continue;
+        for (ssize_t j = i - 1; j >= 0; j--) {
+            auto character_class = character_classes[j];
+            if (character_class != BidirectionalClass::STRONG_RTL && character_class != BidirectionalClass::STRONG_LTR)
+                continue;
+            character_classes[i] = character_class;
+            break;
+        }
+        if (character_classes[i] == BidirectionalClass::WEAK_SEPARATORS)
+            character_classes[i] = paragraph_class;
+    }
+
+    // resolving neutral types
+    auto left_side = BidirectionalClass::NEUTRAL;
+    auto sequence_length = 0;
+    for (size_t i = 0; i < character_classes.size(); i++) {
+        auto character_class = character_classes[i];
+        if (left_side == BidirectionalClass::NEUTRAL) {
+            if (character_class != BidirectionalClass::NEUTRAL)
+                left_side = character_class;
+            else
+                character_classes[i] = paragraph_class;
+            continue;
+        }
+        if (character_class != BidirectionalClass::NEUTRAL) {
+            BidirectionalClass sequence_class;
+            if (bidi_class_to_direction(left_side) == bidi_class_to_direction(character_class)) {
+                sequence_class = left_side == BidirectionalClass::STRONG_RTL ? BidirectionalClass::STRONG_RTL : BidirectionalClass::STRONG_LTR;
+            } else {
+                sequence_class = paragraph_class;
+            }
+            for (auto j = 0; j < sequence_length; j++) {
+                character_classes[i - j - 1] = sequence_class;
+            }
+            sequence_length = 0;
+            left_side = character_class;
+        } else {
+            sequence_length++;
+        }
+    }
+    for (auto i = 0; i < sequence_length; i++)
+        character_classes[character_classes.size() - i - 1] = paragraph_class;
+
+    // resolving implicit levels
+    for (size_t i = 0; i < character_classes.size(); i++) {
+        auto character_class = character_classes[i];
+        if ((embedding_levels[i] % 2) == 0) {
+            if (character_class == BidirectionalClass::STRONG_RTL)
+                embedding_levels[i] += 1;
+            else if (character_class == BidirectionalClass::WEAK_NUMBERS || character_class == BidirectionalClass::WEAK_SEPARATORS)
+                embedding_levels[i] += 2;
+        } else {
+            if (character_class == BidirectionalClass::STRONG_LTR || character_class == BidirectionalClass::WEAK_NUMBERS || character_class == BidirectionalClass::WEAK_SEPARATORS)
+                embedding_levels[i] += 1;
         }
     }
 
-    if (start_of_current_line != draw_text_get_length(text)) {
-        TextType line = text.substring_view(start_of_current_line, draw_text_get_length(text) - start_of_current_line);
-        lines.append(line);
+    // splitting into runs
+    auto run_code_points_start = text.begin();
+    auto next_code_points_slice = [&](auto length) {
+        Vector<u32> run_code_points;
+        run_code_points.ensure_capacity(length);
+        for (size_t j = 0; j < length; ++j, ++run_code_points_start)
+            run_code_points.unchecked_append(*run_code_points_start);
+        return run_code_points;
+    };
+    Vector<DirectionalRun> runs;
+    size_t start = 0;
+    u8 level = embedding_levels[0];
+    for (size_t i = 1; i < embedding_levels.size(); ++i) {
+        if (embedding_levels[i] == level)
+            continue;
+        auto code_points_slice = next_code_points_slice(i - start);
+        runs.append({ move(code_points_slice), level });
+        start = i;
+        level = embedding_levels[i];
     }
+    auto code_points_slice = next_code_points_slice(embedding_levels.size() - start);
+    runs.append({ move(code_points_slice), level });
+
+    // reordering resolved levels
+    // FIXME: missing special cases for trailing whitespace characters
+    u8 minimum_level = 128;
+    u8 maximum_level = 0;
+    for (auto& run : runs) {
+        minimum_level = min(minimum_level, run.embedding_level());
+        maximum_level = max(minimum_level, run.embedding_level());
+    }
+    if ((minimum_level % 2) == 0)
+        minimum_level++;
+    auto runs_count = runs.size() - 1;
+    while (maximum_level <= minimum_level) {
+        size_t run_index = 0;
+        while (run_index < runs_count) {
+            while (run_index < runs_count && runs[run_index].embedding_level() < maximum_level)
+                run_index++;
+            auto reverse_start = run_index;
+            while (run_index <= runs_count && runs[run_index].embedding_level() >= maximum_level)
+                run_index++;
+            auto reverse_end = run_index - 1;
+            while (reverse_start < reverse_end) {
+                swap(runs[reverse_start], runs[reverse_end]);
+                reverse_start++;
+                reverse_end--;
+            }
+        }
+        maximum_level--;
+    }
+
+    // mirroring RTL mirror characters
+    for (auto& run : runs) {
+        if (run.direction() == TextDirection::LTR)
+            continue;
+        for (auto& code_point : run.code_points()) {
+            code_point = get_mirror_char(code_point);
+        }
+    }
+
+    return runs;
+}
+
+bool Painter::text_contains_bidirectional_text(Utf8View const& text, TextDirection initial_direction)
+{
+    for (u32 code_point : text) {
+        auto char_class = get_char_bidi_class(code_point);
+        if (char_class == BidirectionalClass::NEUTRAL)
+            continue;
+        if (bidi_class_to_direction(char_class) != initial_direction)
+            return true;
+    }
+    return false;
+}
+
+template<typename DrawGlyphFunction>
+void Painter::do_draw_text(IntRect const& rect, Utf8View const& text, Font const& font, TextAlignment alignment, TextElision elision, TextWrapping wrapping, DrawGlyphFunction draw_glyph)
+{
+    if (draw_text_get_length(text) == 0)
+        return;
+
+    TextLayout layout(&font, text, rect);
 
     static const int line_spacing = 4;
     int line_height = font.glyph_height() + line_spacing;
-    IntRect bounding_rect { 0, 0, 0, (static_cast<int>(lines.size()) * line_height) - line_spacing };
 
-    for (auto& line : lines) {
-        auto line_width = font.width(line);
-        if (line_width > bounding_rect.width())
-            bounding_rect.set_width(line_width);
-    }
+    auto lines = layout.lines(elision, wrapping, line_spacing);
+    auto bounding_rect = layout.bounding_rect(wrapping, line_spacing);
 
     switch (alignment) {
     case TextAlignment::TopLeft:
@@ -1171,6 +1449,9 @@ void do_draw_text(const IntRect& rect, const TextType& text, const Font& font, T
     case TextAlignment::Center:
         bounding_rect.center_within(rect);
         break;
+    case TextAlignment::BottomLeft:
+        bounding_rect.set_location({ rect.x(), (rect.bottom() + 1) - bounding_rect.height() });
+        break;
     case TextAlignment::BottomRight:
         bounding_rect.set_location({ (rect.right() + 1) - bounding_rect.width(), (rect.bottom() + 1) - bounding_rect.height() });
         break;
@@ -1180,61 +1461,96 @@ void do_draw_text(const IntRect& rect, const TextType& text, const Font& font, T
 
     for (size_t i = 0; i < lines.size(); ++i) {
         auto& line = lines[i];
+
         IntRect line_rect { bounding_rect.x(), bounding_rect.y() + static_cast<int>(i) * line_height, bounding_rect.width(), line_height };
         line_rect.intersect(rect);
-        draw_text_line(line_rect, line, font, alignment, elision, draw_glyph);
+
+        TextDirection line_direction = get_text_direction(line);
+        if (text_contains_bidirectional_text(Utf8View { line }, line_direction)) { // Slow Path: The line contains mixed BiDi classes
+            auto directional_runs = split_text_into_directional_runs(Utf8View { line }, line_direction);
+            auto current_dx = line_direction == TextDirection::LTR ? 0 : line_rect.width();
+            for (auto& directional_run : directional_runs) {
+                auto run_width = font.width(directional_run.text());
+                if (line_direction == TextDirection::RTL)
+                    current_dx -= run_width;
+                auto run_rect = line_rect.translated(current_dx, 0);
+                run_rect.set_width(run_width);
+
+                // NOTE: DirectionalRun returns Utf32View which isn't
+                // compatible with draw_text_line.
+                StringBuilder builder;
+                builder.append(directional_run.text());
+                auto text = Utf8View { builder.to_string() };
+
+                draw_text_line(run_rect, text, font, alignment, directional_run.direction(), draw_glyph);
+                if (line_direction == TextDirection::LTR)
+                    current_dx += run_width;
+            }
+        } else {
+            draw_text_line(line_rect, Utf8View { line }, font, alignment, line_direction, draw_glyph);
+        }
     }
 }
 
-void Painter::draw_text(const IntRect& rect, const StringView& text, TextAlignment alignment, Color color, TextElision elision)
+void Painter::draw_text(const IntRect& rect, const StringView& text, TextAlignment alignment, Color color, TextElision elision, TextWrapping wrapping)
 {
-    draw_text(rect, text, font(), alignment, color, elision);
+    draw_text(rect, text, font(), alignment, color, elision, wrapping);
 }
 
-void Painter::draw_text(const IntRect& rect, const Utf32View& text, TextAlignment alignment, Color color, TextElision elision)
+void Painter::draw_text(const IntRect& rect, const Utf32View& text, TextAlignment alignment, Color color, TextElision elision, TextWrapping wrapping)
 {
-    draw_text(rect, text, font(), alignment, color, elision);
+    draw_text(rect, text, font(), alignment, color, elision, wrapping);
 }
 
-void Painter::draw_text(const IntRect& rect, const StringView& raw_text, const Font& font, TextAlignment alignment, Color color, TextElision elision)
+void Painter::draw_text(const IntRect& rect, const StringView& raw_text, const Font& font, TextAlignment alignment, Color color, TextElision elision, TextWrapping wrapping)
 {
     Utf8View text { raw_text };
-    do_draw_text(rect, Utf8View(text), font, alignment, elision, [&](const IntRect& r, u32 code_point) {
+    do_draw_text(rect, text, font, alignment, elision, wrapping, [&](const IntRect& r, u32 code_point) {
         draw_glyph_or_emoji(r.location(), code_point, font, color);
     });
 }
 
-void Painter::draw_text(const IntRect& rect, const Utf32View& text, const Font& font, TextAlignment alignment, Color color, TextElision elision)
+void Painter::draw_text(const IntRect& rect, const Utf32View& raw_text, const Font& font, TextAlignment alignment, Color color, TextElision elision, TextWrapping wrapping)
 {
-    do_draw_text(rect, text, font, alignment, elision, [&](const IntRect& r, u32 code_point) {
+    // FIXME: UTF-32 should eventually be completely removed, but for the time
+    // being some places might depend on it, so we do some internal conversion.
+    StringBuilder builder;
+    builder.append(raw_text);
+    auto text = Utf8View { builder.string_view() };
+    do_draw_text(rect, text, font, alignment, elision, wrapping, [&](const IntRect& r, u32 code_point) {
         draw_glyph_or_emoji(r.location(), code_point, font, color);
     });
 }
 
-void Painter::draw_text(Function<void(const IntRect&, u32)> draw_one_glyph, const IntRect& rect, const StringView& raw_text, const Font& font, TextAlignment alignment, TextElision elision)
+void Painter::draw_text(Function<void(const IntRect&, u32)> draw_one_glyph, const IntRect& rect, const Utf8View& text, const Font& font, TextAlignment alignment, TextElision elision, TextWrapping wrapping)
+{
+    VERIFY(scale() == 1); // FIXME: Add scaling support.
+
+    do_draw_text(rect, text, font, alignment, elision, wrapping, [&](const IntRect& r, u32 code_point) {
+        draw_one_glyph(r, code_point);
+    });
+}
+
+void Painter::draw_text(Function<void(const IntRect&, u32)> draw_one_glyph, const IntRect& rect, const StringView& raw_text, const Font& font, TextAlignment alignment, TextElision elision, TextWrapping wrapping)
 {
     VERIFY(scale() == 1); // FIXME: Add scaling support.
 
     Utf8View text { raw_text };
-    do_draw_text(rect, text, font, alignment, elision, [&](const IntRect& r, u32 code_point) {
+    do_draw_text(rect, text, font, alignment, elision, wrapping, [&](const IntRect& r, u32 code_point) {
         draw_one_glyph(r, code_point);
     });
 }
 
-void Painter::draw_text(Function<void(const IntRect&, u32)> draw_one_glyph, const IntRect& rect, const Utf8View& text, const Font& font, TextAlignment alignment, TextElision elision)
+void Painter::draw_text(Function<void(const IntRect&, u32)> draw_one_glyph, const IntRect& rect, const Utf32View& raw_text, const Font& font, TextAlignment alignment, TextElision elision, TextWrapping wrapping)
 {
     VERIFY(scale() == 1); // FIXME: Add scaling support.
 
-    do_draw_text(rect, text, font, alignment, elision, [&](const IntRect& r, u32 code_point) {
-        draw_one_glyph(r, code_point);
-    });
-}
-
-void Painter::draw_text(Function<void(const IntRect&, u32)> draw_one_glyph, const IntRect& rect, const Utf32View& text, const Font& font, TextAlignment alignment, TextElision elision)
-{
-    VERIFY(scale() == 1); // FIXME: Add scaling support.
-
-    do_draw_text(rect, text, font, alignment, elision, [&](const IntRect& r, u32 code_point) {
+    // FIXME: UTF-32 should eventually be completely removed, but for the time
+    // being some places might depend on it, so we do some internal conversion.
+    StringBuilder builder;
+    builder.append(raw_text);
+    auto text = Utf8View { builder.string_view() };
+    do_draw_text(rect, text, font, alignment, elision, wrapping, [&](const IntRect& r, u32 code_point) {
         draw_one_glyph(r, code_point);
     });
 }
@@ -1244,7 +1560,7 @@ void Painter::set_pixel(const IntPoint& p, Color color)
     VERIFY(scale() == 1); // FIXME: Add scaling support.
 
     auto point = p;
-    point.move_by(state().translation);
+    point.translate_by(state().translation);
     if (!clip_rect().contains(point))
         return;
     m_target->scanline(point.y())[point.x()] = color.value();
@@ -1315,16 +1631,21 @@ void Painter::draw_physical_pixel(const IntPoint& physical_position, Color color
     fill_physical_rect(rect, color);
 }
 
-void Painter::draw_line(const IntPoint& p1, const IntPoint& p2, Color color, int thickness, LineStyle style)
+void Painter::draw_line(IntPoint const& a_p1, IntPoint const& a_p2, Color color, int thickness, LineStyle style, Color alternate_color)
 {
     if (color.alpha() == 0)
         return;
 
     auto clip_rect = this->clip_rect() * scale();
 
+    auto const p1 = thickness > 1 ? a_p1.translated(-(thickness / 2), -(thickness / 2)) : a_p1;
+    auto const p2 = thickness > 1 ? a_p2.translated(-(thickness / 2), -(thickness / 2)) : a_p2;
+
     auto point1 = to_physical(p1);
     auto point2 = to_physical(p2);
     thickness *= scale();
+
+    auto alternate_color_is_transparent = alternate_color == Color::Transparent;
 
     // Special case: vertical line.
     if (point1.x() == point2.x()) {
@@ -1347,6 +1668,11 @@ void Painter::draw_line(const IntPoint& p1, const IntPoint& p2, Color color, int
                 draw_physical_pixel({ x, y }, color, thickness);
                 draw_physical_pixel({ x, min(y + thickness, max_y) }, color, thickness);
                 draw_physical_pixel({ x, min(y + thickness * 2, max_y) }, color, thickness);
+                if (!alternate_color_is_transparent) {
+                    draw_physical_pixel({ x, min(y + thickness * 3, max_y) }, alternate_color, thickness);
+                    draw_physical_pixel({ x, min(y + thickness * 4, max_y) }, alternate_color, thickness);
+                    draw_physical_pixel({ x, min(y + thickness * 5, max_y) }, alternate_color, thickness);
+                }
             }
         } else {
             for (int y = min_y; y <= max_y; y += thickness)
@@ -1376,6 +1702,11 @@ void Painter::draw_line(const IntPoint& p1, const IntPoint& p2, Color color, int
                 draw_physical_pixel({ x, y }, color, thickness);
                 draw_physical_pixel({ min(x + thickness, max_x), y }, color, thickness);
                 draw_physical_pixel({ min(x + thickness * 2, max_x), y }, color, thickness);
+                if (!alternate_color_is_transparent) {
+                    draw_physical_pixel({ min(x + thickness * 3, max_x), y }, alternate_color, thickness);
+                    draw_physical_pixel({ min(x + thickness * 4, max_x), y }, alternate_color, thickness);
+                    draw_physical_pixel({ min(x + thickness * 5, max_x), y }, alternate_color, thickness);
+                }
             }
         } else {
             for (int x = min_x; x <= max_x; x += thickness)
@@ -1387,8 +1718,8 @@ void Painter::draw_line(const IntPoint& p1, const IntPoint& p2, Color color, int
     // FIXME: Implement dotted/dashed diagonal lines.
     VERIFY(style == LineStyle::Solid);
 
-    const double adx = abs(point2.x() - point1.x());
-    const double ady = abs(point2.y() - point1.y());
+    const int adx = abs(point2.x() - point1.x());
+    const int ady = abs(point2.y() - point1.y());
 
     if (adx > ady) {
         if (point1.x() > point2.x())
@@ -1399,52 +1730,37 @@ void Painter::draw_line(const IntPoint& p1, const IntPoint& p2, Color color, int
     }
 
     // FIXME: Implement clipping below.
-    const double dx = point2.x() - point1.x();
-    const double dy = point2.y() - point1.y();
-    double error = 0;
+    const int dx = point2.x() - point1.x();
+    const int dy = point2.y() - point1.y();
+    int error = 0;
 
     if (dx > dy) {
-        const double y_step = dy == 0 ? 0 : (dy > 0 ? 1 : -1);
-        const double delta_error = fabs(dy / dx);
+        const int y_step = dy == 0 ? 0 : (dy > 0 ? 1 : -1);
+        const int delta_error = 2 * abs(dy);
         int y = point1.y();
         for (int x = point1.x(); x <= point2.x(); ++x) {
             if (clip_rect.contains(x, y))
                 draw_physical_pixel({ x, y }, color, thickness);
             error += delta_error;
-            if (error >= 0.5) {
-                y = (double)y + y_step;
-                error -= 1.0;
+            if (error >= dx) {
+                y += y_step;
+                error -= 2 * dx;
             }
         }
     } else {
-        const double x_step = dx == 0 ? 0 : (dx > 0 ? 1 : -1);
-        const double delta_error = fabs(dx / dy);
+        const int x_step = dx == 0 ? 0 : (dx > 0 ? 1 : -1);
+        const int delta_error = 2 * abs(dx);
         int x = point1.x();
         for (int y = point1.y(); y <= point2.y(); ++y) {
             if (clip_rect.contains(x, y))
                 draw_physical_pixel({ x, y }, color, thickness);
             error += delta_error;
-            if (error >= 0.5) {
-                x = (double)x + x_step;
-                error -= 1.0;
+            if (error >= dy) {
+                x += x_step;
+                error -= 2 * dy;
             }
         }
     }
-}
-
-static void split_quadratic_bezier_curve(const FloatPoint& original_control, const FloatPoint& p1, const FloatPoint& p2, Function<void(const FloatPoint&, const FloatPoint&)>& callback)
-{
-    auto po1_midpoint = original_control + p1;
-    po1_midpoint /= 2;
-
-    auto po2_midpoint = original_control + p2;
-    po2_midpoint /= 2;
-
-    auto new_segment = po1_midpoint + po2_midpoint;
-    new_segment /= 2;
-
-    Painter::for_each_line_segment_on_bezier_curve(po1_midpoint, p1, new_segment, callback);
-    Painter::for_each_line_segment_on_bezier_curve(po2_midpoint, new_segment, p2, callback);
 }
 
 static bool can_approximate_bezier_curve(const FloatPoint& p1, const FloatPoint& p2, const FloatPoint& control)
@@ -1467,55 +1783,41 @@ static bool can_approximate_bezier_curve(const FloatPoint& p1, const FloatPoint&
 // static
 void Painter::for_each_line_segment_on_bezier_curve(const FloatPoint& control_point, const FloatPoint& p1, const FloatPoint& p2, Function<void(const FloatPoint&, const FloatPoint&)>& callback)
 {
-    if (can_approximate_bezier_curve(p1, p2, control_point)) {
-        callback(p1, p2);
-    } else {
-        split_quadratic_bezier_curve(control_point, p1, p2, callback);
+    struct SegmentDescriptor {
+        FloatPoint control_point;
+        FloatPoint p1;
+        FloatPoint p2;
+    };
+
+    static constexpr auto split_quadratic_bezier_curve = [](const FloatPoint& original_control, const FloatPoint& p1, const FloatPoint& p2, auto& segments) {
+        auto po1_midpoint = original_control + p1;
+        po1_midpoint /= 2;
+
+        auto po2_midpoint = original_control + p2;
+        po2_midpoint /= 2;
+
+        auto new_segment = po1_midpoint + po2_midpoint;
+        new_segment /= 2;
+
+        segments.enqueue({ po1_midpoint, p1, new_segment });
+        segments.enqueue({ po2_midpoint, new_segment, p2 });
+    };
+
+    Queue<SegmentDescriptor> segments;
+    segments.enqueue({ control_point, p1, p2 });
+    while (!segments.is_empty()) {
+        auto segment = segments.dequeue();
+
+        if (can_approximate_bezier_curve(segment.p1, segment.p2, segment.control_point))
+            callback(segment.p1, segment.p2);
+        else
+            split_quadratic_bezier_curve(segment.control_point, segment.p1, segment.p2, segments);
     }
 }
 
 void Painter::for_each_line_segment_on_bezier_curve(const FloatPoint& control_point, const FloatPoint& p1, const FloatPoint& p2, Function<void(const FloatPoint&, const FloatPoint&)>&& callback)
 {
     for_each_line_segment_on_bezier_curve(control_point, p1, p2, callback);
-}
-
-static void split_elliptical_arc(const FloatPoint& p1, const FloatPoint& p2, const FloatPoint& center, const FloatPoint radii, float x_axis_rotation, float theta_1, float theta_delta, Function<void(const FloatPoint&, const FloatPoint&)>& callback)
-{
-    auto half_theta_delta = theta_delta / 2;
-    auto theta_mid = theta_1 + half_theta_delta;
-
-    auto xc = cosf(x_axis_rotation);
-    auto xs = sinf(x_axis_rotation);
-    auto tc = cosf(theta_1 + half_theta_delta);
-    auto ts = sinf(theta_1 + half_theta_delta);
-
-    auto x2 = xc * radii.x() * tc - xs * radii.y() * ts + center.x();
-    auto y2 = xs * radii.x() * tc + xc * radii.y() * ts + center.y();
-
-    FloatPoint mid_point = { x2, y2 };
-
-    Painter::for_each_line_segment_on_elliptical_arc(p1, mid_point, center, radii, x_axis_rotation, theta_1, half_theta_delta, callback);
-    Painter::for_each_line_segment_on_elliptical_arc(mid_point, p2, center, radii, x_axis_rotation, theta_mid, half_theta_delta, callback);
-}
-
-static bool can_approximate_elliptical_arc(const FloatPoint& p1, const FloatPoint& p2, const FloatPoint& center, const FloatPoint radii, float x_axis_rotation, float theta_1, float theta_delta)
-{
-    constexpr static float tolerance = 1;
-
-    auto half_theta_delta = theta_delta / 2.0f;
-
-    auto xc = cosf(x_axis_rotation);
-    auto xs = sinf(x_axis_rotation);
-    auto tc = cosf(theta_1 + half_theta_delta);
-    auto ts = sinf(theta_1 + half_theta_delta);
-
-    auto x2 = xc * radii.x() * tc - xs * radii.y() * ts + center.x();
-    auto y2 = xs * radii.x() * tc + xc * radii.y() * ts + center.y();
-
-    auto ellipse_mid_point = FloatPoint { x2, y2 };
-    auto line_mid_point = p1 + (p2 - p1) / 2.0f;
-
-    return ellipse_mid_point.distance_from(line_mid_point) < tolerance;
 }
 
 void Painter::draw_quadratic_bezier_curve(const IntPoint& control_point, const IntPoint& p1, const IntPoint& p2, Color color, int thickness, LineStyle style)
@@ -1530,11 +1832,51 @@ void Painter::draw_quadratic_bezier_curve(const IntPoint& control_point, const I
 // static
 void Painter::for_each_line_segment_on_elliptical_arc(const FloatPoint& p1, const FloatPoint& p2, const FloatPoint& center, const FloatPoint radii, float x_axis_rotation, float theta_1, float theta_delta, Function<void(const FloatPoint&, const FloatPoint&)>& callback)
 {
-    if (can_approximate_elliptical_arc(p1, p2, center, radii, x_axis_rotation, theta_1, theta_delta)) {
-        callback(p1, p2);
-    } else {
-        split_elliptical_arc(p1, p2, center, radii, x_axis_rotation, theta_1, theta_delta, callback);
+    if (radii.x() <= 0 || radii.y() <= 0)
+        return;
+
+    auto start = p1;
+    auto end = p2;
+
+    if (theta_delta < 0) {
+        swap(start, end);
+        theta_1 = theta_1 + theta_delta;
+        theta_delta = fabsf(theta_delta);
     }
+
+    auto relative_start = start - center;
+
+    auto a = radii.x();
+    auto b = radii.y();
+
+    // The segments are at most 1 long
+    auto largest_radius = max(a, b);
+    double theta_step = atan(1 / (double)largest_radius);
+
+    FloatPoint current_point = relative_start;
+    FloatPoint next_point = { 0, 0 };
+
+    auto sin_x_axis = AK::sin(x_axis_rotation);
+    auto cos_x_axis = AK::cos(x_axis_rotation);
+    auto rotate_point = [sin_x_axis, cos_x_axis](FloatPoint& p) {
+        auto original_x = p.x();
+        auto original_y = p.y();
+
+        p.set_x(original_x * cos_x_axis - original_y * sin_x_axis);
+        p.set_y(original_x * sin_x_axis + original_y * cos_x_axis);
+    };
+
+    for (double theta = theta_1; theta <= ((double)theta_1 + (double)theta_delta); theta += theta_step) {
+        next_point.set_x(a * AK::cos<float>(theta));
+        next_point.set_y(b * AK::sin<float>(theta));
+        rotate_point(next_point);
+
+        callback(current_point + center, next_point + center);
+
+        current_point = next_point;
+    }
+
+    callback(current_point + center, end);
 }
 
 // static
@@ -1689,14 +2031,14 @@ void Painter::fill_path(Path& path, Color color, WindingRule winding_rule)
             quick_sort(active_list, [](const auto& line0, const auto& line1) {
                 return line1.x < line0.x;
             });
-#if FILL_PATH_DEBUG
-            if ((int)scanline % 10 == 0) {
-                draw_text(IntRect(active_list.last().x - 20, scanline, 20, 10), String::number((int)scanline));
+            if constexpr (FILL_PATH_DEBUG) {
+                if ((int)scanline % 10 == 0) {
+                    draw_text(IntRect(active_list.last().x - 20, scanline, 20, 10), String::number((int)scanline));
+                }
             }
-#endif
 
             if (active_list.size() > 1) {
-                auto winding_number { 0 };
+                auto winding_number { winding_rule == WindingRule::Nonzero ? 1 : 0 };
                 for (size_t i = 1; i < active_list.size(); ++i) {
                     auto& previous = active_list[i - 1];
                     auto& current = active_list[i];
@@ -1761,12 +2103,12 @@ void Painter::fill_path(Path& path, Color color, WindingRule winding_rule)
         }
     }
 
-#if FILL_PATH_DEBUG
-    size_t i { 0 };
-    for (auto& segment : segments) {
-        draw_line(Point<int>(segment.from), Point<int>(segment.to), Color::from_hsv(i++ * 360.0 / segments.size(), 1.0, 1.0), 1);
+    if constexpr (FILL_PATH_DEBUG) {
+        size_t i { 0 };
+        for (auto& segment : segments) {
+            draw_line(Point<int>(segment.from), Point<int>(segment.to), Color::from_hsv(i++ * 360.0 / segments.size(), 1.0, 1.0), 1);
+        }
     }
-#endif
 }
 
 void Painter::blit_disabled(const IntPoint& location, const Gfx::Bitmap& bitmap, const IntRect& rect, const Palette& palette)
@@ -1806,4 +2148,51 @@ void Painter::blit_tiled(const IntRect& dst_rect, const Gfx::Bitmap& bitmap, con
     }
 }
 
+String parse_ampersand_string(const StringView& raw_text, Optional<size_t>* underline_offset)
+{
+    if (raw_text.is_empty())
+        return String::empty();
+
+    StringBuilder builder;
+
+    for (size_t i = 0; i < raw_text.length(); ++i) {
+        if (raw_text[i] == '&') {
+            if (i != (raw_text.length() - 1) && raw_text[i + 1] == '&') {
+                builder.append(raw_text[i]);
+                ++i;
+            } else if (underline_offset && !(*underline_offset).has_value()) {
+                *underline_offset = i;
+            }
+            continue;
+        }
+        builder.append(raw_text[i]);
+    }
+    return builder.to_string();
+}
+
+void Gfx::Painter::draw_ui_text(const Gfx::IntRect& rect, const StringView& text, const Gfx::Font& font, Gfx::TextAlignment text_alignment, Gfx::Color color)
+{
+    Optional<size_t> underline_offset;
+    auto name_to_draw = parse_ampersand_string(text, &underline_offset);
+
+    Gfx::IntRect text_rect { 0, 0, font.width(name_to_draw), font.glyph_height() };
+    text_rect.align_within(rect, text_alignment);
+
+    draw_text(text_rect, name_to_draw, font, text_alignment, color);
+
+    if (underline_offset.has_value()) {
+        Utf8View utf8_view { name_to_draw };
+        int width = 0;
+        for (auto it = utf8_view.begin(); it != utf8_view.end(); ++it) {
+            if (utf8_view.byte_offset_of(it) >= underline_offset.value()) {
+                int y = text_rect.bottom() + 1;
+                int x1 = text_rect.left() + width;
+                int x2 = x1 + font.glyph_or_emoji_width(*it);
+                draw_line({ x1, y }, { x2, y }, color);
+                break;
+            }
+            width += font.glyph_or_emoji_width(*it) + font.glyph_spacing();
+        }
+    }
+}
 }

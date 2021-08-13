@@ -1,44 +1,24 @@
 /*
- * Copyright (c) 2020, The SerenityOS developers.
- * All rights reserved.
+ * Copyright (c) 2020, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Atomic.h>
 #include <AK/RefCounted.h>
-#include <Kernel/SpinLock.h>
+#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Memory/VMObject.h>
 #include <Kernel/Thread.h>
-#include <Kernel/VM/VMObject.h>
 
 namespace Kernel {
 
 class FutexQueue : public Thread::BlockCondition
     , public RefCounted<FutexQueue>
-    , public VMObjectDeletedHandler {
+    , public Memory::VMObjectDeletedHandler {
 public:
-    FutexQueue(FlatPtr user_address_or_offset, VMObject* vmobject = nullptr);
+    FutexQueue(FlatPtr user_address_or_offset, Memory::VMObject* vmobject = nullptr);
     virtual ~FutexQueue();
 
     u32 wake_n_requeue(u32, const Function<FutexQueue*()>&, u32, bool&, bool&);
@@ -51,7 +31,18 @@ public:
         return Thread::current()->block<Thread::FutexBlocker>(timeout, *this, forward<Args>(args)...);
     }
 
-    virtual void vmobject_deleted(VMObject&) override;
+    virtual void vmobject_deleted(Memory::VMObject&) override;
+
+    bool queue_imminent_wait();
+    void did_remove();
+    bool try_remove();
+
+    bool is_empty_and_no_imminent_waits()
+    {
+        ScopedSpinLock lock(m_lock);
+        return is_empty_and_no_imminent_waits_locked();
+    }
+    bool is_empty_and_no_imminent_waits_locked();
 
 protected:
     virtual bool should_add_blocker(Thread::Blocker& b, void* data) override;
@@ -60,8 +51,10 @@ private:
     // For private futexes we just use the user space address.
     // But for global futexes we use the offset into the VMObject
     const FlatPtr m_user_address_or_offset;
-    WeakPtr<VMObject> m_vmobject;
+    WeakPtr<Memory::VMObject> m_vmobject;
     const bool m_is_global;
+    size_t m_imminent_waits { 1 }; // We only create this object if we're going to be waiting, so start out with 1
+    bool m_was_removed { false };
 };
 
 }

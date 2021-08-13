@@ -1,30 +1,11 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
+#include <AK/ExtraMathConstants.h>
 #include <AK/StringBuilder.h>
 #include <LibGfx/Painter.h>
 #include <LibGfx/Path.h>
@@ -36,7 +17,7 @@
 
 namespace Web::SVG {
 
-static void print_instruction(const PathInstruction& instruction)
+[[maybe_unused]] static void print_instruction(const PathInstruction& instruction)
 {
     VERIFY(PATH_DEBUG);
 
@@ -298,23 +279,23 @@ Vector<Vector<float>> PathDataParser::parse_coordinate_pair_sequence()
 Vector<float> PathDataParser::parse_coordinate_pair_double()
 {
     Vector<float> coordinates;
-    coordinates.append(parse_coordinate_pair());
+    coordinates.extend(parse_coordinate_pair());
     if (match_comma_whitespace())
         parse_comma_whitespace();
-    coordinates.append(parse_coordinate_pair());
+    coordinates.extend(parse_coordinate_pair());
     return coordinates;
 }
 
 Vector<float> PathDataParser::parse_coordinate_pair_triplet()
 {
     Vector<float> coordinates;
-    coordinates.append(parse_coordinate_pair());
+    coordinates.extend(parse_coordinate_pair());
     if (match_comma_whitespace())
         parse_comma_whitespace();
-    coordinates.append(parse_coordinate_pair());
+    coordinates.extend(parse_coordinate_pair());
     if (match_comma_whitespace())
         parse_comma_whitespace();
-    coordinates.append(parse_coordinate_pair());
+    coordinates.extend(parse_coordinate_pair());
     return coordinates;
 }
 
@@ -335,7 +316,7 @@ Vector<float> PathDataParser::parse_elliptical_arg_argument()
     numbers.append(parse_flag());
     if (match_comma_whitespace())
         parse_comma_whitespace();
-    numbers.append(parse_coordinate_pair());
+    numbers.extend(parse_coordinate_pair());
 
     return numbers;
 }
@@ -390,8 +371,34 @@ float PathDataParser::parse_fractional_constant()
 float PathDataParser::parse_number()
 {
     auto number = parse_fractional_constant();
-    if (match('e') || match('E'))
-        TODO();
+
+    if (!match('e') && !match('E'))
+        return number;
+    consume();
+
+    auto exponent_sign = parse_sign();
+
+    StringBuilder exponent_builder;
+    while (!done() && isdigit(ch()))
+        exponent_builder.append(consume());
+    VERIFY(exponent_builder.length() > 0);
+
+    auto exponent = exponent_builder.to_string().to_int().value();
+
+    // Fast path: If the number is 0, there's no point in computing the exponentiation.
+    if (number == 0)
+        return number;
+
+    if (exponent_sign < 0) {
+        for (int i = 0; i < exponent; ++i) {
+            number /= 10;
+        }
+    } else if (exponent_sign > 0) {
+        for (int i = 0; i < exponent; ++i) {
+            number *= 10;
+        }
+    }
+
     return number;
 }
 
@@ -441,7 +448,7 @@ RefPtr<Layout::Node> SVGPathElement::create_layout_node()
     auto style = document().style_resolver().resolve_style(*this);
     if (style->display() == CSS::Display::None)
         return nullptr;
-    return adopt(*new Layout::SVGPathBox(document(), *this, move(style)));
+    return adopt_ref(*new Layout::SVGPathBox(document(), *this, move(style)));
 }
 
 void SVGPathElement::parse_attribute(const FlyString& name, const String& value)
@@ -516,13 +523,9 @@ Gfx::Path& SVGPathElement::get_path()
         case PathInstructionType::EllipticalArc: {
             double rx = data[0];
             double ry = data[1];
-            double x_axis_rotation = data[2] * M_DEG2RAD;
+            double x_axis_rotation = double { data[2] } * M_DEG2RAD;
             double large_arc_flag = data[3];
             double sweep_flag = data[4];
-
-            double x_axis_rotation_c = cos(x_axis_rotation);
-            double x_axis_rotation_s = sin(x_axis_rotation);
-
             auto& last_point = path.segments().last().point();
 
             Gfx::FloatPoint next_point;
@@ -533,70 +536,7 @@ Gfx::Path& SVGPathElement::get_path()
                 next_point = { data[5] + last_point.x(), data[6] + last_point.y() };
             }
 
-            // Step 1 of out-of-range radii correction
-            if (rx == 0.0 || ry == 0.0) {
-                path.line_to(next_point);
-                break;
-            }
-
-            // Step 2 of out-of-range radii correction
-            if (rx < 0)
-                rx *= -1.0;
-            if (ry < 0)
-                ry *= -1.0;
-
-            // Find (cx, cy), theta_1, theta_delta
-            // Step 1: Compute (x1', y1')
-            auto x_avg = (last_point.x() - next_point.x()) / 2.0f;
-            auto y_avg = (last_point.y() - next_point.y()) / 2.0f;
-            auto x1p = x_axis_rotation_c * x_avg + x_axis_rotation_s * y_avg;
-            auto y1p = -x_axis_rotation_s * x_avg + x_axis_rotation_c * y_avg;
-
-            // Step 2: Compute (cx', cy')
-            double x1p_sq = pow(x1p, 2.0);
-            double y1p_sq = pow(y1p, 2.0);
-            double rx_sq = pow(rx, 2.0);
-            double ry_sq = pow(ry, 2.0);
-
-            // Step 3 of out-of-range radii correction
-            double lambda = x1p_sq / rx_sq + y1p_sq / ry_sq;
-            double multiplier;
-
-            if (lambda > 1.0) {
-                auto lambda_sqrt = sqrt(lambda);
-                rx *= lambda_sqrt;
-                ry *= lambda_sqrt;
-                multiplier = 0.0;
-            } else {
-                double numerator = rx_sq * ry_sq - rx_sq * y1p_sq - ry_sq * x1p_sq;
-                double denominator = rx_sq * y1p_sq + ry_sq * x1p_sq;
-                multiplier = sqrt(numerator / denominator);
-            }
-
-            if (large_arc_flag == sweep_flag)
-                multiplier *= -1.0;
-
-            double cxp = multiplier * rx * y1p / ry;
-            double cyp = multiplier * -ry * x1p / rx;
-
-            // Step 3: Compute (cx, cy) from (cx', cy')
-            x_avg = (last_point.x() + next_point.x()) / 2.0f;
-            y_avg = (last_point.y() + next_point.y()) / 2.0f;
-            double cx = x_axis_rotation_c * cxp - x_axis_rotation_s * cyp + x_avg;
-            double cy = x_axis_rotation_s * cxp + x_axis_rotation_c * cyp + y_avg;
-
-            double theta_1 = atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
-            double theta_2 = atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
-
-            auto theta_delta = theta_2 - theta_1;
-
-            if (sweep_flag == 0 && theta_delta > 0.0f) {
-                theta_delta -= M_TAU;
-            } else if (sweep_flag != 0 && theta_delta < 0) {
-                theta_delta += M_TAU;
-            }
-
-            path.elliptical_arc_to(next_point, { cx, cy }, { rx, ry }, x_axis_rotation, theta_1, theta_delta);
+            path.elliptical_arc_to(next_point, { rx, ry }, x_axis_rotation, large_arc_flag != 0, sweep_flag != 0);
 
             break;
         }

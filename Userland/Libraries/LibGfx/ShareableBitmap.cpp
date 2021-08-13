@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGfx/Bitmap.h>
@@ -34,7 +14,7 @@
 namespace Gfx {
 
 ShareableBitmap::ShareableBitmap(const Bitmap& bitmap)
-    : m_bitmap(bitmap.to_bitmap_backed_by_anon_fd())
+    : m_bitmap(bitmap.to_bitmap_backed_by_anonymous_buffer())
 {
 }
 
@@ -53,7 +33,7 @@ bool encode(Encoder& encoder, const Gfx::ShareableBitmap& shareable_bitmap)
     if (!shareable_bitmap.is_valid())
         return true;
     auto& bitmap = *shareable_bitmap.bitmap();
-    encoder << IPC::File(bitmap.anon_fd());
+    encoder << IPC::File(bitmap.anonymous_buffer().fd());
     encoder << bitmap.size();
     encoder << bitmap.scale();
     encoder << (u32)bitmap.format();
@@ -93,7 +73,10 @@ bool decode(Decoder& decoder, Gfx::ShareableBitmap& shareable_bitmap)
         if (!decoder.decode(palette))
             return false;
     }
-    auto bitmap = Gfx::Bitmap::create_with_anon_fd(bitmap_format, anon_file.take_fd(), size, scale, palette, Gfx::Bitmap::ShouldCloseAnonymousFile::Yes);
+    auto buffer = Core::AnonymousBuffer::create_from_anon_fd(anon_file.take_fd(), Gfx::Bitmap::size_in_bytes(Gfx::Bitmap::minimum_pitch(size.width(), bitmap_format), size.height()));
+    if (!buffer.is_valid())
+        return false;
+    auto bitmap = Gfx::Bitmap::try_create_with_anonymous_buffer(bitmap_format, buffer, size, scale, palette);
     if (!bitmap)
         return false;
     shareable_bitmap = Gfx::ShareableBitmap { bitmap.release_nonnull(), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };

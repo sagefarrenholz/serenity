@@ -6,10 +6,10 @@
         spacing: 2
     }
 
-    @GUI::ToolBarContainer {
+    @GUI::ToolbarContainer {
         name: "toolbar_container"
 
-        @GUI::ToolBar {
+        @GUI::Toolbar {
             name: "toolbar"
         }
     }
@@ -19,9 +19,12 @@
             name: "editor"
         }
 
-        @Web::OutOfProcessWebView {
-            name: "webview"
+        @GUI::Widget {
+            name: "web_view_container"
             visible: false
+
+            layout: @GUI::VerticalBoxLayout {
+            }
         }
     }
 
@@ -105,7 +108,7 @@
         }
     }
 
-    @GUI::StatusBar {
+    @GUI::Statusbar {
         name: "statusbar"
     }
 }

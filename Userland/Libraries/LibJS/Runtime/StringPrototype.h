@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -29,6 +9,14 @@
 #include <LibJS/Runtime/StringObject.h>
 
 namespace JS {
+
+struct CodePoint {
+    u32 code_point { 0 };
+    size_t code_unit_count { 0 };
+    bool is_unpaired_surrogate { false };
+};
+
+CodePoint code_point_at(Utf16View const& string, size_t position);
 
 class StringPrototype final : public StringObject {
     JS_OBJECT(StringPrototype, StringObject);
@@ -39,17 +27,19 @@ public:
     virtual ~StringPrototype() override;
 
 private:
-    JS_DECLARE_NATIVE_GETTER(length_getter);
-
     JS_DECLARE_NATIVE_FUNCTION(char_at);
     JS_DECLARE_NATIVE_FUNCTION(char_code_at);
+    JS_DECLARE_NATIVE_FUNCTION(code_point_at);
     JS_DECLARE_NATIVE_FUNCTION(repeat);
     JS_DECLARE_NATIVE_FUNCTION(starts_with);
     JS_DECLARE_NATIVE_FUNCTION(ends_with);
     JS_DECLARE_NATIVE_FUNCTION(index_of);
+    JS_DECLARE_NATIVE_FUNCTION(to_locale_lowercase);
+    JS_DECLARE_NATIVE_FUNCTION(to_locale_uppercase);
     JS_DECLARE_NATIVE_FUNCTION(to_lowercase);
     JS_DECLARE_NATIVE_FUNCTION(to_uppercase);
     JS_DECLARE_NATIVE_FUNCTION(to_string);
+    JS_DECLARE_NATIVE_FUNCTION(value_of);
     JS_DECLARE_NATIVE_FUNCTION(pad_start);
     JS_DECLARE_NATIVE_FUNCTION(pad_end);
     JS_DECLARE_NATIVE_FUNCTION(substring);
@@ -64,6 +54,24 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(last_index_of);
     JS_DECLARE_NATIVE_FUNCTION(at);
     JS_DECLARE_NATIVE_FUNCTION(match);
+    JS_DECLARE_NATIVE_FUNCTION(match_all);
+    JS_DECLARE_NATIVE_FUNCTION(replace);
+    JS_DECLARE_NATIVE_FUNCTION(replace_all);
+    JS_DECLARE_NATIVE_FUNCTION(search);
+    JS_DECLARE_NATIVE_FUNCTION(anchor);
+    JS_DECLARE_NATIVE_FUNCTION(big);
+    JS_DECLARE_NATIVE_FUNCTION(blink);
+    JS_DECLARE_NATIVE_FUNCTION(bold);
+    JS_DECLARE_NATIVE_FUNCTION(fixed);
+    JS_DECLARE_NATIVE_FUNCTION(fontcolor);
+    JS_DECLARE_NATIVE_FUNCTION(fontsize);
+    JS_DECLARE_NATIVE_FUNCTION(italics);
+    JS_DECLARE_NATIVE_FUNCTION(link);
+    JS_DECLARE_NATIVE_FUNCTION(small);
+    JS_DECLARE_NATIVE_FUNCTION(strike);
+    JS_DECLARE_NATIVE_FUNCTION(sub);
+    JS_DECLARE_NATIVE_FUNCTION(sup);
+    JS_DECLARE_NATIVE_FUNCTION(locale_compare);
 
     JS_DECLARE_NATIVE_FUNCTION(symbol_iterator);
 };

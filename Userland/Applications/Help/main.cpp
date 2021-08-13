@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "History.h"
@@ -33,16 +14,18 @@
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
+#include <LibGUI/Clipboard.h>
 #include <LibGUI/FilteringProxyModel.h>
 #include <LibGUI/ListView.h>
 #include <LibGUI/Menu.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Splitter.h>
+#include <LibGUI/Statusbar.h>
 #include <LibGUI/TabWidget.h>
 #include <LibGUI/TextBox.h>
-#include <LibGUI/ToolBar.h>
-#include <LibGUI/ToolBarContainer.h>
+#include <LibGUI/Toolbar.h>
+#include <LibGUI/ToolbarContainer.h>
 #include <LibGUI/TreeView.h>
 #include <LibGUI/Window.h>
 #include <LibMarkdown/Document.h>
@@ -54,17 +37,12 @@
 
 int main(int argc, char* argv[])
 {
-    if (pledge("stdio recvfd sendfd accept rpath unix cpath fattr", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd rpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     auto app = GUI::Application::construct(argc, argv);
-
-    if (pledge("stdio recvfd sendfd accept rpath unix", nullptr) < 0) {
-        perror("pledge");
-        return 1;
-    }
 
     if (unveil("/res", "r") < 0) {
         perror("unveil");
@@ -107,10 +85,11 @@ int main(int argc, char* argv[])
     widget.set_fill_with_background_color(true);
     widget.layout()->set_spacing(2);
 
-    auto& toolbar_container = widget.add<GUI::ToolBarContainer>();
-    auto& toolbar = toolbar_container.add<GUI::ToolBar>();
+    auto& toolbar_container = widget.add<GUI::ToolbarContainer>();
+    auto& toolbar = toolbar_container.add<GUI::Toolbar>();
 
     auto& splitter = widget.add<GUI::HorizontalSplitter>();
+    splitter.layout()->set_spacing(5);
 
     auto model = ManualModel::create();
 
@@ -130,11 +109,11 @@ int main(int argc, char* argv[])
         if (auto model = search_list_view.model()) {
             auto& search_model = *static_cast<GUI::FilteringProxyModel*>(model);
             search_model.set_filter_term(search_box.text());
-            search_model.update();
+            search_model.invalidate();
         }
     };
     search_list_view.set_model(GUI::FilteringProxyModel::construct(model));
-    search_list_view.model()->update();
+    search_list_view.model()->invalidate();
 
     tree_view.set_model(model);
     left_tab_bar.set_fixed_width(200);
@@ -175,16 +154,25 @@ int main(int argc, char* argv[])
         auto url = URL::create_with_file_protocol(path);
         page_view.load_html(html, url);
 
-        auto tree_view_index = model->index_from_path(path);
-        if (tree_view_index.has_value())
-            tree_view.expand_tree(tree_view_index.value().parent());
+        app->deferred_invoke([&, path](auto&) {
+            auto tree_view_index = model->index_from_path(path);
+            if (tree_view_index.has_value()) {
+                tree_view.expand_tree(tree_view_index.value().parent());
+                tree_view.selection().set(tree_view_index.value());
 
-        String page_and_section = model->page_and_section(tree_view_index.value());
-        window->set_title(String::formatted("{} - Help", page_and_section));
+                String page_and_section = model->page_and_section(tree_view_index.value());
+                window->set_title(String::formatted("{} - Help", page_and_section));
+            } else {
+                window->set_title("Help");
+            }
+        });
     };
 
     tree_view.on_selection_change = [&] {
         String path = model->page_path(tree_view.selection().first());
+        if (path.is_null())
+            return;
+
         history.push(path);
         update_actions();
         open_page(path);
@@ -202,24 +190,25 @@ int main(int argc, char* argv[])
                 GUI::MessageBox::Type::Error);
         }
     };
-    search_list_view.on_selection = [&](auto index) {
+    search_list_view.on_selection_change = [&] {
+        const auto& index = search_list_view.selection().first();
         if (!index.is_valid())
             return;
 
-        if (auto model = search_list_view.model()) {
-            auto& search_model = *static_cast<GUI::FilteringProxyModel*>(model);
-            index = search_model.map(index);
-        } else {
+        auto view_model = search_list_view.model();
+        if (!view_model) {
             page_view.load_empty_document();
             return;
         }
-        String path = model->page_path(index);
+        auto& search_model = *static_cast<GUI::FilteringProxyModel*>(view_model);
+        const auto& mapped_index = search_model.map(index);
+        String path = model->page_path(mapped_index);
         if (path.is_null()) {
             page_view.load_empty_document();
             return;
         }
         tree_view.selection().clear();
-        tree_view.selection().add(index);
+        tree_view.selection().add(mapped_index);
         history.push(path);
         update_actions();
         open_page(path);
@@ -272,21 +261,41 @@ int main(int argc, char* argv[])
     toolbar.add_action(*go_forward_action);
     toolbar.add_action(*go_home_action);
 
-    auto menubar = GUI::MenuBar::construct();
-
-    auto& app_menu = menubar->add_menu("Help");
-    app_menu.add_action(GUI::CommonActions::make_about_action("Help", app_icon, window));
-    app_menu.add_separator();
-    app_menu.add_action(GUI::CommonActions::make_quit_action([](auto&) {
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(GUI::CommonActions::make_quit_action([](auto&) {
         GUI::Application::the()->quit();
     }));
 
-    auto& go_menu = menubar->add_menu("Go");
+    auto& go_menu = window->add_menu("&Go");
     go_menu.add_action(*go_back_action);
     go_menu.add_action(*go_forward_action);
     go_menu.add_action(*go_home_action);
 
-    app->set_menubar(move(menubar));
+    auto& help_menu = window->add_menu("&Help");
+    help_menu.add_action(GUI::CommonActions::make_about_action("Help", app_icon, window));
+
+    auto context_menu = GUI::Menu::construct();
+    context_menu->add_action(*go_back_action);
+    context_menu->add_action(*go_forward_action);
+    context_menu->add_action(*go_home_action);
+    context_menu->add_separator();
+
+    RefPtr<GUI::Action> copy_action = GUI::CommonActions::make_copy_action([&](auto&) {
+        auto selected_text = page_view.selected_text();
+        if (!selected_text.is_empty())
+            GUI::Clipboard::the().set_plain_text(selected_text);
+    });
+    context_menu->add_action(*copy_action);
+
+    RefPtr<GUI::Action> select_all_function = GUI::CommonActions::make_select_all_action([&](auto&) {
+        page_view.select_all();
+    });
+    context_menu->add_action(*select_all_function);
+
+    page_view.on_context_menu_request = [&](auto& screen_position) {
+        copy_action->set_enabled(!page_view.selected_text().is_empty());
+        context_menu->popup(screen_position);
+    };
 
     if (start_page) {
         URL url = URL::create_with_url_or_path(start_page);
@@ -305,6 +314,21 @@ int main(int argc, char* argv[])
     } else {
         go_home_action->activate();
     }
+
+    auto& statusbar = widget.add<GUI::Statusbar>();
+    app->on_action_enter = [&statusbar](GUI::Action const& action) {
+        statusbar.set_override_text(action.status_tip());
+    };
+    app->on_action_leave = [&statusbar](GUI::Action const&) {
+        statusbar.set_override_text({});
+    };
+
+    page_view.on_link_hover = [&](URL const& url) {
+        if (url.is_valid())
+            statusbar.set_text(url.to_string());
+        else
+            statusbar.set_text({});
+    };
 
     window->set_focused_widget(&left_tab_bar);
     window->show();

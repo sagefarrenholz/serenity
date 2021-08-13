@@ -1,35 +1,18 @@
 /*
- * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Itamar S. <itamar8910@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include "AttributeValue.h"
 #include "CompilationUnit.h"
 #include "DwarfTypes.h"
 #include <AK/ByteBuffer.h>
+#include <AK/NonnullOwnPtrVector.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/RedBlackTree.h>
 #include <AK/RefCounted.h>
 #include <AK/String.h>
 #include <LibELF/Image.h>
@@ -37,27 +20,62 @@
 namespace Debug::Dwarf {
 
 class DwarfInfo {
+    AK_MAKE_NONCOPYABLE(DwarfInfo);
+    AK_MAKE_NONMOVABLE(DwarfInfo);
+
 public:
-    explicit DwarfInfo(const ELF::Image&);
+    explicit DwarfInfo(ELF::Image const&);
 
     ReadonlyBytes debug_info_data() const { return m_debug_info_data; }
     ReadonlyBytes abbreviation_data() const { return m_abbreviation_data; }
     ReadonlyBytes debug_strings_data() const { return m_debug_strings_data; }
+    ReadonlyBytes debug_line_strings_data() const { return m_debug_line_strings_data; }
 
     template<typename Callback>
     void for_each_compilation_unit(Callback) const;
 
+    AttributeValue get_attribute_value(AttributeDataForm form, ssize_t implicit_const_value,
+        InputMemoryStream& debug_info_stream, const CompilationUnit* unit = nullptr) const;
+
+    Optional<DIE> get_die_at_address(FlatPtr) const;
+
+    // Note that even if there is a DIE at the given offset,
+    // but it does not exist in the DIE cache (because for example
+    // it does not contain an address range), then this function will not return it.
+    // To get any DIE object at a given offset in a compilation unit,
+    // use CompilationUnit::get_die_at_offset.
+    Optional<DIE> get_cached_die_at_offset(FlatPtr) const;
+
 private:
     void populate_compilation_units();
+    void build_cached_dies() const;
 
-    ReadonlyBytes section_data(const String& section_name) const;
+    ReadonlyBytes section_data(StringView const& section_name) const;
 
-    const ELF::Image& m_elf;
+    ELF::Image const& m_elf;
     ReadonlyBytes m_debug_info_data;
     ReadonlyBytes m_abbreviation_data;
     ReadonlyBytes m_debug_strings_data;
+    ReadonlyBytes m_debug_line_data;
+    ReadonlyBytes m_debug_line_strings_data;
 
-    Vector<Dwarf::CompilationUnit> m_compilation_units;
+    NonnullOwnPtrVector<Dwarf::CompilationUnit> m_compilation_units;
+
+    struct DIERange {
+        FlatPtr start_address { 0 };
+        FlatPtr end_address { 0 };
+    };
+
+    struct DIEAndRange {
+        DIE die;
+        DIERange range;
+    };
+
+    using DIEStartAddress = FlatPtr;
+
+    mutable RedBlackTree<DIEStartAddress, DIEAndRange> m_cached_dies_by_range;
+    mutable RedBlackTree<FlatPtr, DIE> m_cached_dies_by_offset;
+    mutable bool m_built_cached_dies { false };
 };
 
 template<typename Callback>

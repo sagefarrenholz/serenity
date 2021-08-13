@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -40,36 +20,37 @@
 #include <AK/ByteBuffer.h>
 #include <AK/Memory.h>
 #include <AK/StringView.h>
-#include <Kernel/VM/MemoryManager.h>
-#include <Kernel/VM/Region.h>
+#include <Kernel/Memory/MemoryManager.h>
+#include <Kernel/Memory/Region.h>
 
 namespace Kernel {
 
 class KBufferImpl : public RefCounted<KBufferImpl> {
 public:
-    static RefPtr<KBufferImpl> try_create_with_size(size_t size, Region::Access access, const char* name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
+    static RefPtr<KBufferImpl> try_create_with_size(size_t size, Memory::Region::Access access, StringView name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
     {
-        auto region = MM.allocate_kernel_region(page_round_up(size), name, access, strategy);
+        auto region = MM.allocate_kernel_region(Memory::page_round_up(size), name, access, strategy);
         if (!region)
             return nullptr;
-        return adopt(*new KBufferImpl(region.release_nonnull(), size, strategy));
+        return adopt_ref_if_nonnull(new (nothrow) KBufferImpl(region.release_nonnull(), size, strategy));
     }
 
-    static RefPtr<KBufferImpl> try_create_with_bytes(ReadonlyBytes bytes, Region::Access access, const char* name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
+    static RefPtr<KBufferImpl> try_create_with_bytes(ReadonlyBytes bytes, Memory::Region::Access access, StringView name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
     {
-        auto region = MM.allocate_kernel_region(page_round_up(bytes.size()), name, access, strategy);
+        auto region = MM.allocate_kernel_region(Memory::page_round_up(bytes.size()), name, access, strategy);
         if (!region)
             return nullptr;
         memcpy(region->vaddr().as_ptr(), bytes.data(), bytes.size());
-        return adopt(*new KBufferImpl(region.release_nonnull(), bytes.size(), strategy));
+
+        return adopt_ref_if_nonnull(new (nothrow) KBufferImpl(region.release_nonnull(), bytes.size(), strategy));
     }
 
-    static RefPtr<KBufferImpl> create_with_size(size_t size, Region::Access access, const char* name, AllocationStrategy strategy = AllocationStrategy::Reserve)
+    static RefPtr<KBufferImpl> create_with_size(size_t size, Memory::Region::Access access, StringView name, AllocationStrategy strategy = AllocationStrategy::Reserve)
     {
         return try_create_with_size(size, access, name, strategy);
     }
 
-    static RefPtr<KBufferImpl> copy(const void* data, size_t size, Region::Access access, const char* name)
+    static RefPtr<KBufferImpl> copy(const void* data, size_t size, Memory::Region::Access access, StringView name)
     {
         auto buffer = create_with_size(size, access, name, AllocationStrategy::AllocateNow);
         if (!buffer)
@@ -80,10 +61,10 @@ public:
 
     [[nodiscard]] bool expand(size_t new_capacity)
     {
-        auto new_region = MM.allocate_kernel_region(page_round_up(new_capacity), m_region->name(), m_region->access(), m_allocation_strategy);
+        auto new_region = MM.allocate_kernel_region(Memory::page_round_up(new_capacity), m_region->name(), m_region->access(), m_allocation_strategy);
         if (!new_region)
             return false;
-        if (m_region && m_size > 0)
+        if (m_size > 0)
             memcpy(new_region->vaddr().as_ptr(), data(), min(m_region->size(), m_size));
         m_region = new_region.release_nonnull();
         return true;
@@ -100,11 +81,11 @@ public:
         m_size = size;
     }
 
-    [[nodiscard]] const Region& region() const { return *m_region; }
-    [[nodiscard]] Region& region() { return *m_region; }
+    [[nodiscard]] Memory::Region const& region() const { return *m_region; }
+    [[nodiscard]] Memory::Region& region() { return *m_region; }
 
 private:
-    explicit KBufferImpl(NonnullOwnPtr<Region>&& region, size_t size, AllocationStrategy strategy)
+    explicit KBufferImpl(NonnullOwnPtr<Memory::Region>&& region, size_t size, AllocationStrategy strategy)
         : m_size(size)
         , m_allocation_strategy(strategy)
         , m_region(move(region))
@@ -113,7 +94,7 @@ private:
 
     size_t m_size { 0 };
     AllocationStrategy m_allocation_strategy { AllocationStrategy::Reserve };
-    NonnullOwnPtr<Region> m_region;
+    NonnullOwnPtr<Memory::Region> m_region;
 };
 
 class [[nodiscard]] KBuffer {
@@ -123,28 +104,23 @@ public:
     {
     }
 
-    [[nodiscard]] static OwnPtr<KBuffer> try_create_with_size(size_t size, Region::Access access = Region::Access::Read | Region::Access::Write, const char* name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
+    [[nodiscard]] static OwnPtr<KBuffer> try_create_with_size(size_t size, Memory::Region::Access access = Memory::Region::Access::ReadWrite, StringView name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
     {
         auto impl = KBufferImpl::try_create_with_size(size, access, name, strategy);
         if (!impl)
             return {};
-        return adopt_own(*new KBuffer(impl.release_nonnull()));
+        return adopt_own_if_nonnull(new (nothrow) KBuffer(impl.release_nonnull()));
     }
 
-    [[nodiscard]] static OwnPtr<KBuffer> try_create_with_bytes(ReadonlyBytes bytes, Region::Access access = Region::Access::Read | Region::Access::Write, const char* name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
+    [[nodiscard]] static OwnPtr<KBuffer> try_create_with_bytes(ReadonlyBytes bytes, Memory::Region::Access access = Memory::Region::Access::ReadWrite, StringView name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
     {
         auto impl = KBufferImpl::try_create_with_bytes(bytes, access, name, strategy);
         if (!impl)
             return {};
-        return adopt_own(*new KBuffer(impl.release_nonnull()));
+        return adopt_own_if_nonnull(new (nothrow) KBuffer(impl.release_nonnull()));
     }
 
-    [[nodiscard]] static KBuffer create_with_size(size_t size, Region::Access access = Region::Access::Read | Region::Access::Write, const char* name = "KBuffer", AllocationStrategy strategy = AllocationStrategy::Reserve)
-    {
-        return KBuffer(KBufferImpl::create_with_size(size, access, name, strategy));
-    }
-
-    [[nodiscard]] static KBuffer copy(const void* data, size_t size, Region::Access access = Region::Access::Read | Region::Access::Write, const char* name = "KBuffer")
+    [[nodiscard]] static KBuffer copy(const void* data, size_t size, Memory::Region::Access access = Memory::Region::Access::ReadWrite, StringView name = "KBuffer")
     {
         return KBuffer(KBufferImpl::copy(data, size, access, name));
     }
@@ -165,7 +141,7 @@ public:
     [[nodiscard]] const KBufferImpl& impl() const { return *m_impl; }
     [[nodiscard]] RefPtr<KBufferImpl> take_impl() { return move(m_impl); }
 
-    KBuffer(const ByteBuffer& buffer, Region::Access access = Region::Access::Read | Region::Access::Write, const char* name = "KBuffer")
+    KBuffer(const ByteBuffer& buffer, Memory::Region::Access access = Memory::Region::Access::ReadWrite, StringView name = "KBuffer")
         : m_impl(KBufferImpl::copy(buffer.data(), buffer.size(), access, name))
     {
     }

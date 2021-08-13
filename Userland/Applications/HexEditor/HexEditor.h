@@ -1,42 +1,23 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include "SearchResultsModel.h"
 #include <AK/ByteBuffer.h>
 #include <AK/Function.h>
 #include <AK/HashMap.h>
 #include <AK/NonnullOwnPtrVector.h>
 #include <AK/NonnullRefPtrVector.h>
 #include <AK/StdLibExtras.h>
-#include <LibGUI/ScrollableWidget.h>
+#include <LibGUI/AbstractScrollableWidget.h>
 #include <LibGfx/Font.h>
 #include <LibGfx/TextAlignment.h>
 
-class HexEditor : public GUI::ScrollableWidget {
+class HexEditor : public GUI::AbstractScrollableWidget {
     C_OBJECT(HexEditor)
 public:
     enum EditMode {
@@ -49,11 +30,15 @@ public:
     bool is_readonly() const { return m_readonly; }
     void set_readonly(bool);
 
+    int buffer_size() const { return m_buffer.size(); }
     void set_buffer(const ByteBuffer&);
     void fill_selection(u8 fill_byte);
     bool write_to_file(const String& path);
 
+    void select_all();
     bool has_selection() const { return !(m_selection_start == -1 || m_selection_end == -1 || (m_selection_end - m_selection_start) < 0 || m_buffer.is_empty()); }
+    size_t selection_size();
+    int selection_start_offset() const { return m_selection_start; }
     bool copy_selected_text_to_clipboard();
     bool copy_selected_hex_to_clipboard();
     bool copy_selected_hex_to_clipboard_as_c_code();
@@ -62,7 +47,11 @@ public:
     void set_bytes_per_row(int);
 
     void set_position(int position);
+    void highlight(int start, int end);
+    int find(ByteBuffer& needle, int start = 0);
     int find_and_highlight(ByteBuffer& needle, int start = 0);
+    Vector<Match> find_all(ByteBuffer& needle, int start = 0);
+    Vector<Match> find_all_strings(size_t min_length = 4);
     Function<void(int, EditMode, int, int)> on_status_change; // position, edit mode, selection start, selection end
     Function<void()> on_change;
 

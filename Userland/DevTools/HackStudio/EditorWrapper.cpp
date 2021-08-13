@@ -1,36 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "EditorWrapper.h"
 #include "Editor.h"
 #include "HackStudio.h"
-#include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
-#include <LibGUI/InputBox.h>
 #include <LibGUI/Label.h>
 #include <LibGfx/Font.h>
 #include <LibGfx/FontDatabase.h>
@@ -52,17 +30,9 @@ EditorWrapper::EditorWrapper()
     m_filename_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
     m_filename_label->set_fixed_height(14);
 
-    m_cursor_label = label_wrapper.add<GUI::Label>("(Cursor)");
-    m_cursor_label->set_text_alignment(Gfx::TextAlignment::CenterRight);
-    m_cursor_label->set_fixed_height(14);
-
     m_editor = add<Editor>();
     m_editor->set_ruler_visible(true);
     m_editor->set_automatic_indentation_enabled(true);
-
-    m_editor->on_cursor_change = [this] {
-        m_cursor_label->set_text(String::formatted("Line: {}, Column: {}", m_editor->cursor().line() + 1, m_editor->cursor().column()));
-    };
 
     m_editor->on_focus = [this] {
         set_current_editor_wrapper(this);
@@ -70,6 +40,13 @@ EditorWrapper::EditorWrapper()
 
     m_editor->on_open = [](String path) {
         open_file(path);
+    };
+
+    m_editor->on_change = [this] {
+        bool was_dirty = m_document_dirty;
+        m_document_dirty = true;
+        if (!was_dirty)
+            update_title();
     };
 }
 
@@ -79,7 +56,8 @@ EditorWrapper::~EditorWrapper()
 
 void EditorWrapper::set_editor_has_focus(Badge<Editor>, bool focus)
 {
-    m_filename_label->set_font(focus ? Gfx::FontDatabase::default_bold_font() : Gfx::FontDatabase::default_font());
+    auto& font = Gfx::FontDatabase::default_font();
+    m_filename_label->set_font(focus ? font.bold_variant() : font);
 }
 
 LanguageClient& EditorWrapper::language_client() { return m_editor->language_client(); }
@@ -99,6 +77,60 @@ void EditorWrapper::set_mode_non_displayable()
     palette.set_color(Gfx::ColorRole::BaseText, Color::from_rgb(0xffffff));
     editor().set_palette(palette);
     editor().document().set_text("The contents of this file could not be displayed. Is it a binary file?");
+}
+
+void EditorWrapper::set_filename(const String& filename)
+{
+    m_filename = filename;
+    update_title();
+    update_diff();
+}
+
+void EditorWrapper::save()
+{
+    editor().write_to_file(filename());
+    m_document_dirty = false;
+    update_title();
+    update_diff();
+    editor().update();
+}
+
+void EditorWrapper::update_diff()
+{
+    if (m_git_repo)
+        m_hunks = Diff::parse_hunks(m_git_repo->unstaged_diff(LexicalPath(filename())).value());
+}
+
+void EditorWrapper::set_project_root(LexicalPath const& project_root)
+{
+    m_project_root = project_root;
+    auto result = GitRepo::try_to_create(*m_project_root);
+    switch (result.type) {
+    case GitRepo::CreateResult::Type::Success:
+        m_git_repo = result.repo;
+        break;
+    case GitRepo::CreateResult::Type::GitProgramNotFound:
+        break;
+    case GitRepo::CreateResult::Type::NoGitRepo:
+        break;
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+void EditorWrapper::update_title()
+{
+    StringBuilder title;
+    title.append(m_filename);
+
+    if (m_document_dirty)
+        title.append(" (*)");
+    m_filename_label->set_text(title.to_string());
+}
+
+void EditorWrapper::set_debug_mode(bool enabled)
+{
+    m_editor->set_debug_mode(enabled);
 }
 
 }

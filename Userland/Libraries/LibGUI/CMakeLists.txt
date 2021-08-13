@@ -1,9 +1,11 @@
 compile_gml(FontPickerDialog.gml FontPickerDialogGML.h font_picker_dialog_gml)
 compile_gml(FilePickerDialog.gml FilePickerDialogGML.h file_picker_dialog_gml)
+compile_gml(PasswordInputDialog.gml PasswordInputDialogGML.h password_input_dialog_gml)
 
 set(SOURCES
     AboutDialog.cpp
     AbstractButton.cpp
+    AbstractScrollableWidget.cpp
     AbstractSlider.cpp
     AbstractTableView.cpp
     AbstractView.cpp
@@ -12,7 +14,7 @@ set(SOURCES
     Application.cpp
     AutocompleteProvider.cpp
     BoxLayout.cpp
-    BreadcrumbBar.cpp
+    Breadcrumbbar.cpp
     Button.cpp
     Calendar.cpp
     CheckBox.cpp
@@ -20,6 +22,7 @@ set(SOURCES
     ColorInput.cpp
     ColorPicker.cpp
     ColumnsView.cpp
+    CommonLocationsProvider.cpp
     ComboBox.cpp
     Command.cpp
     Desktop.cpp
@@ -37,6 +40,7 @@ set(SOURCES
     FontPicker.cpp
     FontPickerDialogGML.h
     Frame.cpp
+    GMLAutocompleteProvider.cpp
     GMLFormatter.cpp
     GMLLexer.cpp
     GMLParser.cpp
@@ -56,7 +60,6 @@ set(SOURCES
     LinkLabel.cpp
     ListView.cpp
     Menu.cpp
-    MenuBar.cpp
     MenuItem.cpp
     MessageBox.cpp
     Model.cpp
@@ -66,14 +69,18 @@ set(SOURCES
     Notification.cpp
     OpacitySlider.cpp
     Painter.cpp
+    PasswordInputDialog.cpp
+    PasswordInputDialogGML.h
+    PersistentModelIndex.cpp
     ProcessChooser.cpp
-    ProgressBar.cpp
+    Progressbar.cpp
     RadioButton.cpp
     RegularEditingEngine.cpp
     ResizeCorner.cpp
     RunningProcessesModel.cpp
-    ScrollBar.cpp
-    ScrollableWidget.cpp
+    ScreenLayout.cpp
+    ScrollableContainerWidget.cpp
+    Scrollbar.cpp
     SeparatorWidget.cpp
     Shortcut.cpp
     Slider.cpp
@@ -81,21 +88,23 @@ set(SOURCES
     SpinBox.cpp
     Splitter.cpp
     StackWidget.cpp
-    StatusBar.cpp
+    Statusbar.cpp
     TabWidget.cpp
     TableView.cpp
     TextBox.cpp
     TextDocument.cpp
     TextEditor.cpp
-    ToolBar.cpp
-    ToolBarContainer.cpp
+    Toolbar.cpp
+    ToolbarContainer.cpp
     TreeView.cpp
     UndoStack.cpp
+    ValueSlider.cpp
     Variant.cpp
     VimEditingEngine.cpp
     Widget.cpp
     Window.cpp
     WindowServerConnection.cpp
+    WindowManagerServerConnection.cpp
     Wizards/WizardDialog.cpp
     Wizards/AbstractWizardPage.cpp
     Wizards/CoverWizardPage.cpp
@@ -105,6 +114,8 @@ set(SOURCES
 set(GENERATED_SOURCES
     ../../Services/WindowServer/WindowClientEndpoint.h
     ../../Services/WindowServer/WindowServerEndpoint.h
+    ../../Services/WindowServer/WindowManagerClientEndpoint.h
+    ../../Services/WindowServer/WindowManagerServerEndpoint.h
     ../../Services/NotificationServer/NotificationClientEndpoint.h
     ../../Services/NotificationServer/NotificationServerEndpoint.h
     ../../Services/Clipboard/ClipboardClientEndpoint.h
@@ -112,4 +123,4 @@ set(GENERATED_SOURCES
 )
 
 serenity_lib(LibGUI gui)
-target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThread LibRegex LibSyntax)
+target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThreading LibRegex LibSyntax)

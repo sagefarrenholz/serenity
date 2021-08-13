@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -54,11 +34,13 @@ public:
     bool column_headers_visible() const;
     void set_column_headers_visible(bool);
 
-    void set_column_hidden(int, bool);
+    void set_column_visible(int, bool);
 
     int column_width(int column) const;
     void set_column_width(int column, int width);
     void set_default_column_width(int column, int width);
+    virtual int minimum_column_width(int column);
+    virtual int minimum_row_height(int row);
 
     Gfx::TextAlignment column_header_alignment(int column) const;
     void set_column_header_alignment(int column, Gfx::TextAlignment);
@@ -70,6 +52,8 @@ public:
     virtual Gfx::IntRect content_rect(const ModelIndex&) const override;
     Gfx::IntRect content_rect(int row, int column) const;
     Gfx::IntRect row_rect(int item_index) const;
+
+    virtual Gfx::IntRect paint_invalidation_rect(ModelIndex const& index) const override;
 
     virtual void scroll_into_view(const ModelIndex&, bool scroll_horizontally = true, bool scroll_vertically = true) override;
     void scroll_into_view(const ModelIndex& index, Orientation orientation)
@@ -118,6 +102,7 @@ protected:
 
 private:
     void layout_headers();
+    bool is_navigation(GUI::KeyEvent&);
 
     RefPtr<HeaderView> m_column_header;
     RefPtr<HeaderView> m_row_header;
@@ -130,6 +115,7 @@ private:
 
     int m_vertical_padding { 8 };
     int m_horizontal_padding { font().glyph_height() / 2 };
+    int m_tab_moves { 0 };
 };
 
 }

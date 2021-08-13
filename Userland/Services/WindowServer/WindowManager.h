@@ -1,34 +1,14 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include "WindowStack.h"
 #include <AK/HashMap.h>
 #include <AK/HashTable.h>
-#include <AK/InlineLinkedList.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/ConfigFile.h>
 #include <LibCore/ElapsedTimer.h>
@@ -39,13 +19,16 @@
 #include <LibGfx/Rect.h>
 #include <WindowServer/Cursor.h>
 #include <WindowServer/Event.h>
-#include <WindowServer/MenuBar.h>
 #include <WindowServer/MenuManager.h>
-#include <WindowServer/Window.h>
+#include <WindowServer/ScreenLayout.h>
+#include <WindowServer/WMClientConnection.h>
 #include <WindowServer/WindowSwitcher.h>
 #include <WindowServer/WindowType.h>
 
 namespace WindowServer {
+
+const int double_click_speed_max = 900;
+const int double_click_speed_min = 100;
 
 class Screen;
 class MouseEvent;
@@ -53,6 +36,8 @@ class Window;
 class ClientConnection;
 class WindowSwitcher;
 class Button;
+class DndOverlay;
+class WindowGeometryOverlay;
 
 enum class ResizeDirection {
     None,
@@ -74,9 +59,16 @@ class WindowManager : public Core::Object {
     friend class WindowSwitcher;
 
 public:
+    static constexpr size_t default_window_stack_rows = 2;
+    static constexpr size_t default_window_stack_columns = 2;
+    static_assert(default_window_stack_rows >= 1);
+    static_assert(default_window_stack_columns >= 1);
+    static constexpr unsigned max_window_stack_rows = 16;
+    static constexpr unsigned max_window_stack_columns = 16;
+
     static WindowManager& the();
 
-    explicit WindowManager(const Gfx::PaletteImpl&);
+    explicit WindowManager(Gfx::PaletteImpl const&);
     virtual ~WindowManager() override;
 
     Palette palette() const { return Palette(*m_palette); }
@@ -89,135 +81,167 @@ public:
 
     void notify_title_changed(Window&);
     void notify_modal_unparented(Window&);
-    void notify_rect_changed(Window&, const Gfx::IntRect& oldRect, const Gfx::IntRect& newRect);
+    void notify_rect_changed(Window&, Gfx::IntRect const& oldRect, Gfx::IntRect const& newRect);
     void notify_minimization_state_changed(Window&);
     void notify_opacity_changed(Window&);
     void notify_occlusion_state_changed(Window&);
     void notify_progress_changed(Window&);
-    void notify_client_changed_app_menubar(ClientConnection&);
+    void notify_modified_changed(Window&);
 
-    Gfx::IntRect maximized_window_rect(const Window&) const;
+    Gfx::IntRect maximized_window_rect(Window const&, bool relative_to_window_screen = false) const;
 
-    const ClientConnection* dnd_client() const { return m_dnd_client.ptr(); }
-    const String& dnd_text() const { return m_dnd_text; }
-    const Core::MimeData& dnd_mime_data() const { return *m_dnd_mime_data; }
-    const Gfx::Bitmap* dnd_bitmap() const { return m_dnd_bitmap; }
-    Gfx::IntRect dnd_rect() const;
+    ClientConnection const* dnd_client() const { return m_dnd_client.ptr(); }
+    Core::MimeData const& dnd_mime_data() const { return *m_dnd_mime_data; }
 
-    void start_dnd_drag(ClientConnection&, const String& text, const Gfx::Bitmap*, const Core::MimeData&);
+    void start_dnd_drag(ClientConnection&, String const& text, Gfx::Bitmap const*, Core::MimeData const&);
     void end_dnd_drag();
 
-    Window* active_window() { return m_active_window.ptr(); }
-    const Window* active_window() const { return m_active_window.ptr(); }
-    Window* active_input_window() { return m_active_input_window.ptr(); }
-    const Window* active_input_window() const { return m_active_input_window.ptr(); }
-    const ClientConnection* active_client() const;
+    Window* active_window()
+    {
+        VERIFY(m_current_window_stack);
+        return m_current_window_stack->active_window();
+    }
+    Window const* active_window() const
+    {
+        VERIFY(m_current_window_stack);
+        return m_current_window_stack->active_window();
+    }
 
-    const Window* highlight_window() const { return m_highlight_window.ptr(); }
+    Window* active_input_window()
+    {
+        VERIFY(m_current_window_stack);
+        return m_current_window_stack->active_input_window();
+    }
+    Window const* active_input_window() const
+    {
+        VERIFY(m_current_window_stack);
+        return m_current_window_stack->active_input_window();
+    }
+
+    ClientConnection const* active_client() const;
+
+    Window* window_with_active_menu() { return m_window_with_active_menu; }
+    Window const* window_with_active_menu() const { return m_window_with_active_menu; }
+    void set_window_with_active_menu(Window*);
+
+    Window* highlight_window() { return m_highlight_window; }
+    Window const* highlight_window() const { return m_highlight_window; }
     void set_highlight_window(Window*);
 
     void move_to_front_and_make_active(Window&);
 
-    Gfx::IntRect menubar_rect() const;
-    Gfx::IntRect desktop_rect() const;
-    Gfx::IntRect arena_rect_for_type(WindowType) const;
+    Gfx::IntRect desktop_rect(Screen&) const;
+    Gfx::IntRect arena_rect_for_type(Screen&, WindowType) const;
 
-    const Cursor& active_cursor() const;
-    const Cursor& hidden_cursor() const { return *m_hidden_cursor; }
-    const Cursor& arrow_cursor() const { return *m_arrow_cursor; }
-    const Cursor& crosshair_cursor() const { return *m_crosshair_cursor; }
-    const Cursor& hand_cursor() const { return *m_hand_cursor; }
-    const Cursor& help_cursor() const { return *m_help_cursor; }
-    const Cursor& resize_horizontally_cursor() const { return *m_resize_horizontally_cursor; }
-    const Cursor& resize_vertically_cursor() const { return *m_resize_vertically_cursor; }
-    const Cursor& resize_diagonally_tlbr_cursor() const { return *m_resize_diagonally_tlbr_cursor; }
-    const Cursor& resize_diagonally_bltr_cursor() const { return *m_resize_diagonally_bltr_cursor; }
-    const Cursor& resize_column_cursor() const { return *m_resize_column_cursor; }
-    const Cursor& resize_row_cursor() const { return *m_resize_row_cursor; }
-    const Cursor& i_beam_cursor() const { return *m_i_beam_cursor; }
-    const Cursor& disallowed_cursor() const { return *m_disallowed_cursor; }
-    const Cursor& move_cursor() const { return *m_move_cursor; }
-    const Cursor& drag_cursor() const { return *m_drag_cursor; }
-    const Cursor& wait_cursor() const { return *m_wait_cursor; }
+    Cursor const& active_cursor() const;
+    Cursor const& hidden_cursor() const { return *m_hidden_cursor; }
+    Cursor const& arrow_cursor() const { return *m_arrow_cursor; }
+    Cursor const& crosshair_cursor() const { return *m_crosshair_cursor; }
+    Cursor const& hand_cursor() const { return *m_hand_cursor; }
+    Cursor const& help_cursor() const { return *m_help_cursor; }
+    Cursor const& resize_horizontally_cursor() const { return *m_resize_horizontally_cursor; }
+    Cursor const& resize_vertically_cursor() const { return *m_resize_vertically_cursor; }
+    Cursor const& resize_diagonally_tlbr_cursor() const { return *m_resize_diagonally_tlbr_cursor; }
+    Cursor const& resize_diagonally_bltr_cursor() const { return *m_resize_diagonally_bltr_cursor; }
+    Cursor const& resize_column_cursor() const { return *m_resize_column_cursor; }
+    Cursor const& resize_row_cursor() const { return *m_resize_row_cursor; }
+    Cursor const& i_beam_cursor() const { return *m_i_beam_cursor; }
+    Cursor const& disallowed_cursor() const { return *m_disallowed_cursor; }
+    Cursor const& move_cursor() const { return *m_move_cursor; }
+    Cursor const& drag_cursor() const { return *m_drag_cursor; }
+    Cursor const& wait_cursor() const { return *m_wait_cursor; }
 
-    const Gfx::Font& font() const;
-    const Gfx::Font& window_title_font() const;
+    Gfx::Font const& font() const;
+    Gfx::Font const& window_title_font() const;
 
-    bool set_resolution(int width, int height, int scale);
-    Gfx::IntSize resolution() const;
-    int scale_factor() const;
+    bool set_screen_layout(ScreenLayout&&, bool, String&);
+    ScreenLayout get_screen_layout() const;
+    bool save_screen_layout(String&);
 
     void set_acceleration_factor(double);
     void set_scroll_step_size(unsigned);
+    void set_double_click_speed(int);
+    int double_click_speed() const;
 
     Window* set_active_input_window(Window*);
     void restore_active_input_window(Window*);
     void set_active_window(Window*, bool make_input = true);
     void set_hovered_button(Button*);
 
-    const Button* cursor_tracking_button() const { return m_cursor_tracking_button.ptr(); }
+    Button const* cursor_tracking_button() const { return m_cursor_tracking_button.ptr(); }
     void set_cursor_tracking_button(Button*);
 
     void set_resize_candidate(Window&, ResizeDirection);
     void clear_resize_candidate();
-    ResizeDirection resize_direction_of_window(const Window&);
+    ResizeDirection resize_direction_of_window(Window const&);
 
-    void tell_wm_listeners_window_state_changed(Window&);
-    void tell_wm_listeners_window_icon_changed(Window&);
-    void tell_wm_listeners_window_rect_changed(Window&);
+    void greet_window_manager(WMClientConnection&);
+    void tell_wms_window_state_changed(Window&);
+    void tell_wms_window_icon_changed(Window&);
+    void tell_wms_window_rect_changed(Window&);
+    void tell_wms_screen_rects_changed();
+    void tell_wms_applet_area_size_changed(Gfx::IntSize const&);
+    void tell_wms_super_key_pressed();
+    void tell_wms_super_space_key_pressed();
+    void tell_wms_current_window_stack_changed();
 
     bool is_active_window_or_accessory(Window&) const;
 
-    void start_window_resize(Window&, const Gfx::IntPoint&, MouseButton);
-    void start_window_resize(Window&, const MouseEvent&);
+    void check_hide_geometry_overlay(Window&);
 
-    const Window* active_fullscreen_window() const
+    void start_window_resize(Window&, Gfx::IntPoint const&, MouseButton);
+    void start_window_resize(Window&, MouseEvent const&);
+    void start_window_move(Window&, MouseEvent const&);
+    void start_window_move(Window&, Gfx::IntPoint const&);
+
+    Window const* active_fullscreen_window() const
     {
-        if (m_active_window && m_active_window->is_fullscreen()) {
-            return m_active_window;
-        }
+        if (active_window() && active_window()->is_fullscreen())
+            return active_window();
         return nullptr;
     };
 
     Window* active_fullscreen_window()
     {
-        if (m_active_window && m_active_window->is_fullscreen()) {
-            return m_active_window;
-        }
+        if (active_window() && active_window()->is_fullscreen())
+            return active_window();
         return nullptr;
     }
 
     bool update_theme(String theme_path, String theme_name);
+    void invalidate_after_theme_or_font_change();
 
     bool set_hovered_window(Window*);
-    void deliver_mouse_event(Window& window, MouseEvent& event, bool process_double_click);
+    void deliver_mouse_event(Window&, MouseEvent const&, bool process_double_click);
 
     void did_popup_a_menu(Badge<Menu>);
 
-    void start_menu_doubleclick(Window& window, const MouseEvent& event);
-    bool is_menu_doubleclick(Window& window, const MouseEvent& event) const;
+    void start_menu_doubleclick(Window& window, MouseEvent const& event);
+    bool is_menu_doubleclick(Window& window, MouseEvent const& event) const;
 
     void minimize_windows(Window&, bool);
+    void hide_windows(Window&, bool);
     void maximize_windows(Window&, bool);
+    void set_pinned(Window&, bool);
 
     template<typename Function>
     IterationDecision for_each_window_in_modal_stack(Window& window, Function f)
     {
         auto* blocking_modal_window = window.blocking_modal_window();
         if (blocking_modal_window || window.is_modal()) {
-            Vector<Window*> modal_stack;
+            Vector<Window&> modal_stack;
             auto* modal_stack_top = blocking_modal_window ? blocking_modal_window : &window;
             for (auto* parent = modal_stack_top->parent_window(); parent; parent = parent->parent_window()) {
                 auto* blocked_by = parent->blocking_modal_window();
                 if (!blocked_by || (blocked_by != modal_stack_top && !modal_stack_top->is_descendant_of(*blocked_by)))
                     break;
-                modal_stack.append(parent);
+                modal_stack.append(*parent);
                 if (!parent->is_modal())
                     break;
             }
             if (!modal_stack.is_empty()) {
                 for (size_t i = modal_stack.size(); i > 0; i--) {
-                    IterationDecision decision = f(*modal_stack[i - 1], false);
+                    IterationDecision decision = f(modal_stack[i - 1], false);
                     if (decision != IterationDecision::Continue)
                         return decision;
                 }
@@ -228,49 +252,102 @@ public:
             return f(window, true);
         }
     }
+    bool is_window_in_modal_stack(Window& window_in_modal_stack, Window& other_window);
 
-    Gfx::IntPoint get_recommended_window_position(const Gfx::IntPoint& desired);
+    Gfx::IntPoint get_recommended_window_position(Gfx::IntPoint const& desired);
 
-    int compositor_icon_scale() const;
-    void reload_icon_bitmaps_after_scale_change(bool allow_hidpi_icons = true);
+    void reload_icon_bitmaps_after_scale_change();
 
     void reevaluate_hovered_window(Window* = nullptr);
     Window* hovered_window() const { return m_hovered_window.ptr(); }
 
-private:
-    NonnullRefPtr<Cursor> get_cursor(const String& name);
+    void switch_to_window_stack(WindowStack&, Window* = nullptr, bool show_overlay = true);
+    void switch_to_window_stack(u32 row, u32 col, Window* carry = nullptr, bool show_overlay = true)
+    {
+        if (row < window_stack_rows() && col < window_stack_columns())
+            switch_to_window_stack(m_window_stacks[row][col], carry, show_overlay);
+    }
 
-    void process_mouse_event(MouseEvent&, Window*& hovered_window);
+    size_t window_stack_rows() const { return m_window_stacks.size(); }
+    size_t window_stack_columns() const { return m_window_stacks[0].size(); }
+
+    bool apply_virtual_desktop_settings(unsigned rows, unsigned columns, bool save);
+
+    WindowStack& current_window_stack()
+    {
+        VERIFY(m_current_window_stack);
+        return *m_current_window_stack;
+    }
+
+    template<typename F>
+    IterationDecision for_each_window_stack(F f)
+    {
+        for (auto& row : m_window_stacks) {
+            for (auto& stack : row) {
+                IterationDecision decision = f(stack);
+                if (decision != IterationDecision::Continue)
+                    return decision;
+            }
+        }
+        return IterationDecision::Continue;
+    }
+
+    WindowStack& window_stack_for_window(Window&);
+
+    static constexpr bool is_stationary_window_type(WindowType window_type)
+    {
+        switch (window_type) {
+        case WindowType::Normal:
+        case WindowType::ToolWindow:
+        case WindowType::Tooltip:
+            return false;
+        default:
+            return true;
+        }
+    }
+
+    void did_switch_window_stack(Badge<Compositor>, WindowStack&, WindowStack&);
+
+    template<typename Callback>
+    IterationDecision for_each_visible_window_from_back_to_front(Callback, WindowStack* = nullptr);
+    template<typename Callback>
+    IterationDecision for_each_visible_window_from_front_to_back(Callback, WindowStack* = nullptr);
+
+    MultiScaleBitmaps const* overlay_rect_shadow() const { return m_overlay_rect_shadow.ptr(); }
+
+private:
+    RefPtr<Cursor> get_cursor(String const& name);
+
+    void notify_new_active_window(Window&);
+    void notify_new_active_input_window(Window&);
+    void notify_previous_active_window(Window&);
+    void notify_previous_active_input_window(Window&);
+
+    void process_mouse_event(MouseEvent&);
     void process_event_for_doubleclick(Window& window, MouseEvent& event);
-    bool process_ongoing_window_resize(const MouseEvent&, Window*& hovered_window);
-    bool process_ongoing_window_move(MouseEvent&, Window*& hovered_window);
-    bool process_ongoing_drag(MouseEvent&, Window*& hovered_window);
-    void start_window_move(Window&, const MouseEvent&);
+    bool process_ongoing_window_resize(MouseEvent const&);
+    bool process_ongoing_window_move(MouseEvent&);
+    bool process_ongoing_drag(MouseEvent&);
+    bool process_ongoing_active_input_mouse_event(MouseEvent const&);
+    bool process_mouse_event_for_titlebar_buttons(MouseEvent const&);
+    void process_mouse_event_for_window(HitTestResult&, MouseEvent const&);
+
+    void process_key_event(KeyEvent&);
+
     template<typename Callback>
-    IterationDecision for_each_visible_window_of_type_from_back_to_front(WindowType, Callback, bool ignore_highlight = false);
-    template<typename Callback>
-    IterationDecision for_each_visible_window_of_type_from_front_to_back(WindowType, Callback, bool ignore_highlight = false);
-    template<typename Callback>
-    IterationDecision for_each_visible_window_from_front_to_back(Callback);
-    template<typename Callback>
-    IterationDecision for_each_visible_window_from_back_to_front(Callback);
-    template<typename Callback>
-    void for_each_window_listening_to_wm_events(Callback);
-    template<typename Callback>
-    void for_each_window(Callback);
-    template<typename Callback>
-    IterationDecision for_each_window_of_type_from_front_to_back(WindowType, Callback, bool ignore_highlight = false);
+    void for_each_window_manager(Callback);
 
     virtual void event(Core::Event&) override;
-    void paint_window_frame(const Window&);
-    void tell_wm_listener_about_window(Window& listener, Window&);
-    void tell_wm_listener_about_window_icon(Window& listener, Window&);
-    void tell_wm_listener_about_window_rect(Window& listener, Window&);
+    void tell_wm_about_window(WMClientConnection& conn, Window&);
+    void tell_wm_about_window_icon(WMClientConnection& conn, Window&);
+    void tell_wm_about_window_rect(WMClientConnection& conn, Window&);
+    void tell_wm_about_current_window_stack(WMClientConnection&);
     bool pick_new_active_window(Window*);
 
     void do_move_to_front(Window&, bool, bool);
 
-    bool m_allow_hidpi_icons { true };
+    [[nodiscard]] static WindowStack& get_rendering_window_stacks(WindowStack*&);
+
     RefPtr<Cursor> m_hidden_cursor;
     RefPtr<Cursor> m_arrow_cursor;
     RefPtr<Cursor> m_hand_cursor;
@@ -288,7 +365,11 @@ private:
     RefPtr<Cursor> m_wait_cursor;
     RefPtr<Cursor> m_crosshair_cursor;
 
-    InlineLinkedList<Window> m_windows_in_order;
+    RefPtr<MultiScaleBitmaps> m_overlay_rect_shadow;
+
+    // Setup 2 rows 1 column by default
+    NonnullOwnPtrVector<NonnullOwnPtrVector<WindowStack, default_window_stack_columns>, default_window_stack_rows> m_window_stacks;
+    WindowStack* m_current_window_stack { nullptr };
 
     struct DoubleClickInfo {
         struct ClickMetadata {
@@ -296,7 +377,7 @@ private:
             Gfx::IntPoint last_position;
         };
 
-        const ClickMetadata& metadata_for_button(MouseButton) const;
+        ClickMetadata const& metadata_for_button(MouseButton) const;
         ClickMetadata& metadata_for_button(MouseButton);
 
         void reset()
@@ -318,18 +399,18 @@ private:
         ClickMetadata m_forward;
     };
 
-    bool is_considered_doubleclick(const MouseEvent& event, const DoubleClickInfo::ClickMetadata& metadata) const;
+    bool is_considered_doubleclick(MouseEvent const&, DoubleClickInfo::ClickMetadata const&) const;
 
     DoubleClickInfo m_double_click_info;
     int m_double_click_speed { 0 };
     int m_max_distance_for_double_click { 4 };
+    bool m_previous_event_was_super_keydown { false };
 
-    WeakPtr<Window> m_active_window;
     WeakPtr<Window> m_hovered_window;
     WeakPtr<Window> m_highlight_window;
-    WeakPtr<Window> m_active_input_window;
-    WeakPtr<Window> m_active_input_tracking_window;
+    WeakPtr<Window> m_window_with_active_menu;
 
+    OwnPtr<WindowGeometryOverlay> m_geometry_overlay;
     WeakPtr<Window> m_move_window;
     Gfx::IntPoint m_move_origin;
     Gfx::IntPoint m_move_window_origin;
@@ -352,143 +433,100 @@ private:
 
     RefPtr<Core::ConfigFile> m_config;
 
+    OwnPtr<DndOverlay> m_dnd_overlay;
     WeakPtr<ClientConnection> m_dnd_client;
     String m_dnd_text;
-    RefPtr<Core::MimeData> m_dnd_mime_data;
-    RefPtr<Gfx::Bitmap> m_dnd_bitmap;
 
-    bool m_previous_event_is_key_down_logo { false };
+    RefPtr<Core::MimeData> m_dnd_mime_data;
+
+    WindowStack* m_switching_to_window_stack { nullptr };
+    Vector<WeakPtr<Window>, 4> m_carry_window_to_new_stack;
 };
 
 template<typename Callback>
-IterationDecision WindowManager::for_each_visible_window_of_type_from_back_to_front(WindowType type, Callback callback, bool ignore_highlight)
+inline IterationDecision WindowManager::for_each_visible_window_from_back_to_front(Callback callback, WindowStack* specific_stack)
 {
-    bool do_highlight_window_at_end = false;
-    for (auto& window : m_windows_in_order) {
-        if (!window.is_visible())
-            continue;
-        if (window.is_minimized())
-            continue;
-        if (window.type() != type)
-            continue;
-        if (!ignore_highlight && m_highlight_window == &window) {
-            do_highlight_window_at_end = true;
-            continue;
+    auto* window_stack = specific_stack;
+    WindowStack* transitioning_to_window_stack = nullptr;
+    if (!window_stack)
+        window_stack = &get_rendering_window_stacks(transitioning_to_window_stack);
+    auto for_each_window = [&]<WindowType window_type>() {
+        if constexpr (is_stationary_window_type(window_type)) {
+            auto& stationary_stack = window_stack->stationary_window_stack();
+            return stationary_stack.for_each_visible_window_of_type_from_back_to_front(window_type, callback);
+        } else {
+            auto decision = window_stack->for_each_visible_window_of_type_from_back_to_front(window_type, callback);
+            if (decision == IterationDecision::Continue && transitioning_to_window_stack)
+                decision = transitioning_to_window_stack->for_each_visible_window_of_type_from_back_to_front(window_type, callback);
+            return decision;
         }
-        if (callback(window) == IterationDecision::Break)
-            return IterationDecision::Break;
-    }
-    if (do_highlight_window_at_end) {
-        if (callback(*m_highlight_window) == IterationDecision::Break)
-            return IterationDecision::Break;
-    }
-    return IterationDecision::Continue;
+    };
+    if (for_each_window.template operator()<WindowType::Desktop>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::Normal>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::ToolWindow>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::Taskbar>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::AppletArea>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::Notification>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::Tooltip>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    if (for_each_window.template operator()<WindowType::Menu>() == IterationDecision::Break)
+        return IterationDecision::Break;
+    return for_each_window.template operator()<WindowType::WindowSwitcher>();
 }
 
 template<typename Callback>
-IterationDecision WindowManager::for_each_visible_window_from_back_to_front(Callback callback)
+inline IterationDecision WindowManager::for_each_visible_window_from_front_to_back(Callback callback, WindowStack* specific_stack)
 {
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Desktop, callback) == IterationDecision::Break)
+    auto* window_stack = specific_stack;
+    WindowStack* transitioning_to_window_stack = nullptr;
+    if (!window_stack)
+        window_stack = &get_rendering_window_stacks(transitioning_to_window_stack);
+    auto for_each_window = [&]<WindowType window_type>() {
+        if constexpr (is_stationary_window_type(window_type)) {
+            auto& stationary_stack = window_stack->stationary_window_stack();
+            return stationary_stack.for_each_visible_window_of_type_from_front_to_back(window_type, callback);
+        } else {
+            auto decision = window_stack->for_each_visible_window_of_type_from_front_to_back(window_type, callback);
+            if (decision == IterationDecision::Continue && transitioning_to_window_stack)
+                decision = transitioning_to_window_stack->for_each_visible_window_of_type_from_front_to_back(window_type, callback);
+            return decision;
+        }
+    };
+    if (for_each_window.template operator()<WindowType::WindowSwitcher>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Normal, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::Menu>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::ToolWindow, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::Tooltip>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Taskbar, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::Notification>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Notification, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::AppletArea>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Tooltip, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::Taskbar>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Menubar, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::ToolWindow>() == IterationDecision::Break)
         return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_back_to_front(WindowType::Menu, callback) == IterationDecision::Break)
+    if (for_each_window.template operator()<WindowType::Normal>() == IterationDecision::Break)
         return IterationDecision::Break;
-    return for_each_visible_window_of_type_from_back_to_front(WindowType::WindowSwitcher, callback);
+    return for_each_window.template operator()<WindowType::Desktop>();
 }
 
 template<typename Callback>
-IterationDecision WindowManager::for_each_visible_window_of_type_from_front_to_back(WindowType type, Callback callback, bool ignore_highlight)
+void WindowManager::for_each_window_manager(Callback callback)
 {
-    if (!ignore_highlight && m_highlight_window && m_highlight_window->type() == type && m_highlight_window->is_visible()) {
-        if (callback(*m_highlight_window) == IterationDecision::Break)
-            return IterationDecision::Break;
-    }
+    auto& connections = WMClientConnection::s_connections;
 
-    for (auto* window = m_windows_in_order.tail(); window; window = window->prev()) {
-        if (!window->is_visible())
-            continue;
-        if (window->is_minimized())
-            continue;
-        if (window->type() != type)
-            continue;
-        if (!ignore_highlight && window == m_highlight_window)
-            continue;
-        if (callback(*window) == IterationDecision::Break)
-            return IterationDecision::Break;
-    }
-    return IterationDecision::Continue;
-}
-
-template<typename Callback>
-IterationDecision WindowManager::for_each_visible_window_from_front_to_back(Callback callback)
-{
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::WindowSwitcher, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::Menu, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::Menubar, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::Tooltip, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::Notification, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::Taskbar, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::ToolWindow, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    if (for_each_visible_window_of_type_from_front_to_back(WindowType::Normal, callback) == IterationDecision::Break)
-        return IterationDecision::Break;
-    return for_each_visible_window_of_type_from_front_to_back(WindowType::Desktop, callback);
-}
-
-template<typename Callback>
-void WindowManager::for_each_window_listening_to_wm_events(Callback callback)
-{
-    for (auto* window = m_windows_in_order.tail(); window; window = window->prev()) {
-        if (!window->listens_to_wm_events())
-            continue;
-        if (callback(*window) == IterationDecision::Break)
+    // FIXME: this isn't really ordered... does it need to be?
+    for (auto it = connections.begin(); it != connections.end(); ++it) {
+        if (callback(*it->value) == IterationDecision::Break)
             return;
     }
-}
-
-template<typename Callback>
-void WindowManager::for_each_window(Callback callback)
-{
-    for (auto* window = m_windows_in_order.tail(); window; window = window->prev()) {
-        if (callback(*window) == IterationDecision::Break)
-            return;
-    }
-}
-
-template<typename Callback>
-IterationDecision WindowManager::for_each_window_of_type_from_front_to_back(WindowType type, Callback callback, bool ignore_highlight)
-{
-    if (!ignore_highlight && m_highlight_window && m_highlight_window->type() == type && m_highlight_window->is_visible()) {
-        if (callback(*m_highlight_window) == IterationDecision::Break)
-            return IterationDecision::Break;
-    }
-
-    for (auto* window = m_windows_in_order.tail(); window; window = window->prev()) {
-        if (window->type() != type)
-            continue;
-        if (!ignore_highlight && window == m_highlight_window)
-            continue;
-        if (callback(*window) == IterationDecision::Break)
-            return IterationDecision::Break;
-    }
-    return IterationDecision::Continue;
 }
 
 }

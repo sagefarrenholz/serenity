@@ -1,34 +1,14 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Base64.h>
 #include <AK/String.h>
 #include <AK/Utf8View.h>
 #include <LibJS/Runtime/Error.h>
-#include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/Shape.h>
 #include <LibTextCodec/Decoder.h>
 #include <LibWeb/Bindings/DocumentWrapper.h>
@@ -40,11 +20,14 @@
 #include <LibWeb/Bindings/NavigatorObject.h>
 #include <LibWeb/Bindings/NodeWrapperFactory.h>
 #include <LibWeb/Bindings/PerformanceWrapper.h>
+#include <LibWeb/Bindings/ScreenWrapper.h>
 #include <LibWeb/Bindings/WindowObject.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/Window.h>
 #include <LibWeb/Origin.h>
+#include <LibWeb/Page/BrowsingContext.h>
+#include <LibWeb/WebAssembly/WebAssemblyObject.h>
 
 #include <LibWeb/Bindings/WindowObjectHelper.h>
 
@@ -60,32 +43,41 @@ void WindowObject::initialize_global_object()
 {
     Base::initialize_global_object();
 
-    set_prototype(&ensure_web_prototype<EventTargetPrototype>("EventTarget"));
+    auto success = Object::internal_set_prototype_of(&ensure_web_prototype<EventTargetPrototype>("EventTarget"));
+    VERIFY(success);
 
-    define_property("window", this, JS::Attribute::Enumerable);
-    define_property("frames", this, JS::Attribute::Enumerable);
-    define_property("self", this, JS::Attribute::Enumerable);
-    define_native_property("document", document_getter, document_setter, JS::Attribute::Enumerable);
-    define_native_property("performance", performance_getter, nullptr, JS::Attribute::Enumerable);
-    define_native_property("innerWidth", inner_width_getter, nullptr, JS::Attribute::Enumerable);
-    define_native_property("innerHeight", inner_height_getter, nullptr, JS::Attribute::Enumerable);
-    define_native_function("alert", alert);
-    define_native_function("confirm", confirm);
-    define_native_function("prompt", prompt);
-    define_native_function("setInterval", set_interval, 1);
-    define_native_function("setTimeout", set_timeout, 1);
-    define_native_function("clearInterval", clear_interval, 1);
-    define_native_function("clearTimeout", clear_timeout, 1);
-    define_native_function("requestAnimationFrame", request_animation_frame, 1);
-    define_native_function("cancelAnimationFrame", cancel_animation_frame, 1);
-    define_native_function("atob", atob, 1);
-    define_native_function("btoa", btoa, 1);
+    // FIXME: These should be native accessors, not properties
+    define_direct_property("window", this, JS::Attribute::Enumerable);
+    define_direct_property("frames", this, JS::Attribute::Enumerable);
+    define_direct_property("self", this, JS::Attribute::Enumerable);
+    define_native_accessor("top", top_getter, nullptr, JS::Attribute::Enumerable);
+    define_native_accessor("parent", parent_getter, {}, JS::Attribute::Enumerable);
+    define_native_accessor("document", document_getter, {}, JS::Attribute::Enumerable);
+    define_native_accessor("performance", performance_getter, {}, JS::Attribute::Enumerable);
+    define_native_accessor("screen", screen_getter, {}, JS::Attribute::Enumerable);
+    define_native_accessor("innerWidth", inner_width_getter, {}, JS::Attribute::Enumerable);
+    define_native_accessor("innerHeight", inner_height_getter, {}, JS::Attribute::Enumerable);
+    u8 attr = JS::Attribute::Writable | JS::Attribute::Enumerable | JS::Attribute::Configurable;
+    define_native_function("alert", alert, 0, attr);
+    define_native_function("confirm", confirm, 0, attr);
+    define_native_function("prompt", prompt, 0, attr);
+    define_native_function("setInterval", set_interval, 1, attr);
+    define_native_function("setTimeout", set_timeout, 1, attr);
+    define_native_function("clearInterval", clear_interval, 1, attr);
+    define_native_function("clearTimeout", clear_timeout, 1, attr);
+    define_native_function("requestAnimationFrame", request_animation_frame, 1, attr);
+    define_native_function("cancelAnimationFrame", cancel_animation_frame, 1, attr);
+    define_native_function("atob", atob, 1, attr);
+    define_native_function("btoa", btoa, 1, attr);
 
     // Legacy
-    define_native_property("event", event_getter, nullptr, JS::Attribute::Enumerable);
+    define_native_accessor("event", event_getter, {}, JS::Attribute::Enumerable);
 
-    define_property("navigator", heap().allocate<NavigatorObject>(*this, *this), JS::Attribute::Enumerable | JS::Attribute::Configurable);
-    define_property("location", heap().allocate<LocationObject>(*this, *this), JS::Attribute::Enumerable | JS::Attribute::Configurable);
+    define_direct_property("navigator", heap().allocate<NavigatorObject>(*this, *this), JS::Attribute::Enumerable | JS::Attribute::Configurable);
+    define_direct_property("location", heap().allocate<LocationObject>(*this, *this), JS::Attribute::Enumerable | JS::Attribute::Configurable);
+
+    // WebAssembly "namespace"
+    define_direct_property("WebAssembly", heap().allocate<WebAssemblyObject>(*this, *this), JS::Attribute::Enumerable | JS::Attribute::Configurable);
 
     ADD_WINDOW_OBJECT_INTERFACES;
 }
@@ -110,11 +102,20 @@ Origin WindowObject::origin() const
 
 static DOM::Window* impl_from(JS::VM& vm, JS::GlobalObject& global_object)
 {
-    auto* this_object = vm.this_value(global_object).to_object(global_object);
-    if (!this_object) {
-        VERIFY_NOT_REACHED();
-        return nullptr;
+    // Since this is a non built-in function we must treat it as non-strict mode
+    // this means that a nullish this_value should be converted to the
+    // global_object. Generally this does not matter as we try to convert the
+    // this_value to a specific object type in the bindings. But since window is
+    // the global object we make an exception here.
+    // This allows calls like `setTimeout(f, 10)` to work.
+    auto this_value = vm.this_value(global_object);
+    if (this_value.is_nullish()) {
+        this_value = global_object.value_of();
     }
+
+    auto* this_object = this_value.to_object(global_object);
+    VERIFY(this_object);
+
     if (StringView("WindowObject") != this_object->class_name()) {
         vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, "WindowObject");
         return nullptr;
@@ -203,7 +204,7 @@ JS_DEFINE_NATIVE_FUNCTION(WindowObject::set_interval)
             interval = 0;
     }
 
-    auto timer_id = impl->set_interval(*static_cast<JS::Function*>(callback_object), interval);
+    auto timer_id = impl->set_interval(*static_cast<JS::FunctionObject*>(callback_object), interval);
     return JS::Value(timer_id);
 }
 
@@ -232,7 +233,7 @@ JS_DEFINE_NATIVE_FUNCTION(WindowObject::set_timeout)
             interval = 0;
     }
 
-    auto timer_id = impl->set_timeout(*static_cast<JS::Function*>(callback_object), interval);
+    auto timer_id = impl->set_timeout(*static_cast<JS::FunctionObject*>(callback_object), interval);
     return JS::Value(timer_id);
 }
 
@@ -284,7 +285,7 @@ JS_DEFINE_NATIVE_FUNCTION(WindowObject::request_animation_frame)
         vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotAFunctionNoParam);
         return {};
     }
-    return JS::Value(impl->request_animation_frame(*static_cast<JS::Function*>(callback_object)));
+    return JS::Value(impl->request_animation_frame(*static_cast<JS::FunctionObject*>(callback_object)));
 }
 
 JS_DEFINE_NATIVE_FUNCTION(WindowObject::cancel_animation_frame)
@@ -350,7 +351,43 @@ JS_DEFINE_NATIVE_FUNCTION(WindowObject::btoa)
     return JS::js_string(vm, move(encoded));
 }
 
-JS_DEFINE_NATIVE_GETTER(WindowObject::document_getter)
+// https://html.spec.whatwg.org/multipage/browsers.html#dom-top
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::top_getter)
+{
+    auto* impl = impl_from(vm, global_object);
+    if (!impl)
+        return {};
+
+    auto* this_browsing_context = impl->document().browsing_context();
+    if (!this_browsing_context)
+        return JS::js_null();
+
+    VERIFY(this_browsing_context->top_level_browsing_context().document());
+    auto& top_window = this_browsing_context->top_level_browsing_context().document()->window();
+    return top_window.wrapper();
+}
+
+// https://html.spec.whatwg.org/multipage/browsers.html#dom-parent
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::parent_getter)
+{
+    auto* impl = impl_from(vm, global_object);
+    if (!impl)
+        return {};
+
+    auto* this_browsing_context = impl->document().browsing_context();
+    if (!this_browsing_context)
+        return JS::js_null();
+
+    if (this_browsing_context->parent()) {
+        VERIFY(this_browsing_context->parent()->document());
+        auto& parent_window = this_browsing_context->parent()->document()->window();
+        return parent_window.wrapper();
+    }
+    VERIFY(this_browsing_context == &this_browsing_context->top_level_browsing_context());
+    return impl->wrapper();
+}
+
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::document_getter)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)
@@ -358,12 +395,7 @@ JS_DEFINE_NATIVE_GETTER(WindowObject::document_getter)
     return wrap(global_object, impl->document());
 }
 
-JS_DEFINE_NATIVE_SETTER(WindowObject::document_setter)
-{
-    // FIXME: Figure out what we should do here. Just ignore attempts to set window.document for now.
-}
-
-JS_DEFINE_NATIVE_GETTER(WindowObject::performance_getter)
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::performance_getter)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)
@@ -371,7 +403,15 @@ JS_DEFINE_NATIVE_GETTER(WindowObject::performance_getter)
     return wrap(global_object, impl->performance());
 }
 
-JS_DEFINE_NATIVE_GETTER(WindowObject::event_getter)
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::screen_getter)
+{
+    auto* impl = impl_from(vm, global_object);
+    if (!impl)
+        return {};
+    return wrap(global_object, impl->screen());
+}
+
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::event_getter)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)
@@ -381,7 +421,7 @@ JS_DEFINE_NATIVE_GETTER(WindowObject::event_getter)
     return wrap(global_object, const_cast<DOM::Event&>(*impl->current_event()));
 }
 
-JS_DEFINE_NATIVE_GETTER(WindowObject::inner_width_getter)
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::inner_width_getter)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)
@@ -389,7 +429,7 @@ JS_DEFINE_NATIVE_GETTER(WindowObject::inner_width_getter)
     return JS::Value(impl->inner_width());
 }
 
-JS_DEFINE_NATIVE_GETTER(WindowObject::inner_height_getter)
+JS_DEFINE_NATIVE_FUNCTION(WindowObject::inner_height_getter)
 {
     auto* impl = impl_from(vm, global_object);
     if (!impl)

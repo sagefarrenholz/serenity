@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -40,9 +20,9 @@ public:
     {
     }
 
-    static Result<InputFileStream, String> open(StringView filename, IODevice::OpenMode mode = IODevice::OpenMode::ReadOnly, mode_t permissions = 0644)
+    static Result<InputFileStream, String> open(StringView filename, OpenMode mode = OpenMode::ReadOnly, mode_t permissions = 0644)
     {
-        VERIFY((mode & 0xf) == IODevice::OpenMode::ReadOnly || (mode & 0xf) == IODevice::OpenMode::ReadWrite);
+        VERIFY(has_flag(mode, OpenMode::ReadOnly));
 
         auto file_result = File::open(filename, mode, permissions);
 
@@ -52,9 +32,9 @@ public:
         return InputFileStream { file_result.value() };
     }
 
-    static Result<Buffered<InputFileStream>, String> open_buffered(StringView filename, IODevice::OpenMode mode = IODevice::OpenMode::ReadOnly, mode_t permissions = 0644)
+    static Result<Buffered<InputFileStream>, String> open_buffered(StringView filename, OpenMode mode = OpenMode::ReadOnly, mode_t permissions = 0644)
     {
-        VERIFY((mode & 0xf) == IODevice::OpenMode::ReadOnly || (mode & 0xf) == IODevice::OpenMode::ReadWrite);
+        VERIFY(has_flag(mode, OpenMode::ReadOnly));
 
         auto file_result = File::open(filename, mode, permissions);
 
@@ -83,7 +63,12 @@ public:
         return true;
     }
 
-    bool discard_or_error(size_t count) override { return m_file->seek(count, IODevice::SeekMode::FromCurrentPosition); }
+    bool seek(size_t offset, SeekMode whence = SeekMode::SetPosition)
+    {
+        return m_file->seek(offset, whence);
+    }
+
+    bool discard_or_error(size_t count) override { return m_file->seek(count, SeekMode::FromCurrentPosition); }
 
     bool unreliable_eof() const override { return m_file->eof(); }
 
@@ -104,9 +89,9 @@ public:
     {
     }
 
-    static Result<OutputFileStream, String> open(StringView filename, IODevice::OpenMode mode = IODevice::OpenMode::WriteOnly, mode_t permissions = 0644)
+    static Result<OutputFileStream, String> open(StringView filename, OpenMode mode = OpenMode::WriteOnly, mode_t permissions = 0644)
     {
-        VERIFY((mode & 0xf) == IODevice::OpenMode::WriteOnly || (mode & 0xf) == IODevice::OpenMode::ReadWrite);
+        VERIFY(has_flag(mode, OpenMode::WriteOnly));
 
         auto file_result = File::open(filename, mode, permissions);
 
@@ -116,9 +101,9 @@ public:
         return OutputFileStream { file_result.value() };
     }
 
-    static Result<Buffered<OutputFileStream>, String> open_buffered(StringView filename, IODevice::OpenMode mode = IODevice::OpenMode::WriteOnly, mode_t permissions = 0644)
+    static Result<Buffered<OutputFileStream>, String> open_buffered(StringView filename, OpenMode mode = OpenMode::WriteOnly, mode_t permissions = 0644)
     {
-        VERIFY((mode & 0xf) == IODevice::OpenMode::WriteOnly || (mode & 0xf) == IODevice::OpenMode::ReadWrite);
+        VERIFY(has_flag(mode, OpenMode::WriteOnly));
 
         auto file_result = File::open(filename, mode, permissions);
 
@@ -131,6 +116,11 @@ public:
     static OutputFileStream standard_output()
     {
         return OutputFileStream { Core::File::standard_output() };
+    }
+
+    static OutputFileStream standard_error()
+    {
+        return OutputFileStream { Core::File::standard_error() };
     }
 
     static Buffered<OutputFileStream> stdout_buffered()

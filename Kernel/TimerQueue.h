@@ -1,33 +1,13 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Function.h>
-#include <AK/InlineLinkedList.h>
+#include <AK/IntrusiveList.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
@@ -38,18 +18,18 @@ namespace Kernel {
 
 TYPEDEF_DISTINCT_ORDERED_ID(u64, TimerId);
 
-class Timer : public RefCounted<Timer>
-    , public InlineLinkedListNode<Timer> {
+class Timer : public RefCounted<Timer> {
     friend class TimerQueue;
-    friend class InlineLinkedListNode<Timer>;
 
 public:
-    Timer(clockid_t clock_id, Time expires, Function<void()>&& callback)
-        : m_clock_id(clock_id)
-        , m_expires(expires)
-        , m_callback(move(callback))
+    void setup(clockid_t clock_id, Time expires, Function<void()>&& callback)
     {
+        VERIFY(!is_queued());
+        m_clock_id = clock_id;
+        m_expires = expires;
+        m_callback = move(callback);
     }
+
     ~Timer()
     {
         VERIFY(!is_queued());
@@ -63,9 +43,9 @@ private:
     Time m_expires;
     Time m_remaining {};
     Function<void()> m_callback;
-    Timer* m_next { nullptr };
-    Timer* m_prev { nullptr };
-    Atomic<bool, AK::MemoryOrder::memory_order_relaxed> m_queued { false };
+    Atomic<bool> m_cancelled { false };
+    Atomic<bool> m_callback_finished { false };
+    Atomic<bool> m_in_use { false };
 
     bool operator<(const Timer& rhs) const
     {
@@ -79,9 +59,25 @@ private:
     {
         return m_id == rhs.m_id;
     }
-    bool is_queued() const { return m_queued; }
-    void set_queued(bool queued) { m_queued = queued; }
+
+    void clear_cancelled() { return m_cancelled.store(false, AK::memory_order_release); }
+    bool set_cancelled() { return m_cancelled.exchange(true, AK::memory_order_acq_rel); }
+
+    bool is_in_use() { return m_in_use.load(AK::memory_order_acquire); };
+    void set_in_use() { m_in_use.store(true, AK::memory_order_release); }
+    void clear_in_use() { return m_in_use.store(false, AK::memory_order_release); }
+
+    bool is_callback_finished() const { return m_callback_finished.load(AK::memory_order_acquire); }
+    void clear_callback_finished() { m_callback_finished.store(false, AK::memory_order_release); }
+    void set_callback_finished() { m_callback_finished.store(true, AK::memory_order_release); }
+
     Time now(bool) const;
+
+    bool is_queued() const { return m_list_node.is_in_list(); }
+
+public:
+    IntrusiveListNode<Timer> m_list_node;
+    using List = IntrusiveList<Timer, RawPtr<Timer>, &Timer::m_list_node>;
 };
 
 class TimerQueue {
@@ -92,10 +88,10 @@ public:
     static TimerQueue& the();
 
     TimerId add_timer(NonnullRefPtr<Timer>&&);
-    RefPtr<Timer> add_timer_without_id(clockid_t, const Time&, Function<void()>&&);
+    bool add_timer_without_id(NonnullRefPtr<Timer>, clockid_t, const Time&, Function<void()>&&);
     TimerId add_timer(clockid_t, const Time& timeout, Function<void()>&& callback);
     bool cancel_timer(TimerId id);
-    bool cancel_timer(Timer&);
+    bool cancel_timer(Timer& timer, bool* was_in_use = nullptr);
     bool cancel_timer(NonnullRefPtr<Timer>&& timer)
     {
         return cancel_timer(*move(timer));
@@ -104,7 +100,7 @@ public:
 
 private:
     struct Queue {
-        InlineLinkedList<Timer> list;
+        Timer::List list;
         Time next_timer_due {};
     };
     void remove_timer_locked(Queue&, Timer&);
@@ -130,7 +126,7 @@ private:
     u64 m_ticks_per_second { 0 };
     Queue m_timer_queue_monotonic;
     Queue m_timer_queue_realtime;
-    InlineLinkedList<Timer> m_timers_executing;
+    Timer::List m_timers_executing;
 };
 
 }

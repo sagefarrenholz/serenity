@@ -10,6 +10,7 @@ PREFIX_DIR="$DIR/Local/$ARCH"
 BUILD_DIR="$DIR/Build/$ARCH"
 TARBALLS_DIR="$DIR/Tarballs"
 
+# shellcheck source=/dev/null
 source "$DIR/../Ports/python3/version.sh"
 
 mkdir -p "${TARBALLS_DIR}"
@@ -22,8 +23,8 @@ pushd "${TARBALLS_DIR}"
         echo "${PYTHON_ARCHIVE} already exists, not downloading archive"
     fi
 
-    if ! md5sum --status -c <(echo "${PYTHON_ARCHIVE_MD5SUM}" "${PYTHON_ARCHIVE}"); then
-        echo "Python archive MD5 sum mismatch, please run script again"
+    if ! sha256sum --status -c <(echo "${PYTHON_ARCHIVE_SHA256SUM}" "${PYTHON_ARCHIVE}"); then
+        echo "Python archive SHA256 sum mismatch, please run script again"
         rm -f "${PYTHON_ARCHIVE}"
         exit 1
     fi

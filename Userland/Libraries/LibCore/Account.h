@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Peter Elliott <pelliott@ualberta.ca>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -31,14 +11,30 @@
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <pwd.h>
+#ifndef AK_OS_BSD_GENERIC
+#    include <shadow.h>
+#endif
 #include <sys/types.h>
 
 namespace Core {
 
+#ifdef AK_OS_BSD_GENERIC
+struct spwd {
+    char* sp_namp;
+    char* sp_pwdp;
+};
+#endif
+
 class Account {
 public:
-    static Result<Account, String> from_name(const char* username);
-    static Result<Account, String> from_uid(uid_t uid);
+    enum class Read {
+        All,
+        PasswdOnly
+    };
+
+    static Account self(Read options = Read::All);
+    static Result<Account, String> from_name(const char* username, Read options = Read::All);
+    static Result<Account, String> from_uid(uid_t uid, Read options = Read::All);
 
     bool authenticate(const char* password) const;
     bool login() const;
@@ -50,6 +46,11 @@ public:
     // You must call sync to apply changes.
     void set_password(const char* password);
     void set_password_enabled(bool enabled);
+    void set_home_directory(const char* home_directory) { m_home_directory = home_directory; }
+    void set_uid(uid_t uid) { m_uid = uid; }
+    void set_gid(gid_t gid) { m_gid = gid; }
+    void set_shell(const char* shell) { m_shell = shell; }
+    void set_gecos(const char* gecos) { m_gecos = gecos; }
     void delete_password();
 
     // A null password means that this account was missing from /etc/shadow.
@@ -66,13 +67,14 @@ public:
     bool sync();
 
 private:
-    static Result<Account, String> from_passwd(const passwd&);
+    static Result<Account, String> from_passwd(const passwd&, const spwd&);
 
-    Account(const passwd& pwd, Vector<gid_t> extra_gids);
-    void load_shadow_file();
+    Account(const passwd& pwd, const spwd& spwd, Vector<gid_t> extra_gids);
 
     String generate_passwd_file() const;
+#ifndef AK_OS_BSD_GENERIC
     String generate_shadow_file() const;
+#endif
 
     String m_username;
 
@@ -83,12 +85,6 @@ private:
     String m_home_directory;
     String m_shell;
     Vector<gid_t> m_extra_gids;
-
-    struct ShadowEntry {
-        String username;
-        String password_hash;
-    };
-    Vector<ShadowEntry> m_shadow_entries;
 };
 
 }

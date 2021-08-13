@@ -1,37 +1,18 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "HexEditor.h"
+#include "SearchResultsModel.h"
 #include <AK/Debug.h>
 #include <AK/StringBuilder.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Clipboard.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/ScrollBar.h>
+#include <LibGUI/Scrollbar.h>
 #include <LibGUI/TextEditor.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/FontDatabase.h>
@@ -132,6 +113,13 @@ bool HexEditor::write_to_file(const String& path)
     return true;
 }
 
+size_t HexEditor::selection_size()
+{
+    if (!has_selection())
+        return 0;
+    return abs(m_selection_end - m_selection_start) + 1;
+}
+
 bool HexEditor::copy_selected_hex_to_clipboard()
 {
     if (!has_selection())
@@ -223,9 +211,7 @@ void HexEditor::mousedown_event(GUI::MouseEvent& event)
         if (offset < 0 || offset >= static_cast<int>(m_buffer.size()))
             return;
 
-#if HEX_DEBUG
-        outln("HexEditor::mousedown_event(hex): offset={}", offset);
-#endif
+        dbgln_if(HEX_DEBUG, "HexEditor::mousedown_event(hex): offset={}", offset);
 
         m_edit_mode = EditMode::Hex;
         m_byte_position = 0;
@@ -245,9 +231,7 @@ void HexEditor::mousedown_event(GUI::MouseEvent& event)
         if (offset < 0 || offset >= static_cast<int>(m_buffer.size()))
             return;
 
-#if HEX_DEBUG
-        outln("HexEditor::mousedown_event(text): offset={}", offset);
-#endif
+        dbgln_if(HEX_DEBUG, "HexEditor::mousedown_event(text): offset={}", offset);
 
         m_position = offset;
         m_byte_position = 0;
@@ -345,9 +329,7 @@ void HexEditor::scroll_position_into_view(int position)
 
 void HexEditor::keydown_event(GUI::KeyEvent& event)
 {
-#if HEX_DEBUG
-    outln("HexEditor::keydown_event key={}", static_cast<u8>(event.key()));
-#endif
+    dbgln_if(HEX_DEBUG, "HexEditor::keydown_event key={}", static_cast<u8>(event.key()));
 
     if (event.key() == KeyCode::Key_Up) {
         if (m_position - bytes_per_row() >= 0) {
@@ -523,7 +505,7 @@ void HexEditor::paint_event(GUI::PaintEvent& event)
         painter.draw_text(
             side_offset_rect,
             line,
-            is_current_line ? Gfx::FontDatabase::default_bold_font() : font(),
+            is_current_line ? font().bold_variant() : font(),
             Gfx::TextAlignment::TopLeft,
             is_current_line ? palette().ruler_active_text() : palette().ruler_inactive_text());
     }
@@ -584,27 +566,101 @@ void HexEditor::paint_event(GUI::PaintEvent& event)
     }
 }
 
+void HexEditor::select_all()
+{
+    highlight(0, m_buffer.size() - 1);
+    set_position(0);
+}
+
+void HexEditor::highlight(int start, int end)
+{
+    m_selection_start = start;
+    m_selection_end = end;
+    set_position(start);
+}
+
 int HexEditor::find_and_highlight(ByteBuffer& needle, int start)
+{
+    auto end_of_match = find(needle, start);
+    highlight(end_of_match - needle.size(), end_of_match - 1);
+    return end_of_match;
+}
+
+int HexEditor::find(ByteBuffer& needle, int start)
 {
     if (m_buffer.is_empty())
         return -1;
 
-    if (needle.is_null()) {
-        dbgln("needle is null");
-        return -1;
-    }
-
-    auto raw_offset = memmem(m_buffer.data() + start, m_buffer.size(), needle.data(), needle.size());
+    auto raw_offset = memmem(m_buffer.data() + start, m_buffer.size() - start, needle.data(), needle.size());
     if (raw_offset == NULL)
         return -1;
 
     int relative_offset = static_cast<const u8*>(raw_offset) - m_buffer.data();
-    dbgln("find_and_highlight: start={} raw_offset={} relative_offset={}", start, raw_offset, relative_offset);
+    dbgln("find: start={} raw_offset={} relative_offset={}", start, raw_offset, relative_offset);
 
-    auto end_of_match = relative_offset + needle;
-    set_position(relative_offset);
-    m_selection_start = relative_offset;
-    m_selection_end = end_of_match;
+    auto end_of_match = relative_offset + needle.size();
 
     return end_of_match;
+}
+
+Vector<Match> HexEditor::find_all(ByteBuffer& needle, int start)
+{
+    if (m_buffer.is_empty())
+        return {};
+
+    Vector<Match> matches;
+
+    size_t i = start;
+    while (i < m_buffer.size()) {
+        auto raw_offset = memmem(m_buffer.data() + i, m_buffer.size() - i, needle.data(), needle.size());
+        if (raw_offset == NULL)
+            break;
+
+        int relative_offset = static_cast<const u8*>(raw_offset) - m_buffer.data();
+        dbgln("find_all: needle={} start={} raw_offset={} relative_offset={}", needle.data(), i, raw_offset, relative_offset);
+        matches.append({ relative_offset, String::formatted("{}", StringView { needle }.to_string().characters()) });
+        i = relative_offset + needle.size();
+    }
+
+    if (matches.is_empty())
+        return {};
+
+    auto first_match = matches.at(0);
+    highlight(first_match.offset, first_match.offset + first_match.value.length());
+
+    return matches;
+}
+
+Vector<Match> HexEditor::find_all_strings(size_t min_length)
+{
+    if (m_buffer.is_empty())
+        return {};
+
+    Vector<Match> matches;
+
+    int offset = -1;
+    StringBuilder builder;
+    for (size_t i = 0; i < m_buffer.size(); i++) {
+        char c = m_buffer.bytes().at(i);
+        if (isprint(c)) {
+            if (offset == -1)
+                offset = i;
+            builder.append(c);
+        } else {
+            if (builder.length() >= min_length) {
+                dbgln("find_all_strings: relative_offset={} string={}", offset, builder.to_string());
+                matches.append({ offset, builder.to_string() });
+            }
+            builder.clear();
+            offset = -1;
+        }
+    }
+
+    if (matches.is_empty())
+        return {};
+
+    auto first_match = matches.at(0);
+    highlight(first_match.offset, first_match.offset + first_match.value.length());
+
+    return matches;
 }

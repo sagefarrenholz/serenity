@@ -1,30 +1,9 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibGUI/AbstractTableView.h>
 #include <LibGUI/Action.h>
@@ -33,7 +12,6 @@
 #include <LibGUI/Menu.h>
 #include <LibGUI/Model.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/ScrollBar.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Palette.h>
 
@@ -128,7 +106,8 @@ void AbstractTableView::update_column_sizes()
             auto cell_data = model.index(row, column).data();
             int cell_width = 0;
             if (cell_data.is_icon()) {
-                cell_width = cell_data.as_icon().bitmap_for_size(16)->width();
+                if (auto bitmap = cell_data.as_icon().bitmap_for_size(16))
+                    cell_width = bitmap->width();
             } else if (cell_data.is_bitmap()) {
                 cell_width = cell_data.as_bitmap().width();
             } else if (cell_data.is_valid()) {
@@ -149,7 +128,7 @@ void AbstractTableView::update_row_sizes()
     int row_count = model.row_count();
 
     for (int row = 0; row < row_count; ++row) {
-        if (!column_header().is_section_visible(row))
+        if (!row_header().is_section_visible(row))
             continue;
         row_header().set_section_size(row, row_height());
     }
@@ -200,6 +179,16 @@ void AbstractTableView::set_column_width(int column, int width)
     column_header().set_section_size(column, width);
 }
 
+int AbstractTableView::minimum_column_width(int)
+{
+    return 2;
+}
+
+int AbstractTableView::minimum_row_height(int)
+{
+    return 2;
+}
+
 Gfx::TextAlignment AbstractTableView::column_header_alignment(int column_index) const
 {
     if (!model())
@@ -214,6 +203,7 @@ void AbstractTableView::set_column_header_alignment(int column, Gfx::TextAlignme
 
 void AbstractTableView::mousedown_event(MouseEvent& event)
 {
+    m_tab_moves = 0;
     if (!model())
         return AbstractView::mousedown_event(event);
 
@@ -292,7 +282,7 @@ void AbstractTableView::scroll_into_view(const ModelIndex& index, bool scroll_ho
         rect = row_rect(index.row());
         break;
     }
-    ScrollableWidget::scroll_into_view(rect, scroll_horizontally, scroll_vertically);
+    AbstractScrollableWidget::scroll_into_view(rect, scroll_horizontally, scroll_vertically);
 }
 
 void AbstractTableView::context_menu_event(ContextMenuEvent& event)
@@ -310,6 +300,13 @@ void AbstractTableView::context_menu_event(ContextMenuEvent& event)
     }
     if (on_context_menu_request)
         on_context_menu_request(index, event);
+}
+
+Gfx::IntRect AbstractTableView::paint_invalidation_rect(ModelIndex const& index) const
+{
+    if (!index.is_valid())
+        return {};
+    return row_rect(index.row());
 }
 
 Gfx::IntRect AbstractTableView::content_rect(int row, int column) const
@@ -372,9 +369,9 @@ void AbstractTableView::set_default_column_width(int column, int width)
     column_header().set_default_section_size(column, width);
 }
 
-void AbstractTableView::set_column_hidden(int column, bool hidden)
+void AbstractTableView::set_column_visible(int column, bool visible)
 {
-    column_header().set_section_visible(column, !hidden);
+    column_header().set_section_visible(column, visible);
 }
 
 void AbstractTableView::set_column_headers_visible(bool visible)
@@ -423,13 +420,20 @@ void AbstractTableView::layout_headers()
 void AbstractTableView::keydown_event(KeyEvent& event)
 {
     if (is_tab_key_navigation_enabled()) {
-        if (event.modifiers() == KeyModifier::Mod_Shift && event.key() == KeyCode::Key_Tab) {
-            move_cursor(CursorMovement::Left, SelectionUpdate::Set);
-            event.accept();
-            return;
-        }
         if (!event.modifiers() && event.key() == KeyCode::Key_Tab) {
             move_cursor(CursorMovement::Right, SelectionUpdate::Set);
+            event.accept();
+            ++m_tab_moves;
+            return;
+        } else if (is_navigation(event)) {
+            if (event.key() == KeyCode::Key_Return) {
+                move_cursor_relative(0, -m_tab_moves, SelectionUpdate::Set);
+            }
+            m_tab_moves = 0;
+        }
+
+        if (event.modifiers() == KeyModifier::Mod_Shift && event.key() == KeyCode::Key_Tab) {
+            move_cursor(CursorMovement::Left, SelectionUpdate::Set);
             event.accept();
             return;
         }
@@ -438,4 +442,22 @@ void AbstractTableView::keydown_event(KeyEvent& event)
     AbstractView::keydown_event(event);
 }
 
+bool AbstractTableView::is_navigation(GUI::KeyEvent& event)
+{
+    switch (event.key()) {
+    case KeyCode::Key_Tab:
+    case KeyCode::Key_Left:
+    case KeyCode::Key_Right:
+    case KeyCode::Key_Up:
+    case KeyCode::Key_Down:
+    case KeyCode::Key_Return:
+    case KeyCode::Key_Home:
+    case KeyCode::Key_End:
+    case KeyCode::Key_PageUp:
+    case KeyCode::Key_PageDown:
+        return true;
+    default:
+        return false;
+    }
+}
 }

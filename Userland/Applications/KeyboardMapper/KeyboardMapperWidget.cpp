@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Hüseyin Aslıtürk <asliturk@hotmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "KeyboardMapperWidget.h"
@@ -33,8 +13,6 @@
 #include <LibGUI/RadioButton.h>
 #include <LibKeyboard/CharacterMap.h>
 #include <LibKeyboard/CharacterMapFile.h>
-#include <fcntl.h>
-#include <stdio.h>
 #include <string.h>
 
 KeyboardMapperWidget::KeyboardMapperWidget()
@@ -143,18 +121,22 @@ void KeyboardMapperWidget::create_frame()
     bottom_widget.layout()->add_spacer();
 }
 
-void KeyboardMapperWidget::load_from_file(String file_name)
+void KeyboardMapperWidget::load_from_file(String filename)
 {
-    auto result = Keyboard::CharacterMapFile::load_from_file(file_name);
-    VERIFY(result.has_value());
+    auto result = Keyboard::CharacterMapFile::load_from_file(filename);
+    if (!result.has_value()) {
+        auto error_message = String::formatted("Failed to load character map from file {}", filename);
+        GUI::MessageBox::show(window(), error_message, "Error", GUI::MessageBox::Type::Error);
+        return;
+    }
 
-    m_file_name = file_name;
+    m_filename = filename;
     m_character_map = result.value();
     set_current_map("map");
 
-    for (Widget* widget : m_map_group->child_widgets()) {
-        auto radio_button = (GUI::RadioButton*)widget;
-        radio_button->set_checked(radio_button->name() == "map");
+    for (auto& widget : m_map_group->child_widgets()) {
+        auto& radio_button = static_cast<GUI::RadioButton&>(widget);
+        radio_button.set_checked(radio_button.name() == "map");
     }
 
     update_window_title();
@@ -165,13 +147,13 @@ void KeyboardMapperWidget::load_from_system()
     auto result = Keyboard::CharacterMap::fetch_system_map();
     VERIFY(!result.is_error());
 
-    m_file_name = String::formatted("/res/keymaps/{}.json", result.value().character_map_name());
+    m_filename = String::formatted("/res/keymaps/{}.json", result.value().character_map_name());
     m_character_map = result.value().character_map_data();
     set_current_map("map");
 
-    for (Widget* widget : m_map_group->child_widgets()) {
-        auto radio_button = (GUI::RadioButton*)widget;
-        radio_button->set_checked(radio_button->name() == "map");
+    for (auto& widget : m_map_group->child_widgets()) {
+        auto& radio_button = static_cast<GUI::RadioButton&>(widget);
+        radio_button.set_checked(radio_button.name() == "map");
     }
 
     update_window_title();
@@ -179,10 +161,10 @@ void KeyboardMapperWidget::load_from_system()
 
 void KeyboardMapperWidget::save()
 {
-    save_to_file(m_file_name);
+    save_to_file(m_filename);
 }
 
-void KeyboardMapperWidget::save_to_file(const StringView& file_name)
+void KeyboardMapperWidget::save_to_file(const StringView& filename)
 {
     JsonObject map_json;
 
@@ -208,12 +190,12 @@ void KeyboardMapperWidget::save_to_file(const StringView& file_name)
     // Write to file.
     String file_content = map_json.to_string();
 
-    auto file = Core::File::construct(file_name);
-    file->open(Core::IODevice::WriteOnly);
+    auto file = Core::File::construct(filename);
+    file->open(Core::OpenMode::WriteOnly);
     if (!file->is_open()) {
         StringBuilder sb;
         sb.append("Failed to open ");
-        sb.append(file_name);
+        sb.append(filename);
         sb.append(" for write. Error: ");
         sb.append(file->error_string());
 
@@ -233,7 +215,7 @@ void KeyboardMapperWidget::save_to_file(const StringView& file_name)
     }
 
     m_modified = false;
-    m_file_name = file_name;
+    m_filename = filename;
     update_window_title();
 }
 
@@ -294,10 +276,10 @@ void KeyboardMapperWidget::set_current_map(const String current_map)
 void KeyboardMapperWidget::update_window_title()
 {
     StringBuilder sb;
-    sb.append(m_file_name);
+    sb.append(m_filename);
     if (m_modified)
         sb.append(" (*)");
-    sb.append(" - KeyboardMapper");
+    sb.append(" - Keyboard Mapper");
 
     window()->set_title(sb.to_string());
 }

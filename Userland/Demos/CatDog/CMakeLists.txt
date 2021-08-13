@@ -1,4 +1,12 @@
+serenity_component(
+    CatDog
+    RECOMMENDED
+    TARGETS CatDog
+)
+
 set(SOURCES
+    CatDog.cpp
+    SpeechBubble.cpp
     main.cpp
 )
 

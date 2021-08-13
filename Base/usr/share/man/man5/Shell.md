@@ -16,7 +16,7 @@ The shell operates according to the following general steps:
 * Should a command be executed, the shell applies the redirections, and executes the command with the flattened argument list
 * Should a command need waiting, the shell shall wait for the command to finish, and continue execution
 
-Any text below is superceded by the formal grammar defined in the _formal grammar_ section.
+Any text below is superseded by the formal grammar defined in the _formal grammar_ section.
 
 ## General Token Recognition
 
@@ -43,6 +43,17 @@ Any sequence of _Double Quoted String Part_ tokens:
 * History Events
 * Evaluate expressions
 * Escaped sequences
+
+##### Heredocs
+Heredocs are made in two parts, the _initiator_ and the _contents_, the _initiator_ may be used in place of a string (i.e. wherever a string is allowed to be used), with the constraint that the _contents_ must follow the _sequence_ that the _initiator_ is used in.
+
+There are four different _initiators_:
+- `<<-token`: The _contents_ may contain interpolations, and are terminated with a line containing only whitespace and then _token_
+- `<<-'token'`: The _contents_ may _not_ contain interpolations, but otherwise is the same as `<<-token`
+- `<<~token`: Similar to `<<-token`, but the starting whitespace of the lines in the _contents_ is stripped, note that this happens after any and all expansions/interpolations are done.
+- `<<~'token'`: Dedents (i.e. strips the initial whitespace) like `<<~token`, and disallows interpolations like `<<-'token'`.
+
+Note that heredocs _must_ be listed in the same order as they are used after a sequence that has been terminated with a newline.
 
 ##### Variable Reference
 Any sequence of _Identifier_ characters, or a _Special Variable_ following a `$`.
@@ -80,7 +91,7 @@ Removes the prefix _prefix_ (if present) from the given _string_.
 Concatenates all the given expressions as lists, and evaluates to a list.
 
 - ${regex\_replace _pattern_ _replacement-template_ _string_}
-Replaces all occurences of the regular expression _pattern_ in the given _string_, using the given _replacement-template_.
+Replaces all occurrences of the regular expression _pattern_ in the given _string_, using the given _replacement-template_.
 Capture groups in _pattern_ can be referred to as `\<group_number>` in the _replacement template_, for example, to reference capture group 1, use `\1`.
 
 ##### Evaluate expression
@@ -172,7 +183,7 @@ Any bareword starting with a tilde (`~`) and spanning up to the first path separ
 ### Evaluate
 Evaluate expressions take the general form of a dollar sign (`$`) followed by some _expression_, which is evaluated by the rules below.
 - Should the _expression_ be a string, it shall be evaluated as a dynamic variable lookup by first evaluating the string, and then looking up the given variable.
-- Should the _expression_ be a list or a command, it shall be converted to a command, whose output (from the standard output) shall be captured, and split to a list with the shell local variable `IFS` (or the default splitter `\n` (newline, 0x0a)). It should be noted that the shell option `inline_exec_keep_empty_segments` will determine whether empty segments in the split list shall be preserved when this expression is evaluated, this behaviour is disabled by default.
+- Should the _expression_ be a list or a command, it shall be converted to a command, whose output (from the standard output) shall be captured, and split to a list with the shell local variable `IFS` (or the default splitter `\n` (newline, 0x0a)). It should be noted that the shell option `inline_exec_keep_empty_segments` will determine whether empty segments in the split list shall be preserved when this expression is evaluated, this behavior is disabled by default.
 
 ## Commands
 
@@ -184,7 +195,7 @@ Commands can be either calls to Shell builtins, or external programs.
 The commands can be composed into semantic elements, producing composite commands:
 
 ### Sequences
-A sequence of commands, executed serially independent of each other: `Commanad ; Command ; Command ...`
+A sequence of commands, executed serially independent of each other: `Command ; Command ; Command ...`
 
 It should be noted that a newline (`\\n`) can be substituted for the semicolon (`;`).
 
@@ -252,7 +263,7 @@ The general syntax follows the form `for index index_name name in expr { sequenc
 It should be noted that the `index index_name` section is optional, but if supplied, will require an explicit iteration variable as well.
 In other words, `for index i in foo` is not valid syntax.
 
-A for-loop evaluates the _sequence_ once per every element in the _expr_, seetting the local variable _name_ to the element being processed, and the local variable _enum name_ to the enumeration index (if set).
+A for-loop evaluates the _sequence_ once per every element in the _expr_, setting the local variable _name_ to the element being processed, and the local variable _enum name_ to the enumeration index (if set).
 
 The Shell shall cancel the for loop if two consecutive commands are interrupted via SIGINT (\^C), and any other terminating signal aborts the loop entirely.
 
@@ -271,7 +282,7 @@ $ for index i x in * { echo file at index $i is named $x }
 ##### Infinite Loops
 Infinite loops (as denoted by the keyword `loop`) can be used to repeat a block until the block runs `break`, or the loop terminates by external sources (interrupts, program exit, and terminating signals).
 
-The behaviour regarding SIGINT and other signals is the same as for loops (mentioned above).
+The behavior regarding SIGINT and other signals is the same as for loops (mentioned above).
 
 ###### Examples
 ```sh
@@ -348,23 +359,28 @@ match "$(make_some_value)" {
 ```
 
 ### History Event Designators
-History expansion may be utilised to reuse previously typed words or commands.
+History expansion may be utilized to reuse previously typed words or commands.
 Such expressions are of the general form `!<event_designator>(:<word_designator>)`, where `event_designator` would select an entry in the shell history, and `word_designator` would select a word (or a range of words) from that entry.
 
-| Event designator | effect                      |
+| Event designator | Effect                      |
 | :-               | :-----                      |
-| `!`              | Select the immediately preceding command |
-| _n_              | Select the _n_'th entry in the history   |
-| -_n_             | Select the last _n_'th entry in the history |
-| _str_            | Select the most recent entry starting with _str_ |
-| ?_str_           | Select the most recent entry containing _str_ |
+| `!`              | The immediately preceding command |
+| _n_              | The _n_'th entry in the history, starting with 1 as the first entry |
+| -_n_             | The last _n_'th entry in the history, starting with -1 as the previous entry |
+| _str_            | The most recent entry starting with _str_ |
+| `?`_str_         | The most recent entry containing _str_ |
 
-| Word designator  | effect                      |
+| Word designator  | Effect                      |
 | :--              | :-----                      |
-| _n_              | The _n_'th word, starting with 0 as the command |
-| `^`              | The first word (index 0) |
-| `$`              | The last word |
-| _x_-_y_          | The range of words starting at _x_ and ending at _y_ (inclusive) |
+| _n_              | The word at index _n_, starting with 0 as the first word (usually the command) |
+| `^`              | The first argument (index 1) |
+| `$`              | The last argument |
+| _x_-_y_          | The range of words starting at _x_ and ending at _y_ (inclusive). _x_ defaults to 0 if omitted |
+| `*`              | All the arguments. Equivalent to `^`-`$` |
+| _x_`*`           | The range of words starting at _x_ and ending at the last word (`$`) (inclusive) |
+| _x_-             | The range of words starting at _x_ and ending at the second to last word (inclusive). _x_ defaults to 0 if omitted |
+
+Note: The event designator and the word designator should usually be separated by a colon (`:`). This colon can be omitted only if the word designator starts with `^`, `$` or `*` (such as `!1^` for the first argument of the first entry in the history).
 
 ## Formal Grammar
 
@@ -387,7 +403,9 @@ and_logical_sequence :: pipe_sequence '&' '&' and_logical_sequence
                       | pipe_sequence
 
 terminator :: ';'
-            | '\n'
+            | '\n' [?!heredoc_stack.is_empty] heredoc_entries
+
+heredoc_entries :: { .*? (heredoc_entry) '\n' } [each heredoc_entries]
 
 variable_decls :: identifier '=' expression (' '+ variable_decls)? ' '*
                 | identifier '=' '(' pipe_sequence ')' (' '+ variable_decls)? ' '*
@@ -407,7 +425,7 @@ control_structure[c] :: for_expr
 continuation_control :: 'break'
                       | 'continue'
 
-for_expr :: 'for' ws+ (('enum' ' '+ identifier)? identifier ' '+ 'in' ws*)? expression ws+ '{' [c] toplevel '}'
+for_expr :: 'for' ws+ (('index' ' '+ identifier ' '+)? identifier ' '+ 'in' ws*)? expression ws+ '{' [c] toplevel '}'
 
 loop_expr :: 'loop' ws* '{' [c] toplevel '}'
 
@@ -451,6 +469,12 @@ string_composite :: string string_composite?
                   | bareword string_composite?
                   | glob string_composite?
                   | brace_expansion string_composite?
+                  | heredoc_initiator string_composite?    {append to heredoc_entries}
+
+heredoc_initiator :: '<' '<' '-' bareword         {*bareword, interpolate, no deindent}
+                   | '<' '<' '-' "'" [^']* "'"    {*string, no interpolate, no deindent}
+                   | '<' '<' '~' bareword         {*bareword, interpolate, deindent}
+                   | '<' '<' '~' "'" [^']* "'"    {*bareword, no interpolate, deindent}
 
 string :: '"' dquoted_string_inner '"'
         | "'" [^']* "'"
@@ -458,8 +482,9 @@ string :: '"' dquoted_string_inner '"'
 dquoted_string_inner :: '\' . dquoted_string_inner?       {concat}
                       | variable dquoted_string_inner?    {compose}
                       | . dquoted_string_inner?
-                      | '\' 'x' digit digit dquoted_string_inner?
-                      | '\' [abefrn] dquoted_string_inner?
+                      | '\' 'x' xdigit*2 dquoted_string_inner?
+                      | '\' 'u' xdigit*8 dquoted_string_inner?
+                      | '\' [abefrnt] dquoted_string_inner?
 
 variable :: variable_ref slice?
 
@@ -476,7 +501,7 @@ comment :: '#' [^\n]*
 
 immediate_expression :: '$' '{' immediate_function expression* '}'
 
-immediate_function :: identifier    { predetermined list of names, see Shell.h:ENUMERATE_SHELL_IMMEDIATE_FUNCTIONS }
+immediate_function :: identifier       { predetermined list of names, see Shell.h:ENUMERATE_SHELL_IMMEDIATE_FUNCTIONS }
 
 history_designator :: '!' event_selector (':' word_selector_composite)?
 

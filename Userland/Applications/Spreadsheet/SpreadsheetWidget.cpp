@@ -1,34 +1,13 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "SpreadsheetWidget.h"
 #include "CellSyntaxHighlighter.h"
 #include "HelpWindow.h"
 #include "LibGUI/InputBox.h"
-#include <LibCore/File.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/FilePicker.h>
@@ -72,6 +51,10 @@ SpreadsheetWidget::SpreadsheetWidget(NonnullRefPtrVector<Sheet>&& sheets, bool s
     auto& cell_value_editor = top_bar.add<GUI::TextEditor>(GUI::TextEditor::Type::SingleLine);
     cell_value_editor.set_font(Gfx::FontDatabase::default_fixed_width_font());
     cell_value_editor.set_scrollbars_enabled(false);
+
+    cell_value_editor.on_return_pressed = [this]() {
+        m_selected_view->move_cursor(GUI::AbstractView::CursorMovement::Down);
+    };
 
     cell_value_editor.set_syntax_highlighter(make<CellSyntaxHighlighter>());
     cell_value_editor.set_enabled(false);
@@ -191,11 +174,11 @@ void SpreadsheetWidget::setup_tabs(NonnullRefPtrVector<Sheet> new_sheets)
             m_current_cell_label->set_enabled(true);
             m_current_cell_label->set_text(builder.string_view());
 
-            Vector<Cell*> cells;
+            Vector<Cell&> cells;
             for (auto& position : selection)
-                cells.append(&sheet.ensure(position));
+                cells.append(sheet.ensure(position));
 
-            auto first_cell = cells.first();
+            auto& first_cell = cells.first();
             m_cell_value_editor->on_change = nullptr;
             m_cell_value_editor->set_text("");
             m_should_change_selected_cells = false;
@@ -211,14 +194,14 @@ void SpreadsheetWidget::setup_tabs(NonnullRefPtrVector<Sheet> new_sheets)
                     // FIXME: Lines?
                     auto offset = m_cell_value_editor->cursor().column();
                     try_generate_tip_for_input_expression(text, offset);
-                    for (auto* cell : cells)
-                        cell->set_data(text);
+                    for (auto& cell : cells)
+                        cell.set_data(text);
                     sheet.update();
                     update();
                 }
             };
             m_cell_value_editor->set_enabled(true);
-            static_cast<CellSyntaxHighlighter*>(const_cast<Syntax::Highlighter*>(m_cell_value_editor->syntax_highlighter()))->set_cell(first_cell);
+            static_cast<CellSyntaxHighlighter*>(const_cast<Syntax::Highlighter*>(m_cell_value_editor->syntax_highlighter()))->set_cell(&first_cell);
         };
         m_selected_view->on_selection_dropped = [&]() {
             m_cell_value_editor->set_enabled(false);
@@ -341,7 +324,7 @@ void SpreadsheetWidget::add_sheet(NonnullRefPtr<Sheet>&& sheet)
 
     NonnullRefPtrVector<Sheet> new_sheets;
     new_sheets.append(move(sheet));
-    m_workbook->sheets().append(new_sheets);
+    m_workbook->sheets().extend(new_sheets);
     setup_tabs(new_sheets);
 }
 

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/ScopeGuard.h>
@@ -34,8 +14,9 @@ namespace Kernel {
 
 using BlockFlags = Thread::FileBlocker::BlockFlags;
 
-KResultOr<int> Process::sys$select(Userspace<const Syscall::SC_select_params*> user_params)
+KResultOr<FlatPtr> Process::sys$select(Userspace<const Syscall::SC_select_params*> user_params)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
     Syscall::SC_select_params params {};
 
@@ -68,15 +49,20 @@ KResultOr<int> Process::sys$select(Userspace<const Syscall::SC_select_params*> u
     });
 
     fd_set fds_read, fds_write, fds_except;
-    if (params.readfds && !copy_from_user(&fds_read, params.readfds))
+
+    size_t bytes_used = ceil_div(params.nfds, 8);
+    if (bytes_used > sizeof(fds_read))
+        return EINVAL;
+
+    if (params.readfds && !copy_from_user(&fds_read, params.readfds, bytes_used))
         return EFAULT;
-    if (params.writefds && !copy_from_user(&fds_write, params.writefds))
+    if (params.writefds && !copy_from_user(&fds_write, params.writefds, bytes_used))
         return EFAULT;
-    if (params.exceptfds && !copy_from_user(&fds_except, params.exceptfds))
+    if (params.exceptfds && !copy_from_user(&fds_except, params.exceptfds, bytes_used))
         return EFAULT;
 
     Thread::SelectBlocker::FDVector fds_info;
-    Vector<int, FD_SETSIZE> fds;
+    Vector<int, FD_SETSIZE> selected_fds;
     for (int fd = 0; fd < params.nfds; fd++) {
         auto block_flags = BlockFlags::None;
         if (params.readfds && FD_ISSET(fd, &fds_read))
@@ -88,13 +74,15 @@ KResultOr<int> Process::sys$select(Userspace<const Syscall::SC_select_params*> u
         if (block_flags == BlockFlags::None)
             continue;
 
-        auto description = file_description(fd);
+        auto description = fds().file_description(fd);
         if (!description) {
             dbgln("sys$select: Bad fd number {}", fd);
             return EBADF;
         }
-        fds_info.append({ description.release_nonnull(), block_flags });
-        fds.append(fd);
+        if (!fds_info.try_append({ description.release_nonnull(), block_flags }))
+            return ENOMEM;
+        if (!selected_fds.try_append(fd))
+            return ENOMEM;
     }
 
     if constexpr (IO_DEBUG || POLL_SELECT_DEBUG)
@@ -118,37 +106,38 @@ KResultOr<int> Process::sys$select(Userspace<const Syscall::SC_select_params*> u
         if (fd_entry.unblocked_flags == BlockFlags::None)
             continue;
         if (params.readfds && has_flag(fd_entry.unblocked_flags, BlockFlags::Read)) {
-            FD_SET(fds[i], &fds_read);
+            FD_SET(selected_fds[i], &fds_read);
             marked_fd_count++;
         }
         if (params.writefds && has_flag(fd_entry.unblocked_flags, BlockFlags::Write)) {
-            FD_SET(fds[i], &fds_write);
+            FD_SET(selected_fds[i], &fds_write);
             marked_fd_count++;
         }
-        if (params.exceptfds && has_flag(fd_entry.unblocked_flags, BlockFlags::Exception)) {
-            FD_SET(fds[i], &fds_except);
+        if (params.exceptfds && has_any_flag(fd_entry.unblocked_flags, BlockFlags::Exception)) {
+            FD_SET(selected_fds[i], &fds_except);
             marked_fd_count++;
         }
     }
 
-    if (params.readfds && !copy_to_user(params.readfds, &fds_read))
+    if (params.readfds && !copy_to_user(params.readfds, &fds_read, bytes_used))
         return EFAULT;
-    if (params.writefds && !copy_to_user(params.writefds, &fds_write))
+    if (params.writefds && !copy_to_user(params.writefds, &fds_write, bytes_used))
         return EFAULT;
-    if (params.exceptfds && !copy_to_user(params.exceptfds, &fds_except))
+    if (params.exceptfds && !copy_to_user(params.exceptfds, &fds_except, bytes_used))
         return EFAULT;
     return marked_fd_count;
 }
 
-KResultOr<int> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> user_params)
+KResultOr<FlatPtr> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> user_params)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
 
     Syscall::SC_poll_params params;
     if (!copy_from_user(&params, user_params))
         return EFAULT;
 
-    if (params.nfds >= m_max_open_file_descriptors)
+    if (params.nfds >= fds().max_open())
         return ENOBUFS;
 
     Thread::BlockTimeout timeout;
@@ -163,13 +152,14 @@ KResultOr<int> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> user_
     if (params.sigmask && !copy_from_user(&sigmask, params.sigmask))
         return EFAULT;
 
-    Vector<pollfd> fds_copy;
+    Vector<pollfd, FD_SETSIZE> fds_copy;
     if (params.nfds > 0) {
-        Checked nfds_checked = sizeof(pollfd);
+        Checked<size_t> nfds_checked = sizeof(pollfd);
         nfds_checked *= params.nfds;
         if (nfds_checked.has_overflow())
             return EFAULT;
-        fds_copy.resize(params.nfds);
+        if (!fds_copy.try_resize(params.nfds))
+            return ENOMEM;
         if (!copy_from_user(fds_copy.data(), &params.fds[0], nfds_checked.value()))
             return EFAULT;
     }
@@ -177,7 +167,7 @@ KResultOr<int> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> user_
     Thread::SelectBlocker::FDVector fds_info;
     for (size_t i = 0; i < params.nfds; i++) {
         auto& pfd = fds_copy[i];
-        auto description = file_description(pfd.fd);
+        auto description = fds().file_description(pfd.fd);
         if (!description) {
             dbgln("sys$poll: Bad fd number {}", pfd.fd);
             return EBADF;
@@ -189,7 +179,8 @@ KResultOr<int> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> user_
             block_flags |= BlockFlags::Write;
         if (pfd.events & POLLPRI)
             block_flags |= BlockFlags::ReadPriority;
-        fds_info.append({ description.release_nonnull(), block_flags });
+        if (!fds_info.try_append({ description.release_nonnull(), block_flags }))
+            return ENOMEM;
     }
 
     auto current_thread = Thread::current();
@@ -218,7 +209,7 @@ KResultOr<int> Process::sys$poll(Userspace<const Syscall::SC_poll_params*> user_
         if (fds_entry.unblocked_flags == BlockFlags::None)
             continue;
 
-        if (has_flag(fds_entry.unblocked_flags, BlockFlags::Exception)) {
+        if (has_any_flag(fds_entry.unblocked_flags, BlockFlags::Exception)) {
             if (has_flag(fds_entry.unblocked_flags, BlockFlags::ReadHangUp))
                 pfd.revents |= POLLRDHUP;
             if (has_flag(fds_entry.unblocked_flags, BlockFlags::WriteError))

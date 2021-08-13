@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -31,11 +12,13 @@
 #include "Report.h"
 #include "SoftCPU.h"
 #include "SoftMMU.h"
+#include <AK/FileStream.h>
 #include <AK/MappedFile.h>
 #include <AK/Types.h>
 #include <LibDebug/DebugInfo.h>
 #include <LibELF/AuxiliaryVector.h>
 #include <LibELF/Image.h>
+#include <LibLine/Editor.h>
 #include <LibX86/Instruction.h>
 #include <signal.h>
 #include <sys/types.h>
@@ -48,14 +31,32 @@ class Emulator {
 public:
     static Emulator& the();
 
-    Emulator(const String& executable_path, const Vector<String>& arguments, const Vector<String>& environment);
+    Emulator(String const& executable_path, Vector<String> const& arguments, Vector<String> const& environment);
+
+    void set_profiling_details(bool should_dump_profile, size_t instruction_interval, OutputFileStream* profile_stream)
+    {
+        m_is_profiling = should_dump_profile;
+        m_profile_instruction_interval = instruction_interval;
+        m_profile_stream = profile_stream;
+    }
+
+    void set_in_region_of_interest(bool value)
+    {
+        m_is_in_region_of_interest = value;
+    }
+
+    OutputFileStream& profile_stream() { return *m_profile_stream; }
+    bool is_profiling() const { return m_is_profiling; }
+    bool is_in_region_of_interest() const { return m_is_in_region_of_interest; }
+    size_t profile_instruction_interval() const { return m_profile_instruction_interval; }
 
     bool load_elf();
     void dump_backtrace();
-    void dump_backtrace(const Vector<FlatPtr>&);
+    void dump_backtrace(Vector<FlatPtr> const&);
     Vector<FlatPtr> raw_backtrace();
 
     int exec();
+    void handle_repl();
     u32 virt_syscall(u32 function, u32 arg1, u32 arg2, u32 arg3);
 
     SoftMMU& mmu() { return m_mmu; }
@@ -67,7 +68,42 @@ public:
     bool is_in_libsystem() const;
     bool is_in_libc() const;
 
+    void pause()
+    {
+        m_steps_til_pause = 0;
+        m_run_til_return = false;
+    }
+    ALWAYS_INLINE void return_callback(FlatPtr addr)
+    {
+        if (m_run_til_return) [[unlikely]] {
+            if (addr == m_watched_addr)
+                pause();
+        }
+    }
+    ALWAYS_INLINE void call_callback(FlatPtr addr)
+    {
+        if (m_run_til_call) [[unlikely]] {
+            if (addr == m_watched_addr)
+                pause();
+        }
+    }
+
     void did_receive_signal(int signum) { m_pending_signals |= (1 << signum); }
+    void did_receive_sigint(int)
+    {
+        if (m_steps_til_pause == 0)
+            m_shutdown = true;
+        else
+            pause();
+    }
+
+    struct SymbolInfo {
+        String lib_name;
+        String symbol;
+        Optional<Debug::DebugInfo::SourcePosition> source_position;
+    };
+
+    Optional<SymbolInfo> symbol_at(FlatPtr address);
 
     void dump_regions() const;
 
@@ -85,6 +121,9 @@ private:
     Vector<ELF::AuxiliaryValue> generate_auxiliary_vector(FlatPtr load_base, FlatPtr entry_eip, String executable_path, int executable_fd) const;
     void register_signal_handlers();
     void setup_signal_trampoline();
+
+    void emit_profile_sample(AK::OutputStream&);
+    void emit_profile_event(AK::OutputStream&, StringView event_name, String contents);
 
     int virt$emuctl(FlatPtr, FlatPtr, FlatPtr);
     int virt$fork();
@@ -131,7 +170,6 @@ private:
     int virt$get_process_name(FlatPtr buffer, int size);
     int virt$set_process_name(FlatPtr buffer, int size);
     int virt$set_mmap_name(FlatPtr);
-    int virt$gettimeofday(FlatPtr);
     int virt$clock_gettime(int, FlatPtr);
     int virt$clock_nanosleep(FlatPtr);
     int virt$dbgputstr(FlatPtr characters, int length);
@@ -148,7 +186,7 @@ private:
     u32 virt$fcntl(int fd, int, u32);
     int virt$getgroups(ssize_t count, FlatPtr);
     int virt$setgroups(ssize_t count, FlatPtr);
-    int virt$lseek(int fd, off_t offset, int whence);
+    int virt$lseek(int fd, FlatPtr offset_addr, int whence);
     int virt$socket(int, int, int);
     int virt$getsockopt(FlatPtr);
     int virt$setsockopt(FlatPtr);
@@ -156,14 +194,13 @@ private:
     int virt$getpeername(FlatPtr);
     int virt$select(FlatPtr);
     int virt$get_stack_bounds(FlatPtr, FlatPtr);
-    int virt$accept(int sockfd, FlatPtr address, FlatPtr address_length);
+    int virt$accept4(FlatPtr);
     int virt$bind(int sockfd, FlatPtr address, socklen_t address_length);
     int virt$recvmsg(int sockfd, FlatPtr msg_addr, int flags);
     int virt$sendmsg(int sockfd, FlatPtr msg_addr, int flags);
     int virt$connect(int sockfd, FlatPtr address, socklen_t address_size);
     int virt$shutdown(int sockfd, int how);
     void virt$sync();
-    void virt$abort();
     void virt$exit(int);
     ssize_t virt$getrandom(FlatPtr buffer, size_t buffer_size, unsigned int flags);
     int virt$chdir(FlatPtr, size_t);
@@ -179,26 +216,38 @@ private:
     int virt$sched_getparam(pid_t, FlatPtr);
     int virt$set_thread_name(pid_t, FlatPtr, size_t);
     pid_t virt$setsid();
-    int virt$watch_file(FlatPtr, size_t);
+    int virt$create_inode_watcher(unsigned);
+    int virt$inode_watcher_add_watch(FlatPtr);
+    int virt$inode_watcher_remove_watch(int, int);
     int virt$readlink(FlatPtr);
-    u32 virt$allocate_tls(size_t);
+    u32 virt$allocate_tls(FlatPtr, size_t);
     int virt$ptsname(int fd, FlatPtr buffer, size_t buffer_size);
     int virt$beep();
-    int virt$ftruncate(int fd, off_t);
+    int virt$ftruncate(int fd, FlatPtr length_addr);
     mode_t virt$umask(mode_t);
     int virt$anon_create(size_t, int);
     int virt$recvfd(int, int);
     int virt$sendfd(int, int);
     int virt$msyscall(FlatPtr);
+    int virt$futex(FlatPtr);
 
-    bool find_malloc_symbols(const MmapRegion& libc_text);
+    bool find_malloc_symbols(MmapRegion const& libc_text);
 
     void dispatch_one_pending_signal();
-    const MmapRegion* find_text_region(FlatPtr address);
+    MmapRegion const* find_text_region(FlatPtr address);
+    MmapRegion const* load_library_from_address(FlatPtr address);
+    MmapRegion const* first_region_for_object(StringView name);
     String create_backtrace_line(FlatPtr address);
+    String create_instruction_line(FlatPtr address, X86::Instruction insn);
 
     bool m_shutdown { false };
     int m_exit_status { 0 };
+
+    i64 m_steps_til_pause { -1 };
+    bool m_run_til_return { false };
+    bool m_run_til_call { false };
+    FlatPtr m_watched_addr { 0 };
+    RefPtr<Line::Editor> m_editor;
 
     FlatPtr m_malloc_symbol_start { 0 };
     FlatPtr m_malloc_symbol_end { 0 };
@@ -233,11 +282,17 @@ private:
     struct CachedELF {
         NonnullRefPtr<MappedFile> mapped_file;
         NonnullOwnPtr<Debug::DebugInfo> debug_info;
+        NonnullOwnPtr<ELF::Image> image;
     };
 
     HashMap<String, CachedELF> m_dynamic_library_cache;
 
     RangeAllocator m_range_allocator;
+
+    OutputFileStream* m_profile_stream { nullptr };
+    bool m_is_profiling { false };
+    size_t m_profile_instruction_interval { 0 };
+    bool m_is_in_region_of_interest { false };
 };
 
 ALWAYS_INLINE bool Emulator::is_in_libc() const

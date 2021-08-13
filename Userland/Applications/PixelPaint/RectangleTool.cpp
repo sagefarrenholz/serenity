@@ -1,37 +1,19 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "RectangleTool.h"
 #include "ImageEditor.h"
 #include "Layer.h"
 #include <LibGUI/Action.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/Label.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
+#include <LibGUI/RadioButton.h>
 #include <LibGfx/Rect.h>
-#include <math.h>
 
 namespace PixelPaint {
 
@@ -43,7 +25,7 @@ RectangleTool::~RectangleTool()
 {
 }
 
-void RectangleTool::draw_using(GUI::Painter& painter, const Gfx::IntRect& rect)
+void RectangleTool::draw_using(GUI::Painter& painter, Gfx::IntRect const& rect)
 {
     switch (m_mode) {
     case Mode::Fill:
@@ -81,7 +63,7 @@ void RectangleTool::on_mouseup(Layer& layer, GUI::MouseEvent& event, GUI::MouseE
         auto rect = Gfx::IntRect::from_two_points(m_rectangle_start_position, m_rectangle_end_position);
         draw_using(painter, rect);
         m_drawing_button = GUI::MouseButton::None;
-        layer.did_modify_bitmap(*m_editor->image());
+        layer.did_modify_bitmap();
         m_editor->did_complete_action();
     }
 }
@@ -95,7 +77,7 @@ void RectangleTool::on_mousemove(Layer&, GUI::MouseEvent& event, GUI::MouseEvent
     m_editor->update();
 }
 
-void RectangleTool::on_second_paint(const Layer& layer, GUI::PaintEvent& event)
+void RectangleTool::on_second_paint(Layer const& layer, GUI::PaintEvent& event)
 {
     if (m_drawing_button == GUI::MouseButton::None)
         return;
@@ -117,21 +99,39 @@ void RectangleTool::on_keydown(GUI::KeyEvent& event)
     }
 }
 
-void RectangleTool::on_tool_button_contextmenu(GUI::ContextMenuEvent& event)
+GUI::Widget* RectangleTool::get_properties_widget()
 {
-    if (!m_context_menu) {
-        m_context_menu = GUI::Menu::construct();
-        m_context_menu->add_action(GUI::Action::create("Fill", [this](auto&) {
-            m_mode = Mode::Fill;
-        }));
-        m_context_menu->add_action(GUI::Action::create("Outline", [this](auto&) {
+    if (!m_properties_widget) {
+        m_properties_widget = GUI::Widget::construct();
+        m_properties_widget->set_layout<GUI::VerticalBoxLayout>();
+
+        auto& mode_container = m_properties_widget->add<GUI::Widget>();
+        mode_container.set_fixed_height(70);
+        mode_container.set_layout<GUI::HorizontalBoxLayout>();
+        auto& mode_label = mode_container.add<GUI::Label>("Mode:");
+        mode_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        mode_label.set_fixed_size(80, 20);
+
+        auto& mode_radio_container = mode_container.add<GUI::Widget>();
+        mode_radio_container.set_layout<GUI::VerticalBoxLayout>();
+        auto& outline_mode_radio = mode_radio_container.add<GUI::RadioButton>("Outline");
+        auto& fill_mode_radio = mode_radio_container.add<GUI::RadioButton>("Fill");
+        auto& gradient_mode_radio = mode_radio_container.add<GUI::RadioButton>("Gradient");
+
+        outline_mode_radio.on_checked = [&](bool) {
             m_mode = Mode::Outline;
-        }));
-        m_context_menu->add_action(GUI::Action::create("Gradient", [this](auto&) {
+        };
+        fill_mode_radio.on_checked = [&](bool) {
+            m_mode = Mode::Fill;
+        };
+        gradient_mode_radio.on_checked = [&](bool) {
             m_mode = Mode::Gradient;
-        }));
+        };
+
+        outline_mode_radio.set_checked(true);
     }
-    m_context_menu->popup(event.screen_position());
+
+    return m_properties_widget.ptr();
 }
 
 }

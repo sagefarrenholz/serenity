@@ -1,58 +1,60 @@
-#!/bin/env bash
+#!/usr/bin/env bash
+
 set -e
 
 ARG0=$0
 print_help() {
+    NAME=$(basename "$ARG0")
     cat <<EOF
-Usage: $ARG0 COMMAND [TARGET] [ARGS...]
+Usage: $NAME COMMAND [TARGET] [ARGS...]
   Supported TARGETs: i686 (default), x86_64, lagom
   Supported COMMANDs:
     build:      Compiles the target binaries, [ARGS...] are passed through to ninja
     install:    Installs the target binary
     image:      Creates a disk image with the installed binaries
-    run:        TARGET lagom: $ARG0 run lagom LAGOM_EXECUTABLE
-                    Runs the Lagom-built LAGOM_EXECUTABLE on the build host,
-                    e.g. 'shell' or 'js'
-                All other TARGETs: $ARG0 run [TARGET] [KERNEL_CMD_LINE]
+    run:        TARGET lagom: $NAME run lagom LAGOM_EXECUTABLE [ARGS...]
+                    Runs the Lagom-built LAGOM_EXECUTABLE on the build host, e.g.
+                    'shell' or 'js', [ARGS...] are passed through to the executable
+                All other TARGETs: $NAME run [TARGET] [KERNEL_CMD_LINE]
                     Runs the built image in QEMU, and optionally passes the
                     KERNEL_CMD_LINE to the Kernel
     gdb:        Same as run, but also starts a gdb remote session.
-                TARGET lagom: $ARG0 gdb lagom LAGOM_EXECUTABLE [-ex 'any gdb command']...
+                TARGET lagom: $NAME gdb lagom LAGOM_EXECUTABLE [-ex 'any gdb command']...
                     Passes through '-ex' commands to gdb
-                All other TARGETs: $ARG0 gdb [TARGET] [KERNEL_CMD_LINE] [-ex 'any gdb command']...
+                All other TARGETs: $NAME gdb [TARGET] [KERNEL_CMD_LINE] [-ex 'any gdb command']...
                     If specified, passes the KERNEL_CMD_LINE to the Kernel
                     Passes through '-ex' commands to gdb
-    test:       TARGET lagom: $ARG0 test lagom [TEST_NAME_PATTERN]
+    test:       TARGET lagom: $NAME test lagom [TEST_NAME_PATTERN]
                     Runs the unit tests on the build host, or if TEST_NAME_PATTERN
                     is specified tests matching it.
-                All other TARGETs: $ARG0 test [TARGET]
+                All other TARGETs: $NAME test [TARGET]
                     Runs the built image in QEMU in self-test mode, by passing
                     boot_mode=self-test to the Kernel
     delete:     Removes the build environment for TARGET
     recreate:   Deletes and re-creates the build environment for TARGET
     rebuild:    Deletes and re-creates the build environment, and compiles for TARGET
-    kaddr2line: $ARG0 kaddr2line TARGET ADDRESS
+    kaddr2line: $NAME kaddr2line TARGET ADDRESS
                     Resolves the ADDRESS in the Kernel/Kernel binary to a file:line
-    addr2line:  $ARG0 addr2line TARGET BINARY_FILE ADDRESS
+    addr2line:  $NAME addr2line TARGET BINARY_FILE ADDRESS
                     Resolves the ADDRESS in BINARY_FILE to a file:line. It will
                     attempt to find the BINARY_FILE in the appropriate build directory
-
     rebuild-toolchain: Deletes and re-builds the TARGET's toolchain
+    rebuild-world:     Deletes and re-builds the toolchain and build environment for TARGET.
 
   Examples:
-    $ARG0 run i686 smp=on
+    $NAME run i686 smp=on
         Runs the image in QEMU passing "smp=on" to the kernel command line
-    $ARG0 run
+    $NAME run
         Runs the image for the default TARGET i686 in QEMU
-    $ARG0 run lagom js
+    $NAME run lagom js -A
         Runs the Lagom-built js(1) REPL
-    $ARG0 test lagom
+    $NAME test lagom
         Runs the unit tests on the build host
-    $ARG0 kaddr2line i686 0x12345678
+    $NAME kaddr2line i686 0x12345678
         Resolves the address 0x12345678 in the Kernel binary
-    $ARG0 addr2line i686 WindowServer 0x12345678
+    $NAME addr2line i686 WindowServer 0x12345678
         Resolves the address 0x12345678 in the WindowServer binary
-    $ARG0 gdb i686 smp=on -ex 'hb *init'
+    $NAME gdb i686 smp=on -ex 'hb *init'
         Runs the image for the TARGET i686 in qemu and attaches a gdb session
         setting a breakpoint at the init() function in the Kernel.
 EOF
@@ -93,6 +95,10 @@ is_valid_target() {
         CMAKE_ARGS+=("-DBUILD_LAGOM=ON")
         return 0
     fi
+    if [ "$TARGET" = "x86_64" ]; then
+        CMAKE_ARGS+=("-DSERENITY_ARCH=x86_64")
+        return 0
+    fi
     [[ "$TARGET" =~ ^(i686|x86_64|lagom)$ ]] || return 1
 }
 
@@ -101,19 +107,51 @@ create_build_dir() {
     cmake -GNinja "${CMAKE_ARGS[@]}" -S . -B "$BUILD_DIR"
 }
 
+pick_gcc() {
+    local BEST_VERSION=0
+    local BEST_GCC_CANDIDATE=""
+    for GCC_CANDIDATE in gcc gcc-10 gcc-11 gcc-12 /usr/local/bin/gcc-11 /opt/homebrew/bin/gcc-11; do
+        if ! command -v $GCC_CANDIDATE >/dev/null 2>&1; then
+            continue
+        fi
+        if $GCC_CANDIDATE --version 2>&1 | grep "Apple clang" >/dev/null; then
+            continue
+        fi
+        if ! $GCC_CANDIDATE -dumpversion >/dev/null 2>&1; then
+            continue
+        fi
+        local VERSION=""
+        VERSION="$($GCC_CANDIDATE -dumpversion)"
+        local MAJOR_VERSION="${VERSION%%.*}"
+        if [ "$MAJOR_VERSION" -gt "$BEST_VERSION" ]; then
+            BEST_VERSION=$MAJOR_VERSION
+            BEST_GCC_CANDIDATE="$GCC_CANDIDATE"
+        fi
+    done
+    CMAKE_ARGS+=("-DCMAKE_C_COMPILER=$BEST_GCC_CANDIDATE")
+    CMAKE_ARGS+=("-DCMAKE_CXX_COMPILER=${BEST_GCC_CANDIDATE/gcc/g++}")
+    if [ "$BEST_VERSION" -lt 10 ]; then
+        die "Please make sure that GCC version 10.2 or higher is installed."
+    fi
+}
+
 cmd_with_target() {
     is_valid_target || ( >&2 echo "Unknown target: $TARGET"; usage )
-    SERENITY_ROOT="$(get_top_dir)"
-    export SERENITY_ROOT
-    BUILD_DIR="$SERENITY_ROOT/Build/$TARGET"
+    pick_gcc
+
+    if [ ! -d "$SERENITY_SOURCE_DIR" ]; then
+        SERENITY_SOURCE_DIR="$(get_top_dir)"
+        export SERENITY_SOURCE_DIR
+    fi
+    BUILD_DIR="$SERENITY_SOURCE_DIR/Build/$TARGET"
     if [ "$TARGET" != "lagom" ]; then
         export SERENITY_ARCH="$TARGET"
-        TOOLCHAIN_DIR="$SERENITY_ROOT/Toolchain/Build/$TARGET"
+        TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR/Toolchain/Build/$TARGET"
     fi
 }
 
 ensure_target() {
-    [ -d "$BUILD_DIR" ] || create_build_dir
+    [ -f "$BUILD_DIR/build.ninja" ] || create_build_dir
 }
 
 run_tests() {
@@ -135,7 +173,7 @@ delete_target() {
 }
 
 build_toolchain() {
-    ( cd Toolchain && ARCH="$TARGET" ./BuildIt.sh )
+    ( cd "$SERENITY_SOURCE_DIR/Toolchain" && ARCH="$TARGET" ./BuildIt.sh )
 }
 
 ensure_toolchain() {
@@ -196,18 +234,16 @@ run_gdb() {
         if [ -n "$KERNEL_CMD_LINE" ]; then
             export SERENITY_KERNEL_CMDLINE="$KERNEL_CMD_LINE"
         fi
-        gdb "$BUILD_DIR/Kernel/Kernel" -ex 'target remote :1234' "${GDB_ARGS[@]}" -ex cont
+        sleep 1
+        "$(get_top_dir)/Meta/debug-kernel.sh" "${GDB_ARGS[@]}" -ex cont
     fi
 }
 
 if [[ "$CMD" =~ ^(build|install|image|run|gdb|test|rebuild|recreate|kaddr2line|addr2line|setup-and-run)$ ]]; then
     cmd_with_target
     [[ "$CMD" != "recreate" && "$CMD" != "rebuild" ]] || delete_target
-    # FIXME: We should probably call ensure_toolchain first, but this somehow causes
-    # this error after the toolchain finished building:
-    # ninja: error: loading 'build.ninja': No such file or directory
-    ensure_target
     [ "$TARGET" = "lagom" ] || ensure_toolchain
+    ensure_target
     case "$CMD" in
         build)
             build_target "$@"
@@ -225,8 +261,8 @@ if [[ "$CMD" =~ ^(build|install|image|run|gdb|test|rebuild|recreate|kaddr2line|a
             ;;
         run)
             if [ "$TARGET" = "lagom" ]; then
-                build_target "$@"
-                "$BUILD_DIR/Meta/Lagom/${CMD_ARGS[0]}"
+                build_target "${CMD_ARGS[0]}"
+                "$BUILD_DIR/Meta/Lagom/${CMD_ARGS[0]}" "${CMD_ARGS[@]:1}"
             else
                 build_target
                 build_target install
@@ -303,6 +339,14 @@ elif [ "$CMD" = "rebuild-toolchain" ]; then
     lagom_unsupported "The lagom target uses the host toolchain"
     delete_toolchain
     ensure_toolchain
+elif [ "$CMD" = "rebuild-world" ]; then
+    cmd_with_target
+    lagom_unsupported "The lagom target uses the host toolchain"
+    delete_toolchain
+    delete_target
+    ensure_toolchain
+    ensure_target
+    build_target
 elif [ "$CMD" = "__tmux_cmd" ]; then
     trap kill_tmux_session EXIT
     cmd_with_target

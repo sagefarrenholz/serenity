@@ -1,40 +1,18 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Array.h>
-#include <AK/ByteBuffer.h>
 #include <AK/Debug.h>
 #include <AK/LexicalPath.h>
 #include <AK/MappedFile.h>
+#include <AK/Math.h>
 #include <AK/Memory.h>
 #include <AK/MemoryStream.h>
 #include <AK/NonnullOwnPtrVector.h>
 #include <LibGfx/GIFLoader.h>
-#include <math.h>
-#include <stdio.h>
 #include <string.h>
 
 namespace Gfx {
@@ -43,7 +21,7 @@ namespace Gfx {
 static const int INTERLACE_ROW_STRIDES[] = { 8, 8, 4, 2 };
 static const int INTERLACE_ROW_OFFSETS[] = { 0, 4, 2, 1 };
 
-struct ImageDescriptor {
+struct GIFImageDescriptor {
     u16 x { 0 };
     u16 y { 0 };
     u16 width { 0 };
@@ -97,14 +75,14 @@ struct GIFLoadingContext {
     size_t data_size { 0 };
     LogicalScreen logical_screen {};
     u8 background_color_index { 0 };
-    NonnullOwnPtrVector<ImageDescriptor> images {};
+    NonnullOwnPtrVector<GIFImageDescriptor> images {};
     size_t loops { 1 };
     RefPtr<Gfx::Bitmap> frame_buffer;
     size_t current_frame { 0 };
     RefPtr<Gfx::Bitmap> prev_frame_buffer;
 };
 
-RefPtr<Gfx::Bitmap> load_gif(const StringView& path)
+RefPtr<Gfx::Bitmap> load_gif(String const& path)
 {
     auto file_or_error = MappedFile::map(path);
     if (file_or_error.is_error())
@@ -158,7 +136,7 @@ public:
         : m_lzw_bytes(lzw_bytes)
         , m_code_size(min_code_size)
         , m_original_code_size(min_code_size)
-        , m_table_capacity(pow(2, min_code_size))
+        , m_table_capacity(AK::exp2<u32>(min_code_size))
     {
         init_code_table();
     }
@@ -180,9 +158,9 @@ public:
     void reset()
     {
         m_code_table.clear();
-        m_code_table.append(m_original_code_table);
+        m_code_table.extend(m_original_code_table);
         m_code_size = m_original_code_size;
-        m_table_capacity = pow(2, m_code_size);
+        m_table_capacity = AK::exp2<u32>(m_code_size);
         m_output.clear();
     }
 
@@ -207,8 +185,9 @@ public:
             const u32* addr = (const u32*)&padded_last_bytes;
             m_current_code = (*addr & mask) >> current_bit_offset;
         } else {
-            const u32* addr = (const u32*)&m_lzw_bytes.at(current_byte_index);
-            m_current_code = (*addr & mask) >> current_bit_offset;
+            u32 tmp_word;
+            memcpy(&tmp_word, &m_lzw_bytes.at(current_byte_index), sizeof(u32));
+            m_current_code = (tmp_word & mask) >> current_bit_offset;
         }
 
         if (m_current_code > m_code_table.size()) {
@@ -318,10 +297,10 @@ static bool decode_frame(GIFLoadingContext& context, size_t frame_index)
     size_t start_frame = context.current_frame + 1;
     if (context.state < GIFLoadingContext::State::FrameComplete) {
         start_frame = 0;
-        context.frame_buffer = Bitmap::create_purgeable(BitmapFormat::BGRA8888, { context.logical_screen.width, context.logical_screen.height });
+        context.frame_buffer = Bitmap::try_create(BitmapFormat::BGRA8888, { context.logical_screen.width, context.logical_screen.height });
         if (!context.frame_buffer)
             return false;
-        context.prev_frame_buffer = Bitmap::create_purgeable(BitmapFormat::BGRA8888, { context.logical_screen.width, context.logical_screen.height });
+        context.prev_frame_buffer = Bitmap::try_create(BitmapFormat::BGRA8888, { context.logical_screen.width, context.logical_screen.height });
         if (!context.prev_frame_buffer)
             return false;
     } else if (frame_index < context.current_frame) {
@@ -331,26 +310,26 @@ static bool decode_frame(GIFLoadingContext& context, size_t frame_index)
     for (size_t i = start_frame; i <= frame_index; ++i) {
         auto& image = context.images.at(i);
 
-        const auto previous_image_disposal_method = i > 0 ? context.images.at(i - 1).disposal_method : ImageDescriptor::DisposalMethod::None;
+        const auto previous_image_disposal_method = i > 0 ? context.images.at(i - 1).disposal_method : GIFImageDescriptor::DisposalMethod::None;
 
         if (i == 0) {
             context.frame_buffer->fill(Color::Transparent);
-        } else if (i > 0 && image.disposal_method == ImageDescriptor::DisposalMethod::RestorePrevious
-            && previous_image_disposal_method != ImageDescriptor::DisposalMethod::RestorePrevious) {
+        } else if (i > 0 && image.disposal_method == GIFImageDescriptor::DisposalMethod::RestorePrevious
+            && previous_image_disposal_method != GIFImageDescriptor::DisposalMethod::RestorePrevious) {
             // This marks the start of a run of frames that once disposed should be restored to the
             // previous underlying image contents. Therefore we make a copy of the current frame
             // buffer so that it can be restored later.
             copy_frame_buffer(*context.prev_frame_buffer, *context.frame_buffer);
         }
 
-        if (previous_image_disposal_method == ImageDescriptor::DisposalMethod::RestoreBackground) {
+        if (previous_image_disposal_method == GIFImageDescriptor::DisposalMethod::RestoreBackground) {
             // Note: RestoreBackground could be interpreted either as restoring the underlying
             // background of the entire image (e.g. container element's background-color), or the
             // background color of the GIF itself. It appears that all major browsers and most other
             // GIF decoders adhere to the former interpretation, therefore we will do the same by
             // clearing the entire frame buffer to transparent.
             clear_rect(*context.frame_buffer, context.images.at(i - 1).rect(), Color::Transparent);
-        } else if (i > 0 && previous_image_disposal_method == ImageDescriptor::DisposalMethod::RestorePrevious) {
+        } else if (i > 0 && previous_image_disposal_method == GIFImageDescriptor::DisposalMethod::RestorePrevious) {
             // Previous frame indicated that once disposed, it should be restored to *its* previous
             // underlying image contents, therefore we restore the saved previous frame buffer.
             copy_frame_buffer(*context.frame_buffer, *context.prev_frame_buffer);
@@ -370,9 +349,7 @@ static bool decode_frame(GIFLoadingContext& context, size_t frame_index)
         while (true) {
             Optional<u16> code = decoder.next_code();
             if (!code.has_value()) {
-#if GIF_DEBUG
-                dbgln("Unexpectedly reached end of gif frame data");
-#endif
+                dbgln_if(GIF_DEBUG, "Unexpectedly reached end of gif frame data");
                 return false;
             }
 
@@ -481,7 +458,7 @@ static bool load_gif_frame_descriptors(GIFLoadingContext& context)
     if (stream.handle_any_error())
         return false;
 
-    NonnullOwnPtr<ImageDescriptor> current_image = make<ImageDescriptor>();
+    NonnullOwnPtr<GIFImageDescriptor> current_image = make<GIFImageDescriptor>();
     for (;;) {
         u8 sentinel = 0;
         stream >> sentinel;
@@ -519,14 +496,12 @@ static bool load_gif_frame_descriptors(GIFLoadingContext& context)
 
             if (extension_type == 0xF9) {
                 if (sub_block.size() != 4) {
-#if GIF_DEBUG
-                    dbgln("Unexpected graphic control size");
-#endif
+                    dbgln_if(GIF_DEBUG, "Unexpected graphic control size");
                     continue;
                 }
 
                 u8 disposal_method = (sub_block[0] & 0x1C) >> 2;
-                current_image->disposal_method = (ImageDescriptor::DisposalMethod)disposal_method;
+                current_image->disposal_method = (GIFImageDescriptor::DisposalMethod)disposal_method;
 
                 u8 user_input = (sub_block[0] & 0x2) >> 1;
                 current_image->user_input = user_input == 1;
@@ -534,7 +509,7 @@ static bool load_gif_frame_descriptors(GIFLoadingContext& context)
                 u8 transparent = sub_block[0] & 1;
                 current_image->transparent = transparent == 1;
 
-                u16 duration = sub_block[1] + ((u16)sub_block[2] >> 8);
+                u16 duration = sub_block[1] + ((u16)sub_block[2] << 8);
                 current_image->duration = duration;
 
                 current_image->transparency_index = sub_block[3];
@@ -586,7 +561,7 @@ static bool load_gif_frame_descriptors(GIFLoadingContext& context)
             image.interlaced = (packed_fields & 0x40) != 0;
 
             if (!image.use_global_color_map) {
-                size_t local_color_table_size = pow(2, (packed_fields & 7) + 1);
+                size_t local_color_table_size = AK::exp2<size_t>((packed_fields & 7) + 1);
 
                 for (size_t i = 0; i < local_color_table_size; ++i) {
                     u8 r = 0;
@@ -623,7 +598,7 @@ static bool load_gif_frame_descriptors(GIFLoadingContext& context)
                 }
             }
 
-            current_image = make<ImageDescriptor>();
+            current_image = make<GIFImageDescriptor>();
             continue;
         }
 
@@ -678,12 +653,11 @@ void GIFImageDecoderPlugin::set_volatile()
     }
 }
 
-bool GIFImageDecoderPlugin::set_nonvolatile()
+bool GIFImageDecoderPlugin::set_nonvolatile(bool& was_purged)
 {
-    if (!m_context->frame_buffer) {
-        return true;
-    }
-    return m_context->frame_buffer->set_nonvolatile();
+    if (!m_context->frame_buffer)
+        return false;
+    return m_context->frame_buffer->set_nonvolatile(was_purged);
 }
 
 bool GIFImageDecoderPlugin::sniff()

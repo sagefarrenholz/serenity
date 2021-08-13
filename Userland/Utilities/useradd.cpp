@@ -1,32 +1,19 @@
 /*
  * Copyright (c) 2019-2020, Jesse Buhagiar <jooster669@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2021, Brandon Pruitt  <brapru@pm.me>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
+
+#include <AK/Base64.h>
+#include <AK/Random.h>
 #include <AK/String.h>
 #include <LibCore/ArgsParser.h>
+#include <crypt.h>
 #include <ctype.h>
+#include <errno.h>
 #include <pwd.h>
+#include <shadow.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -35,7 +22,7 @@
 
 constexpr uid_t BASE_UID = 1000;
 constexpr gid_t USERS_GID = 100;
-constexpr const char* DEFAULT_SHELL = "/bin/Shell";
+constexpr const char* DEFAULT_SHELL = "/bin/sh";
 
 int main(int argc, char** argv)
 {
@@ -67,25 +54,30 @@ int main(int argc, char** argv)
 
     // Let's run a quick sanity check on username
     if (strpbrk(username, "\\/!@#$%^&*()~+=`:\n")) {
-        fprintf(stderr, "invalid character in username, %s\n", username);
+        warnln("invalid character in username, {}", username);
         return 1;
     }
 
     // Disallow names starting with _ and -
     if (username[0] == '_' || username[0] == '-' || !isalpha(username[0])) {
-        fprintf(stderr, "invalid username, %s\n", username);
+        warnln("invalid username, {}", username);
+        return 1;
+    }
+
+    if (getpwnam(username)) {
+        warnln("user {} already exists!", username);
         return 1;
     }
 
     if (uid < 0) {
-        fprintf(stderr, "invalid uid %d!\n", uid);
+        warnln("invalid uid {}!", uid);
         return 3;
     }
 
     // First, let's sort out the uid for the user
     if (uid > 0) {
         if (getpwuid(static_cast<uid_t>(uid))) {
-            fprintf(stderr, "uid %u already exists!\n", uid);
+            warnln("uid {} already exists!", uid);
             return 4;
         }
 
@@ -95,7 +87,7 @@ int main(int argc, char** argv)
     }
 
     if (gid < 0) {
-        fprintf(stderr, "invalid gid %d\n", gid);
+        warnln("invalid gid {}", gid);
         return 3;
     }
 
@@ -105,44 +97,81 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    FILE* spwdfile = fopen("/etc/shadow", "a");
+    if (!spwdfile) {
+        perror("failed to open /etc/shadow");
+        return 1;
+    }
+
     String home;
     if (!home_path)
-        home = String::format("/home/%s", username);
+        home = String::formatted("/home/{}", username);
     else
         home = home_path;
 
     if (create_home_dir) {
         if (mkdir(home.characters(), 0700) < 0) {
-            perror(String::format("failed to create directory %s", home.characters()).characters());
+            auto saved_errno = errno;
+            warnln("Failed to create directory {}: {}", home, strerror(saved_errno));
             return 12;
         }
 
         if (chown(home.characters(), static_cast<uid_t>(uid), static_cast<gid_t>(gid)) < 0) {
-            perror(String::format("failed to chown %s to %u:%u", home.characters(), uid, gid).characters());
+            warnln("Failed to change owner of {} to {}:{}: {}", home, uid, gid, strerror(errno));
 
             if (rmdir(home.characters()) < 0) {
-                perror(String::format("failed to rmdir %s", home.characters()).characters());
+                warnln("Failed to remove directory {}: {}", home, strerror(errno));
                 return 12;
             }
             return 12;
         }
     }
 
+    auto get_salt = []() {
+        char random_data[12];
+        fill_with_random(random_data, sizeof(random_data));
+
+        StringBuilder builder;
+        builder.append("$5$");
+        builder.append(encode_base64(ReadonlyBytes(random_data, sizeof(random_data))));
+
+        return builder.build();
+    };
+
+    char* hash = crypt(password, get_salt().characters());
+
     struct passwd p;
     p.pw_name = const_cast<char*>(username);
-    p.pw_passwd = const_cast<char*>(password);
+    p.pw_passwd = const_cast<char*>("!");
     p.pw_dir = const_cast<char*>(home.characters());
     p.pw_uid = static_cast<uid_t>(uid);
     p.pw_gid = static_cast<gid_t>(gid);
     p.pw_shell = const_cast<char*>(shell);
     p.pw_gecos = const_cast<char*>(gecos);
 
+    struct spwd s;
+    s.sp_namp = const_cast<char*>(username);
+    s.sp_pwdp = const_cast<char*>(hash);
+    s.sp_lstchg = 18727;
+    s.sp_min = 0;
+    s.sp_max = 99999;
+    s.sp_warn = -1;
+    s.sp_inact = -1;
+    s.sp_expire = -1;
+    s.sp_flag = -1;
+
     if (putpwent(&p, pwfile) < 0) {
         perror("putpwent");
         return 1;
     }
 
+    if (putspent(&s, spwdfile) < 0) {
+        perror("putspent");
+        return 1;
+    }
+
     fclose(pwfile);
+    fclose(spwdfile);
 
     return 0;
 }

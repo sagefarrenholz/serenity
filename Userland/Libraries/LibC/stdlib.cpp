@@ -1,40 +1,23 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
 #include <AK/HashMap.h>
 #include <AK/Noncopyable.h>
+#include <AK/Random.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Types.h>
 #include <AK/Utf8View.h>
 #include <LibELF/AuxiliaryVector.h>
+#include <LibPthread/pthread.h>
 #include <alloca.h>
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -182,7 +165,7 @@ inline int generate_unique_filename(char* pattern, Callback callback)
 
     size_t start = length - 6;
 
-    static constexpr char random_characters[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    constexpr char random_characters[] = "abcdefghijklmnopqrstuvwxyz0123456789";
 
     for (int attempt = 0; attempt < 100; ++attempt) {
         for (int i = 0; i < 6; ++i)
@@ -223,6 +206,11 @@ void exit(int status)
     _fini();
     fflush(stdout);
     fflush(stderr);
+
+#ifndef _DYNAMIC_LOADER
+    __pthread_key_destroy_for_current_thread();
+#endif
+
     _exit(status);
 }
 
@@ -241,8 +229,12 @@ void abort()
     // For starters, send ourselves a SIGABRT.
     raise(SIGABRT);
     // If that didn't kill us, try harder.
-    raise(SIGKILL);
-    _exit(127);
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGABRT);
+    sigprocmask(SIG_UNBLOCK, &set, nullptr);
+    raise(SIGABRT);
+    _abort();
 }
 
 static HashTable<const char*> s_malloced_environment_variables;
@@ -358,7 +350,7 @@ int putenv(char* new_var)
 
     // At this point, we need to append the new var.
     // 2 here: one for the new var, one for the sentinel value.
-    char** new_environ = (char**)malloc((environ_size + 2) * sizeof(char*));
+    auto** new_environ = static_cast<char**>(kmalloc_array(environ_size + 2, sizeof(char*)));
     if (new_environ == nullptr) {
         errno = ENOMEM;
         return -1;
@@ -379,6 +371,25 @@ int putenv(char* new_var)
     __environ_is_malloced = true;
     environ = new_environ;
     return 0;
+}
+
+static const char* __progname = NULL;
+
+const char* getprogname()
+{
+    return __progname;
+}
+
+void setprogname(const char* progname)
+{
+    for (int i = strlen(progname) - 1; i >= 0; i--) {
+        if (progname[i] == '/') {
+            __progname = progname + i + 1;
+            return;
+        }
+    }
+
+    __progname = progname;
 }
 
 double strtod(const char* str, char** endptr)
@@ -635,9 +646,15 @@ double strtod(const char* str, char** endptr)
 
     // TODO: If `exponent` is large, this could be made faster.
     double value = digits.number();
+    double scale = 1;
+
     if (exponent < 0) {
         exponent = -exponent;
-        for (int i = 0; i < exponent; ++i) {
+        for (int i = 0; i < min(exponent, 300); ++i) {
+            scale *= base;
+        }
+        value /= scale;
+        for (int i = 300; i < exponent; i++) {
             value /= base;
         }
         if (value == -0.0 || value == +0.0) {
@@ -645,8 +662,9 @@ double strtod(const char* str, char** endptr)
         }
     } else if (exponent > 0) {
         for (int i = 0; i < exponent; ++i) {
-            value *= base;
+            scale *= base;
         }
+        value *= scale;
         if (value == -__builtin_huge_val() || value == +__builtin_huge_val()) {
             errno = ERANGE;
         }
@@ -718,6 +736,11 @@ void srand(unsigned seed)
 }
 
 int abs(int i)
+{
+    return i < 0 ? -i : i;
+}
+
+long long int llabs(long long int i)
 {
     return i < 0 ? -i : i;
 }
@@ -849,6 +872,14 @@ lldiv_t lldiv(long long numerator, long long denominator)
     return result;
 }
 
+int mblen(char const* s, size_t n)
+{
+    // FIXME: Implement locale support
+    if (!s)
+        return 0;
+    return (MB_CUR_MAX > n) ? n : MB_CUR_MAX;
+}
+
 size_t mbstowcs(wchar_t*, const char*, size_t)
 {
     dbgln("FIXME: Implement mbstowcs()");
@@ -878,15 +909,15 @@ int wctomb(char*, wchar_t)
 
 size_t wcstombs(char* dest, const wchar_t* src, size_t max)
 {
-    char* originalDest = dest;
-    while ((size_t)(dest - originalDest) < max) {
+    char* original_dest = dest;
+    while ((size_t)(dest - original_dest) < max) {
         StringView v { (const char*)src, sizeof(wchar_t) };
 
         // FIXME: dependent on locale, for now utf-8 is supported.
         Utf8View utf8 { v };
         if (*utf8.begin() == '\0') {
             *dest = '\0';
-            return (size_t)(dest - originalDest); // Exclude null character in returned size
+            return (size_t)(dest - original_dest); // Exclude null character in returned size
         }
 
         for (auto byte : utf8) {
@@ -1083,9 +1114,9 @@ unsigned long long strtoull(const char* str, char** endptr, int base)
 // TODO: In the future, rand can be made deterministic and this not.
 uint32_t arc4random(void)
 {
-    char buf[4];
-    syscall(SC_getrandom, buf, 4, 0);
-    return *(uint32_t*)buf;
+    uint32_t buf;
+    syscall(SC_getrandom, &buf, sizeof(buf), 0);
+    return buf;
 }
 
 void arc4random_buf(void* buffer, size_t buffer_size)
@@ -1097,22 +1128,7 @@ void arc4random_buf(void* buffer, size_t buffer_size)
 
 uint32_t arc4random_uniform(uint32_t max_bounds)
 {
-    // If we try to divide all 2**32 numbers into groups of "max_bounds" numbers, we may end up
-    // with a group around 2**32-1 that is a bit too small. For this reason, the implementation
-    // `arc4random() % max_bounds` would be insufficient. Here we compute the last number of the
-    // last "full group". Note that if max_bounds is a divisor of UINT32_MAX,
-    // then we end up with UINT32_MAX:
-    const uint32_t max_usable = UINT32_MAX - (static_cast<uint64_t>(UINT32_MAX) + 1) % max_bounds;
-    uint32_t random_value = arc4random();
-    for (int i = 0; i < 20 && random_value > max_usable; ++i) {
-        // By chance we picked a value from the incomplete group. Note that this group has size at
-        // most 2**31-1, so picking this group has a chance of less than 50%.
-        // In practice, this means that for the worst possible input, there is still only a
-        // once-in-a-million chance to get to iteration 20. In theory we should be able to loop
-        // forever. Here we prefer marginally imperfect random numbers over weird runtime behavior.
-        random_value = arc4random();
-    }
-    return random_value % max_bounds;
+    return AK::get_random_uniform(max_bounds);
 }
 
 char* realpath(const char* pathname, char* buffer)
@@ -1183,4 +1199,9 @@ int unlockpt([[maybe_unused]] int fd)
 {
     return 0;
 }
+}
+
+void _Exit(int status)
+{
+    _exit(status);
 }

@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,21 +16,17 @@
 
 namespace GUI {
 
+class ClipboardServerConnection;
+
 class Clipboard {
 public:
-    static Clipboard& the();
+    class ClipboardClient {
+    public:
+        ClipboardClient();
+        virtual ~ClipboardClient();
 
-    ByteBuffer data() const { return data_and_type().data; }
-    String mime_type() const { return data_and_type().mime_type; }
-    void set_data(ReadonlyBytes, const String& mime_type = "text/plain", const HashMap<String, String>& metadata = {});
-
-    void set_plain_text(const String& text)
-    {
-        set_data(text.bytes());
-    }
-
-    void set_bitmap(const Gfx::Bitmap&);
-    RefPtr<Gfx::Bitmap> bitmap() const;
+        virtual void clipboard_content_did_change(String const& mime_type) = 0;
+    };
 
     struct DataAndType {
         ByteBuffer data;
@@ -57,14 +34,30 @@ public:
         HashMap<String, String> metadata;
     };
 
-    DataAndType data_and_type() const;
-
-    Function<void(const String& mime_type)> on_change;
-
     static void initialize(Badge<Application>);
+    static Clipboard& the();
+
+    DataAndType data_and_type() const;
+    ByteBuffer data() const { return data_and_type().data; }
+    String mime_type() const { return data_and_type().mime_type; }
+    RefPtr<Gfx::Bitmap> bitmap() const;
+
+    void set_data(ReadonlyBytes const& data, String const& mime_type = "text/plain", HashMap<String, String> const& metadata = {});
+    void set_plain_text(String const& text) { set_data(text.bytes()); }
+    void set_bitmap(Gfx::Bitmap const&);
+    void clear();
+
+    void clipboard_data_changed(Badge<ClipboardServerConnection>, String const& mime_type);
+
+    void register_client(Badge<ClipboardClient>, ClipboardClient& client) { m_clients.set(&client); }
+    void unregister_client(Badge<ClipboardClient>, ClipboardClient& client) { m_clients.remove(&client); }
+
+    Function<void(String const& mime_type)> on_change;
 
 private:
-    Clipboard();
+    Clipboard() = default;
+
+    HashTable<ClipboardClient*> m_clients;
 };
 
 }

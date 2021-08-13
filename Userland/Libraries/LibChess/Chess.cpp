@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
@@ -172,12 +152,12 @@ Move Move::from_algebraic(const StringView& algebraic, const Color turn, const B
                         return IterationDecision::Break;
                     }
                 } else if (move_string.characters()[0] <= 57) {
-                    if (square.rank == (unsigned)(move_string.characters()[0] - '0')) {
+                    if (square.rank == (move_string.characters()[0] - '0')) {
                         move.from = square;
                         return IterationDecision::Break;
                     }
                 } else {
-                    if (square.file == (unsigned)(move_string.characters()[0] - 'a')) {
+                    if (square.file == (move_string.characters()[0] - 'a')) {
                         move.from = square;
                         return IterationDecision::Break;
                     }
@@ -219,7 +199,7 @@ String Move::to_algebraic() const
     }
 
     if (is_capture) {
-        if (piece.type == Type::Pawn)
+        if (piece.type == Type::Pawn && !is_ambiguous)
             builder.append(from.to_algebraic().substring(0, 1));
         builder.append("x");
     }
@@ -242,19 +222,19 @@ String Move::to_algebraic() const
 Board::Board()
 {
     // Fill empty spaces.
-    for (unsigned rank = 2; rank < 6; ++rank) {
-        for (unsigned file = 0; file < 8; ++file) {
+    for (int rank = 2; rank < 6; ++rank) {
+        for (int file = 0; file < 8; ++file) {
             set_piece({ rank, file }, EmptyPiece);
         }
     }
 
     // Fill white pawns.
-    for (unsigned file = 0; file < 8; ++file) {
+    for (int file = 0; file < 8; ++file) {
         set_piece({ 1, file }, { Color::White, Type::Pawn });
     }
 
     // Fill black pawns.
-    for (unsigned file = 0; file < 8; ++file) {
+    for (int file = 0; file < 8; ++file) {
         set_piece({ 6, file }, { Color::Black, Type::Pawn });
     }
 
@@ -285,8 +265,8 @@ String Board::to_fen() const
 
     // 1. Piece placement
     int empty = 0;
-    for (unsigned rank = 0; rank < 8; rank++) {
-        for (unsigned file = 0; file < 8; file++) {
+    for (int rank = 0; rank < 8; rank++) {
+        for (int file = 0; file < 8; file++) {
             const Piece p(get_piece({ 7 - rank, file }));
             if (p.type == Type::None) {
                 empty++;
@@ -348,15 +328,13 @@ String Board::to_fen() const
 
 Piece Board::get_piece(const Square& square) const
 {
-    VERIFY(square.rank < 8);
-    VERIFY(square.file < 8);
+    VERIFY(square.in_bounds());
     return m_board[square.rank][square.file];
 }
 
 Piece Board::set_piece(const Square& square, const Piece& piece)
 {
-    VERIFY(square.rank < 8);
-    VERIFY(square.file < 8);
+    VERIFY(square.in_bounds());
     return m_board[square.rank][square.file] = piece;
 }
 
@@ -374,7 +352,7 @@ bool Board::is_legal_promotion(const Move& move, Color color) const
         return false;
     }
 
-    unsigned promotion_rank = (color == Color::White) ? 7 : 0;
+    int promotion_rank = (color == Color::White) ? 7 : 0;
 
     if (move.to.rank != promotion_rank && move.promote_to != Type::None) {
         // attempted promotion from invalid rank
@@ -439,13 +417,34 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
         // attempted move of opponent's piece
         return false;
 
-    if (move.to.rank > 7 || move.to.file > 7)
+    if (!move.to.in_bounds())
         // attempted move outside of board
+        return false;
+
+    // Check castling first to allow dragging king onto the rook.
+    if (piece.type == Type::King) {
+        if (color == Color::White) {
+            if ((move.to == Square("a1") || move.to == Square("c1")) && m_white_can_castle_queenside && get_piece(Square("b1")).type == Type::None && get_piece(Square("c1")).type == Type::None && get_piece(Square("d1")).type == Type::None) {
+                return true;
+            } else if ((move.to == Square("h1") || move.to == Square("g1")) && m_white_can_castle_kingside && get_piece(Square("f1")).type == Type::None && get_piece(Square("g1")).type == Type::None) {
+                return true;
+            }
+        } else {
+            if ((move.to == Square("a8") || move.to == Square("c8")) && m_black_can_castle_queenside && get_piece(Square("b8")).type == Type::None && get_piece(Square("c8")).type == Type::None && get_piece(Square("d8")).type == Type::None) {
+                return true;
+            } else if ((move.to == Square("h8") || move.to == Square("g8")) && m_black_can_castle_kingside && get_piece(Square("f8")).type == Type::None && get_piece(Square("g8")).type == Type::None) {
+                return true;
+            }
+        }
+    }
+
+    if (piece.color == get_piece(move.to).color)
+        // Attempted move to a square occupied by a piece of the same color.
         return false;
 
     if (piece.type == Type::Pawn) {
         int dir = (color == Color::White) ? +1 : -1;
-        unsigned start_rank = (color == Color::White) ? 1 : 6;
+        int start_rank = (color == Color::White) ? 1 : 6;
 
         if (move.from.rank == start_rank && move.to.rank == move.from.rank + (2 * dir) && move.to.file == move.from.file
             && get_piece(move.to).type == Type::None && get_piece({ move.from.rank + dir, move.from.file }).type == Type::None) {
@@ -463,8 +462,8 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
         }
 
         if (move.to.file == move.from.file + 1 || move.to.file == move.from.file - 1) {
-            unsigned other_start_rank = (color == Color::White) ? 6 : 1;
-            unsigned en_passant_rank = (color == Color::White) ? 4 : 3;
+            int other_start_rank = (color == Color::White) ? 6 : 1;
+            int en_passant_rank = (color == Color::White) ? 4 : 3;
             Move en_passant_last_move = { { other_start_rank, move.to.file }, { en_passant_rank, move.to.file } };
             if (get_piece(move.to).color == opposing_color(color)) {
                 // Pawn capture.
@@ -481,7 +480,7 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
     } else if (piece.type == Type::Knight) {
         int rank_delta = abs(move.to.rank - move.from.rank);
         int file_delta = abs(move.to.file - move.from.file);
-        if (get_piece(move.to).color != color && max(rank_delta, file_delta) == 2 && min(rank_delta, file_delta) == 1) {
+        if (max(rank_delta, file_delta) == 2 && min(rank_delta, file_delta) == 1) {
             return true;
         }
     } else if (piece.type == Type::Bishop) {
@@ -495,10 +494,7 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
                     return false;
                 }
             }
-
-            if (get_piece(move.to).color != color) {
-                return true;
-            }
+            return true;
         }
     } else if (piece.type == Type::Rook) {
         int rank_delta = move.to.rank - move.from.rank;
@@ -511,10 +507,7 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
                     return false;
                 }
             }
-
-            if (get_piece(move.to).color != color) {
-                return true;
-            }
+            return true;
         }
     } else if (piece.type == Type::Queen) {
         int rank_delta = move.to.rank - move.from.rank;
@@ -527,36 +520,13 @@ bool Board::is_legal_no_check(const Move& move, Color color) const
                     return false;
                 }
             }
-
-            if (get_piece(move.to).color != color) {
-                return true;
-            }
+            return true;
         }
     } else if (piece.type == Type::King) {
         int rank_delta = move.to.rank - move.from.rank;
         int file_delta = move.to.file - move.from.file;
         if (abs(rank_delta) <= 1 && abs(file_delta) <= 1) {
-            if (get_piece(move.to).color != color) {
-                return true;
-            }
-        }
-
-        if (color == Color::White) {
-            if ((move.to == Square("a1") || move.to == Square("c1")) && m_white_can_castle_queenside && get_piece(Square("b1")).type == Type::None && get_piece(Square("c1")).type == Type::None && get_piece(Square("d1")).type == Type::None) {
-
-                return true;
-            } else if ((move.to == Square("h1") || move.to == Square("g1")) && m_white_can_castle_kingside && get_piece(Square("f1")).type == Type::None && get_piece(Square("g1")).type == Type::None) {
-
-                return true;
-            }
-        } else {
-            if ((move.to == Square("a8") || move.to == Square("c8")) && m_black_can_castle_queenside && get_piece(Square("b8")).type == Type::None && get_piece(Square("c8")).type == Type::None && get_piece(Square("d8")).type == Type::None) {
-
-                return true;
-            } else if ((move.to == Square("h8") || move.to == Square("g8")) && m_black_can_castle_kingside && get_piece(Square("f8")).type == Type::None && get_piece(Square("g8")).type == Type::None) {
-
-                return true;
-            }
+            return true;
         }
     }
 
@@ -601,14 +571,12 @@ bool Board::apply_move(const Move& move, Color color)
 
 bool Board::apply_illegal_move(const Move& move, Color color)
 {
-    Board clone = *this;
-    clone.m_previous_states = {};
-    clone.m_moves = {};
+    auto state = Traits<Board>::hash(*this);
     auto state_count = 0;
-    if (m_previous_states.contains(clone))
-        state_count = m_previous_states.get(clone).value();
+    if (m_previous_states.contains(state))
+        state_count = m_previous_states.get(state).value();
 
-    m_previous_states.set(clone, state_count + 1);
+    m_previous_states.set(state, state_count + 1);
     m_moves.append(move);
 
     m_turn = opposing_color(color);
@@ -780,7 +748,7 @@ Board::Result Board::game_result() const
         if (m_moves_since_capture == 50 * 2)
             return Result::FiftyMoveRule;
 
-        auto repeats = m_previous_states.get(*this);
+        auto repeats = m_previous_states.get(Traits<Board>::hash(*this));
         if (repeats.has_value()) {
             if (repeats.value() == 3)
                 return Result::ThreeFoldRepetition;
@@ -863,7 +831,7 @@ bool Board::is_promotion_move(const Move& move, Color color) const
     if (color == Color::None)
         color = turn();
 
-    unsigned promotion_rank = (color == Color::White) ? 7 : 0;
+    int promotion_rank = (color == Color::White) ? 7 : 0;
     if (move.to.rank != promotion_rank)
         return false;
 

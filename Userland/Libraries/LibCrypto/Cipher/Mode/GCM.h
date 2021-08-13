@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Ali Mohammad Pur <ali.mpfard@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -57,7 +37,7 @@ public:
         this->cipher().encrypt_block(key_block, key_block);
         key_block.bytes().copy_to(m_auth_key);
 
-        m_ghash = make<Authentication::GHash>(m_auth_key);
+        m_ghash = Authentication::GHash(m_auth_key);
     }
 
     virtual String class_name() const override
@@ -104,7 +84,7 @@ public:
             CTR<T>::encrypt(in, out, iv);
 
         auto auth_tag = m_ghash->process(aad, out);
-        block0.apply_initialization_vector(auth_tag.data);
+        block0.apply_initialization_vector({ auth_tag.data, array_size(auth_tag.data) });
         block0.bytes().copy_to(tag);
     }
 
@@ -123,7 +103,7 @@ public:
         CTR<T>::increment(iv);
 
         auto auth_tag = m_ghash->process(aad, in);
-        block0.apply_initialization_vector(auth_tag.data);
+        block0.apply_initialization_vector({ auth_tag.data, array_size(auth_tag.data) });
 
         auto test_consistency = [&] {
             if (block0.block_size() != tag.size() || __builtin_memcmp(block0.bytes().data(), tag.data(), tag.size()) != 0)
@@ -146,7 +126,7 @@ private:
     static constexpr auto block_size = T::BlockType::BlockSizeInBits / 8;
     u8 m_auth_key_storage[block_size];
     Bytes m_auth_key { m_auth_key_storage, block_size };
-    OwnPtr<Authentication::GHash> m_ghash;
+    Optional<Authentication::GHash> m_ghash;
 };
 
 }

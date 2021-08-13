@@ -1,33 +1,13 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGfx/Painter.h>
 #include <LibWeb/Dump.h>
 #include <LibWeb/Layout/InitialContainingBlockBox.h>
-#include <LibWeb/Page/Frame.h>
+#include <LibWeb/Page/BrowsingContext.h>
 #include <LibWeb/Painting/StackingContext.h>
 
 namespace Web::Layout {
@@ -48,7 +28,7 @@ void InitialContainingBlockBox::build_stacking_context_tree()
 
     set_stacking_context(make<StackingContext>(*this, nullptr));
 
-    for_each_in_subtree_of_type<Box>([&](Box& box) {
+    for_each_in_inclusive_subtree_of_type<Box>([&](Box& box) {
         if (&box == this)
             return IterationDecision::Continue;
         if (!box.establishes_stacking_context()) {
@@ -62,37 +42,10 @@ void InitialContainingBlockBox::build_stacking_context_tree()
     });
 }
 
-void InitialContainingBlockBox::paint_document_background(PaintContext& context)
-{
-    context.painter().fill_rect(Gfx::IntRect { {}, context.viewport_rect().size() }, document().background_color(context.palette()));
-    context.painter().translate(-context.viewport_rect().location());
-
-    if (auto background_bitmap = document().background_image()) {
-        Gfx::IntRect background_rect {
-            0,
-            0,
-            context.viewport_rect().x() + context.viewport_rect().width(),
-            context.viewport_rect().y() + context.viewport_rect().height()
-        };
-        context.painter().blit_tiled(background_rect, *background_bitmap, background_bitmap->rect());
-    }
-}
-
 void InitialContainingBlockBox::paint_all_phases(PaintContext& context)
 {
-    paint_document_background(context);
-
-    paint(context, PaintPhase::Background);
-    paint(context, PaintPhase::Border);
-    paint(context, PaintPhase::Foreground);
-    if (context.has_focus())
-        paint(context, PaintPhase::FocusOutline);
-    paint(context, PaintPhase::Overlay);
-}
-
-void InitialContainingBlockBox::paint(PaintContext& context, PaintPhase phase)
-{
-    stacking_context()->paint(context, phase);
+    context.painter().translate(-context.viewport_rect().location());
+    stacking_context()->paint(context);
 }
 
 HitTestResult InitialContainingBlockBox::hit_test(const Gfx::IntPoint& position, HitTestType type) const
@@ -106,7 +59,7 @@ void InitialContainingBlockBox::recompute_selection_states()
 
     auto selection = this->selection().normalized();
 
-    for_each_in_subtree([&](auto& layout_node) {
+    for_each_in_inclusive_subtree([&](auto& layout_node) {
         if (!selection.is_valid()) {
             // Everything gets SelectionState::None.
         } else if (&layout_node == selection.start().layout_node && &layout_node == selection.end().layout_node) {

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -35,9 +15,15 @@ class Timer final : public Object {
     C_OBJECT(Timer);
 
 public:
-    static NonnullRefPtr<Timer> create_single_shot(int interval, Function<void()>&& timeout_handler, Object* parent = nullptr)
+    static NonnullRefPtr<Timer> create_repeating(int interval_ms, Function<void()>&& timeout_handler, Object* parent = nullptr)
     {
-        auto timer = adopt(*new Timer(interval, move(timeout_handler), parent));
+        auto timer = adopt_ref(*new Timer(interval_ms, move(timeout_handler), parent));
+        timer->stop();
+        return timer;
+    }
+    static NonnullRefPtr<Timer> create_single_shot(int interval_ms, Function<void()>&& timeout_handler, Object* parent = nullptr)
+    {
+        auto timer = adopt_ref(*new Timer(interval_ms, move(timeout_handler), parent));
         timer->set_single_shot(true);
         timer->stop();
         return timer;
@@ -46,18 +32,18 @@ public:
     virtual ~Timer() override;
 
     void start();
-    void start(int interval);
+    void start(int interval_ms);
     void restart();
-    void restart(int interval);
+    void restart(int interval_ms);
     void stop();
 
     bool is_active() const { return m_active; }
-    int interval() const { return m_interval; }
-    void set_interval(int interval)
+    int interval() const { return m_interval_ms; }
+    void set_interval(int interval_ms)
     {
-        if (m_interval == interval)
+        if (m_interval_ms == interval_ms)
             return;
-        m_interval = interval;
+        m_interval_ms = interval_ms;
         m_interval_dirty = true;
     }
 
@@ -68,14 +54,14 @@ public:
 
 private:
     explicit Timer(Object* parent = nullptr);
-    Timer(int interval, Function<void()>&& timeout_handler, Object* parent = nullptr);
+    Timer(int interval_ms, Function<void()>&& timeout_handler, Object* parent = nullptr);
 
     virtual void timer_event(TimerEvent&) override;
 
     bool m_active { false };
     bool m_single_shot { false };
     bool m_interval_dirty { false };
-    int m_interval { 0 };
+    int m_interval_ms { 0 };
 };
 
 }

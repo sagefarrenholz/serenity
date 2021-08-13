@@ -1,44 +1,21 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <Kernel/Devices/CharacterDevice.h>
+#include <Kernel/IO.h>
 
 namespace Kernel {
-
-#define SERIAL_COM1_ADDR 0x3F8
-#define SERIAL_COM2_ADDR 0x2F8
-#define SERIAL_COM3_ADDR 0x3E8
-#define SERIAL_COM4_ADDR 0x2E8
 
 class SerialDevice final : public CharacterDevice {
     AK_MAKE_ETERNAL
 public:
-    SerialDevice(int base_addr, unsigned minor);
+    static NonnullRefPtr<SerialDevice> must_create(size_t com_number);
+
     virtual ~SerialDevice() override;
 
     // ^CharacterDevice
@@ -46,6 +23,8 @@ public:
     virtual KResultOr<size_t> read(FileDescription&, u64, UserOrKernelBuffer&, size_t) override;
     virtual bool can_write(const FileDescription&, size_t) const override;
     virtual KResultOr<size_t> write(FileDescription&, u64, const UserOrKernelBuffer&, size_t) override;
+
+    void put_char(char);
 
     enum InterruptEnable {
         LowPowerMode = 0x01 << 5,
@@ -128,29 +107,33 @@ public:
     virtual String device_name() const override;
 
 private:
+    friend class PCISerialDevice;
+
+    SerialDevice(IOAddress base_addr, unsigned minor);
+
     // ^CharacterDevice
-    virtual const char* class_name() const override { return "SerialDevice"; }
+    virtual StringView class_name() const override { return "SerialDevice"; }
 
     void initialize();
-    void set_interrupts(char interrupt_enable);
+    void set_interrupts(bool interrupt_enable);
     void set_baud(Baud);
-    void set_fifo_control(char fifo_control);
+    void set_fifo_control(u8 fifo_control);
     void set_line_control(ParitySelect, StopBits, WordLength);
     void set_break_enable(bool break_enable);
-    void set_modem_control(char modem_control);
-    char get_line_status() const;
-    bool rx_ready();
-    bool tx_ready();
+    void set_modem_control(u8 modem_control);
+    u8 get_line_status() const;
 
-    int m_base_addr;
-    char m_interrupt_enable;
-    char m_fifo_control;
-    Baud m_baud;
-    ParitySelect m_parity_select;
-    StopBits m_stop_bits;
-    WordLength m_word_length;
-    bool m_break_enable;
-    char m_modem_control;
+    IOAddress m_base_addr;
+    bool m_interrupt_enable { false };
+    u8 m_fifo_control { 0 };
+    Baud m_baud { Baud38400 };
+    ParitySelect m_parity_select { None };
+    StopBits m_stop_bits { One };
+    WordLength m_word_length { EightBits };
+    bool m_break_enable { false };
+    u8 m_modem_control { 0 };
+    bool m_last_put_char_was_carriage_return { false };
+    SpinLock<u8> m_serial_lock;
 };
 
 }

@@ -1,41 +1,25 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "GameSizeDialog.h"
 #include "Game.h"
+#include <AK/Math.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/CheckBox.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/SpinBox.h>
 
-GameSizeDialog::GameSizeDialog(GUI::Window* parent)
+GameSizeDialog::GameSizeDialog(GUI::Window* parent, size_t board_size, size_t target, bool evil_ai)
     : GUI::Dialog(parent)
+    , m_board_size(board_size)
+    , m_target_tile_power(AK::log2(target))
+    , m_evil_ai(evil_ai)
 {
-    set_rect({ 0, 0, 200, 150 });
+    set_rect({ 0, 0, 250, 150 });
     set_title("New Game");
     set_icon(parent->icon());
     set_resizable(false);
@@ -77,7 +61,11 @@ GameSizeDialog::GameSizeDialog(GUI::Window* parent)
         tile_value_label.set_text(String::number(target_tile()));
     };
 
-    auto& temp_checkbox = main_widget.add<GUI::CheckBox>("Temporary");
+    auto& evil_ai_checkbox = main_widget.add<GUI::CheckBox>("Evil AI");
+    evil_ai_checkbox.set_checked(m_evil_ai);
+    evil_ai_checkbox.on_checked = [this](auto checked) { m_evil_ai = checked; };
+
+    auto& temp_checkbox = main_widget.add<GUI::CheckBox>("Temporarily apply changes");
     temp_checkbox.set_checked(m_temporary);
     temp_checkbox.on_checked = [this](auto checked) { m_temporary = checked; };
 

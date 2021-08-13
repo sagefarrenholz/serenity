@@ -1,33 +1,15 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include "Region.h"
+#include "SoftFPU.h"
 #include "ValueWithShadow.h"
+#include <AK/ByteReader.h>
 #include <LibX86/Instruction.h>
 #include <LibX86/Interpreter.h>
 
@@ -54,11 +36,15 @@ union PartAddressableRegister {
 class SoftCPU final
     : public X86::Interpreter
     , public X86::InstructionStream {
+    friend SoftFPU;
+
 public:
     using ValueWithShadowType8 = ValueWithShadow<u8>;
     using ValueWithShadowType16 = ValueWithShadow<u16>;
     using ValueWithShadowType32 = ValueWithShadow<u32>;
     using ValueWithShadowType64 = ValueWithShadow<u64>;
+    using ValueWithShadowType128 = ValueWithShadow<u128>;
+    using ValueWithShadowType256 = ValueWithShadow<u256>;
 
     explicit SoftCPU(Emulator&);
     void dump() const;
@@ -74,15 +60,15 @@ public:
 
     struct Flags {
         enum Flag {
-            CF = 0x0001,
-            PF = 0x0004,
-            AF = 0x0010,
-            ZF = 0x0040,
-            SF = 0x0080,
-            TF = 0x0100,
-            IF = 0x0200,
-            DF = 0x0400,
-            OF = 0x0800,
+            CF = 0x0001, // 0b0000'0000'0000'0001
+            PF = 0x0004, // 0b0000'0000'0000'0100
+            AF = 0x0010, // 0b0000'0000'0001'0000
+            ZF = 0x0040, // 0b0000'0000'0100'0000
+            SF = 0x0080, // 0b0000'0000'1000'0000
+            TF = 0x0100, // 0b0000'0001'0000'0000
+            IF = 0x0200, // 0b0000'0010'0000'0000
+            DF = 0x0400, // 0b0000'0100'0000'0000
+            OF = 0x0800, // 0b0000'1000'0000'0000
         };
     };
 
@@ -281,6 +267,10 @@ public:
     ValueWithShadow<u8> dl() const { return const_gpr8(X86::RegisterDL); }
     ValueWithShadow<u8> dh() const { return const_gpr8(X86::RegisterDH); }
 
+    long double fpu_get(u8 index) const { return m_fpu.fpu_get(index); }
+    long double fpu_pop() { return m_fpu.fpu_pop(); }
+    MMX mmx_get(u8 index) const { return m_fpu.mmx_get(index); };
+
     void set_eax(ValueWithShadow<u32> value) { gpr32(X86::RegisterEAX) = value; }
     void set_ebx(ValueWithShadow<u32> value) { gpr32(X86::RegisterEBX) = value; }
     void set_ecx(ValueWithShadow<u32> value) { gpr32(X86::RegisterECX) = value; }
@@ -307,6 +297,10 @@ public:
     void set_ch(ValueWithShadow<u8> value) { gpr8(X86::RegisterCH) = value; }
     void set_dl(ValueWithShadow<u8> value) { gpr8(X86::RegisterDL) = value; }
     void set_dh(ValueWithShadow<u8> value) { gpr8(X86::RegisterDH) = value; }
+
+    void fpu_push(long double value) { m_fpu.fpu_push(value); }
+    void fpu_set(u8 index, long double value) { m_fpu.fpu_set(index, value); }
+    void mmx_set(u8 index, MMX value) { m_fpu.mmx_set(index, value); }
 
     bool of() const { return m_eflags & Flags::OF; }
     bool sf() const { return m_eflags & Flags::SF; }
@@ -367,6 +361,8 @@ public:
     ValueWithShadow<u16> read_memory16(X86::LogicalAddress);
     ValueWithShadow<u32> read_memory32(X86::LogicalAddress);
     ValueWithShadow<u64> read_memory64(X86::LogicalAddress);
+    ValueWithShadow<u128> read_memory128(X86::LogicalAddress);
+    ValueWithShadow<u256> read_memory256(X86::LogicalAddress);
 
     template<typename T>
     ValueWithShadow<T> read_memory(X86::LogicalAddress address)
@@ -377,12 +373,20 @@ public:
             return read_memory16(address);
         if constexpr (sizeof(T) == 4)
             return read_memory32(address);
+        if constexpr (sizeof(T) == 8)
+            return read_memory64(address);
+        if constexpr (sizeof(T) == 16)
+            return read_memory128(address);
+        if constexpr (sizeof(T) == 32)
+            return read_memory256(address);
     }
 
     void write_memory8(X86::LogicalAddress, ValueWithShadow<u8>);
     void write_memory16(X86::LogicalAddress, ValueWithShadow<u16>);
     void write_memory32(X86::LogicalAddress, ValueWithShadow<u32>);
     void write_memory64(X86::LogicalAddress, ValueWithShadow<u64>);
+    void write_memory128(X86::LogicalAddress, ValueWithShadow<u128>);
+    void write_memory256(X86::LogicalAddress, ValueWithShadow<u256>);
 
     template<typename T>
     void write_memory(X86::LogicalAddress address, ValueWithShadow<T> data)
@@ -393,6 +397,12 @@ public:
             return write_memory16(address, data);
         if constexpr (sizeof(T) == 4)
             return write_memory32(address, data);
+        if constexpr (sizeof(T) == 8)
+            return write_memory64(address, data);
+        if constexpr (sizeof(T) == 16)
+            return write_memory128(address, data);
+        if constexpr (sizeof(T) == 32)
+            return write_memory256(address, data);
     }
 
     bool evaluate_condition(u8 condition) const
@@ -730,6 +740,7 @@ private:
     virtual void INSB(const X86::Instruction&) override;
     virtual void INSD(const X86::Instruction&) override;
     virtual void INSW(const X86::Instruction&) override;
+    virtual void INT1(const X86::Instruction&) override;
     virtual void INT3(const X86::Instruction&) override;
     virtual void INTO(const X86::Instruction&) override;
     virtual void INT_imm8(const X86::Instruction&) override;
@@ -850,9 +861,27 @@ private:
     virtual void OUT_imm8_AL(const X86::Instruction&) override;
     virtual void OUT_imm8_AX(const X86::Instruction&) override;
     virtual void OUT_imm8_EAX(const X86::Instruction&) override;
+    virtual void PACKSSDW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PACKSSWB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PACKUSWB_mm1_mm2m64(const X86::Instruction&) override;
     virtual void PADDB_mm1_mm2m64(const X86::Instruction&) override;
     virtual void PADDW_mm1_mm2m64(const X86::Instruction&) override;
     virtual void PADDD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PADDSB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PADDSW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PADDUSB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PADDUSW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PAND_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PANDN_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PCMPEQB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PCMPEQW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PCMPEQD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PCMPGTB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PCMPGTW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PCMPGTD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PMADDWD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PMULHW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PMULLW_mm1_mm2m64(const X86::Instruction&) override;
     virtual void POPA(const X86::Instruction&) override;
     virtual void POPAD(const X86::Instruction&) override;
     virtual void POPF(const X86::Instruction&) override;
@@ -866,6 +895,36 @@ private:
     virtual void POP_SS(const X86::Instruction&) override;
     virtual void POP_reg16(const X86::Instruction&) override;
     virtual void POP_reg32(const X86::Instruction&) override;
+    virtual void POR_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSLLW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSLLW_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSLLD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSLLD_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSLLQ_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSLLQ_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSRAW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSRAW_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSRAD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSRAD_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSRLW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSRLW_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSRLD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSRLD_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSRLQ_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSRLQ_mm1_imm8(const X86::Instruction&) override;
+    virtual void PSUBB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSUBW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSUBD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSUBSB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSUBSW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSUBUSB_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PSUBUSW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PUNPCKHBW_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PUNPCKHWD_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PUNPCKHDQ_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void PUNPCKLBW_mm1_mm2m32(const X86::Instruction&) override;
+    virtual void PUNPCKLWD_mm1_mm2m32(const X86::Instruction&) override;
+    virtual void PUNPCKLDQ_mm1_mm2m32(const X86::Instruction&) override;
     virtual void PUSHA(const X86::Instruction&) override;
     virtual void PUSHAD(const X86::Instruction&) override;
     virtual void PUSHF(const X86::Instruction&) override;
@@ -884,6 +943,7 @@ private:
     virtual void PUSH_imm8(const X86::Instruction&) override;
     virtual void PUSH_reg16(const X86::Instruction&) override;
     virtual void PUSH_reg32(const X86::Instruction&) override;
+    virtual void PXOR_mm1_mm2m64(const X86::Instruction&) override;
     virtual void RCL_RM16_1(const X86::Instruction&) override;
     virtual void RCL_RM16_CL(const X86::Instruction&) override;
     virtual void RCL_RM16_imm8(const X86::Instruction&) override;
@@ -1045,8 +1105,12 @@ private:
     virtual void XOR_reg32_RM32(const X86::Instruction&) override;
     virtual void XOR_reg8_RM8(const X86::Instruction&) override;
     virtual void MOVQ_mm1_mm2m64(const X86::Instruction&) override;
+    virtual void MOVQ_mm1m64_mm2(const X86::Instruction&) override;
+    virtual void MOVD_mm1_rm32(const X86::Instruction&) override;
+    virtual void MOVQ_mm1_rm64(const X86::Instruction&) override; // long mode
+    virtual void MOVD_rm32_mm2(const X86::Instruction&) override;
+    virtual void MOVQ_rm64_mm2(const X86::Instruction&) override; // long mode
     virtual void EMMS(const X86::Instruction&) override;
-    virtual void MOVQ_mm1_m64_mm2(const X86::Instruction&) override;
     virtual void wrap_0xC0(const X86::Instruction&) override;
     virtual void wrap_0xC1_16(const X86::Instruction&) override;
     virtual void wrap_0xC1_32(const X86::Instruction&) override;
@@ -1107,6 +1171,7 @@ private:
 
 private:
     Emulator& m_emulator;
+    SoftFPU m_fpu;
 
     PartAddressableRegister m_gpr[8];
     PartAddressableRegister m_gpr_shadow[8];
@@ -1118,37 +1183,6 @@ private:
 
     u32 m_eip { 0 };
     u32 m_base_eip { 0 };
-
-    long double m_fpu[8];
-    // FIXME: Shadow for m_fpu.
-
-    // FIXME: Use bits 11 to 13 in the FPU status word for this.
-    int m_fpu_top { -1 };
-
-    void fpu_push(long double n)
-    {
-        ++m_fpu_top;
-        fpu_set(0, n);
-    }
-    long double fpu_pop()
-    {
-        auto n = fpu_get(0);
-        m_fpu_top--;
-        return n;
-    }
-    long double fpu_get(int i)
-    {
-        VERIFY(i >= 0 && i <= m_fpu_top);
-        return m_fpu[m_fpu_top - i];
-    }
-    void fpu_set(int i, long double n)
-    {
-        VERIFY(i >= 0 && i <= m_fpu_top);
-        m_fpu[m_fpu_top - i] = n;
-    }
-
-    // FIXME: Or just something like m_flags_tainted?
-    ValueWithShadow<u16> m_fpu_cw { 0, 0 };
 
     Region* m_cached_code_region { nullptr };
     u8* m_cached_code_base_ptr { nullptr };
@@ -1169,7 +1203,8 @@ ALWAYS_INLINE u16 SoftCPU::read16()
     if (!m_cached_code_region || !m_cached_code_region->contains(m_eip))
         update_code_cache();
 
-    u16 value = *reinterpret_cast<const u16*>(&m_cached_code_base_ptr[m_eip - m_cached_code_region->base()]);
+    u16 value;
+    ByteReader::load<u16>(&m_cached_code_base_ptr[m_eip - m_cached_code_region->base()], value);
     m_eip += 2;
     return value;
 }
@@ -1179,7 +1214,9 @@ ALWAYS_INLINE u32 SoftCPU::read32()
     if (!m_cached_code_region || !m_cached_code_region->contains(m_eip))
         update_code_cache();
 
-    u32 value = *reinterpret_cast<const u32*>(&m_cached_code_base_ptr[m_eip - m_cached_code_region->base()]);
+    u32 value;
+    ByteReader::load<u32>(&m_cached_code_base_ptr[m_eip - m_cached_code_region->base()], value);
+
     m_eip += 4;
     return value;
 }
@@ -1189,7 +1226,9 @@ ALWAYS_INLINE u64 SoftCPU::read64()
     if (!m_cached_code_region || !m_cached_code_region->contains(m_eip))
         update_code_cache();
 
-    auto value = *reinterpret_cast<const u64*>(&m_cached_code_base_ptr[m_eip - m_cached_code_region->base()]);
+    u64 value;
+    ByteReader::load<u64>(&m_cached_code_base_ptr[m_eip - m_cached_code_region->base()], value);
+
     m_eip += 8;
     return value;
 }

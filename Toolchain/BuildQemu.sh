@@ -7,15 +7,14 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 echo "$DIR"
 
-ARCH=${ARCH:-"i686"}
-PREFIX="$DIR/Local/$ARCH"
+PREFIX="$DIR/Local/qemu"
 BUILD=$(realpath "$DIR/../Build")
 SYSROOT="$BUILD/Root"
 
-QEMU520_MD5SUM="179f86928835da857c237b42f4b2df73"
+QEMU600_MD5SUM="cce185dc0119546e395909e8a71a75bb"
 
-QEMU_VERSION="qemu-5.2.0"
-QEMU_MD5SUM="${QEMU520_MD5SUM}"
+QEMU_VERSION="qemu-6.0.0"
+QEMU_MD5SUM="${QEMU600_MD5SUM}"
 
 echo PREFIX is "$PREFIX"
 echo SYSROOT is "$SYSROOT"
@@ -33,7 +32,7 @@ pushd "$DIR/Tarballs"
     echo "qemu md5='$md5'"
     if  [ "$md5" != "$QEMU_MD5SUM" ] ; then
         echo "qemu md5 sum mismatching, please run script again."
-        rm $$QEMU_VERSION.tar.xz
+        rm -f $QEMU_VERSION.tar.xz
         exit 1
     fi
 
@@ -46,7 +45,7 @@ pushd "$DIR/Tarballs"
 popd
 
 mkdir -p "$PREFIX"
-mkdir -p "$DIR/Build/$ARCH/qemu"
+mkdir -p "$DIR/Build/qemu"
 
 if [ -z "$MAKEJOBS" ]; then
     MAKEJOBS=$(nproc)
@@ -61,12 +60,10 @@ fi
 
 echo Using $UI_LIB based UI
 
-pushd "$DIR/Build/$ARCH"
-    pushd qemu
-        "$DIR"/Tarballs/$QEMU_VERSION/configure --prefix="$PREFIX" \
-                                                --target-list=i386-softmmu \
-                                                --enable-$UI_LIB || exit 1
-        make -j "$MAKEJOBS" || exit 1
-        make install || exit 1
-    popd
+pushd "$DIR/Build/qemu"
+    "$DIR"/Tarballs/$QEMU_VERSION/configure --prefix="$PREFIX" \
+                                            --target-list=i386-softmmu,x86_64-softmmu \
+                                            --enable-$UI_LIB || exit 1
+    make -j "$MAKEJOBS" || exit 1
+    make install || exit 1
 popd

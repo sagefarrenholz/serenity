@@ -1,34 +1,12 @@
 /*
  * Copyright (c) 2020, Peter Elliott <pelliott@ualberta.ca>
  * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Types.h>
 #include <LibCore/Account.h>
 #include <LibCore/ArgsParser.h>
-#include <LibCore/File.h>
 #include <LibCore/GetPassword.h>
 #include <string.h>
 #include <unistd.h>
@@ -84,7 +62,7 @@ int main(int argc, char** argv)
 
     setpwent();
 
-    if (pledge("stdio wpath cpath fattr tty", nullptr) < 0) {
+    if (pledge("stdio wpath rpath cpath fattr tty", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -104,22 +82,56 @@ int main(int argc, char** argv)
     } else if (unlock) {
         target_account.set_password_enabled(true);
     } else {
+        if (current_uid != 0) {
+            auto current_password = Core::get_password("Current password: ");
+            if (current_password.is_error()) {
+                warnln("{}", current_password.error());
+                return 1;
+            }
+
+            if (!target_account.authenticate(current_password.value().characters())) {
+                warnln("Incorrect or disabled password.");
+                warnln("Password for user {} unchanged.", target_account.username());
+                return 1;
+            }
+        }
+
         auto new_password = Core::get_password("New password: ");
         if (new_password.is_error()) {
             warnln("{}", new_password.error());
             return 1;
         }
 
+        auto new_password_retype = Core::get_password("Retype new password: ");
+        if (new_password_retype.is_error()) {
+            warnln("{}", new_password_retype.error());
+            return 1;
+        }
+
+        if (new_password.value().is_empty() && new_password_retype.value().is_empty()) {
+            warnln("No password supplied.");
+            warnln("Password for user {} unchanged.", target_account.username());
+            return 1;
+        }
+
+        if (new_password.value() != new_password_retype.value()) {
+            warnln("Sorry, passwords don't match.");
+            warnln("Password for user {} unchanged.", target_account.username());
+            return 1;
+        }
+
         target_account.set_password(new_password.value().characters());
     }
 
-    if (pledge("stdio wpath cpath fattr", nullptr) < 0) {
+    if (pledge("stdio wpath rpath cpath fattr", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     if (!target_account.sync()) {
         perror("Core::Account::Sync");
+    } else {
+        outln("Password for user {} successfully updated.", target_account.username());
     }
 
     return 0;

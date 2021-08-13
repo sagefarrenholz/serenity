@@ -1,31 +1,13 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2019-2020, William McPherson <willmcpherson2@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2021, kleines Filmröllchen <malu.bertsch@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Track.h"
+#include <AK/Math.h>
 #include <AK/NumericLimits.h>
 #include <LibAudio/Loader.h>
 #include <math.h>
@@ -33,6 +15,7 @@
 Track::Track(const u32& time)
     : m_time(time)
 {
+    set_volume(volume_max);
     set_sustain_impl(1000);
     set_attack(5);
     set_decay(1000);
@@ -45,17 +28,17 @@ Track::~Track()
 
 void Track::fill_sample(Sample& sample)
 {
-    Audio::Sample new_sample;
+    Audio::Frame new_sample;
 
     for (size_t note = 0; note < note_count; ++note) {
-        if (!m_roll_iters[note].is_end()) {
-            if (m_roll_iters[note]->on_sample == m_time) {
+        if (!m_roll_iterators[note].is_end()) {
+            if (m_roll_iterators[note]->on_sample == m_time) {
                 set_note(note, On);
-            } else if (m_roll_iters[note]->off_sample == m_time) {
+            } else if (m_roll_iterators[note]->off_sample == m_time) {
                 set_note(note, Off);
-                ++m_roll_iters[note];
-                if (m_roll_iters[note].is_end())
-                    m_roll_iters[note] = m_roll_notes[note].begin();
+                ++m_roll_iterators[note];
+                if (m_roll_iterators[note].is_end())
+                    m_roll_iterators[note] = m_roll_notes[note].begin();
             }
         }
 
@@ -86,7 +69,7 @@ void Track::fill_sample(Sample& sample)
             VERIFY_NOT_REACHED();
         }
 
-        Audio::Sample note_sample;
+        Audio::Frame note_sample;
         switch (m_wave) {
         case Wave::Sine:
             note_sample = sine(note);
@@ -101,7 +84,7 @@ void Track::fill_sample(Sample& sample)
             note_sample = triangle(note);
             break;
         case Wave::Noise:
-            note_sample = noise();
+            note_sample = noise(note);
             break;
         case Wave::RecordedSample:
             note_sample = recorded_sample(note);
@@ -109,8 +92,8 @@ void Track::fill_sample(Sample& sample)
         default:
             VERIFY_NOT_REACHED();
         }
-        new_sample.left += note_sample.left * m_power[note] * volume;
-        new_sample.right += note_sample.right * m_power[note] * volume;
+        new_sample.left += note_sample.left * m_power[note] * volume_factor * (static_cast<double>(volume()) / volume_max);
+        new_sample.right += note_sample.right * m_power[note] * volume_factor * (static_cast<double>(volume()) / volume_max);
     }
 
     if (m_delay) {
@@ -136,7 +119,7 @@ void Track::reset()
     memset(m_envelope, 0, sizeof(m_envelope));
 
     for (size_t note = 0; note < note_count; ++note)
-        m_roll_iters[note] = m_roll_notes[note].begin();
+        m_roll_iterators[note] = m_roll_notes[note].begin();
 }
 
 String Track::set_recorded_sample(const StringView& path)
@@ -172,7 +155,7 @@ String Track::set_recorded_sample(const StringView& path)
 
 // All of the information for these waves is on Wikipedia.
 
-Audio::Sample Track::sine(size_t note)
+Audio::Frame Track::sine(size_t note)
 {
     double pos = note_frequencies[note] / sample_rate;
     double sin_step = pos * 2 * M_PI;
@@ -181,7 +164,7 @@ Audio::Sample Track::sine(size_t note)
     return w;
 }
 
-Audio::Sample Track::saw(size_t note)
+Audio::Frame Track::saw(size_t note)
 {
     double saw_step = note_frequencies[note] / sample_rate;
     double t = m_pos[note];
@@ -190,32 +173,38 @@ Audio::Sample Track::saw(size_t note)
     return w;
 }
 
-Audio::Sample Track::square(size_t note)
+Audio::Frame Track::square(size_t note)
 {
     double pos = note_frequencies[note] / sample_rate;
     double square_step = pos * 2 * M_PI;
-    double w = sin(m_pos[note]) >= 0 ? 1 : -1;
+    double w = AK::sin(m_pos[note]) >= 0 ? 1 : -1;
     m_pos[note] += square_step;
     return w;
 }
 
-Audio::Sample Track::triangle(size_t note)
+Audio::Frame Track::triangle(size_t note)
 {
     double triangle_step = note_frequencies[note] / sample_rate;
     double t = m_pos[note];
-    double w = fabs(fmod((4 * t) + 1, 4) - 2) - 1;
+    double w = AK::fabs(AK::fmod((4 * t) + 1, 4.) - 2) - 1.;
     m_pos[note] += triangle_step;
     return w;
 }
 
-Audio::Sample Track::noise() const
+Audio::Frame Track::noise(size_t note)
 {
-    double random_percentage = static_cast<double>(rand()) / RAND_MAX;
-    double w = (random_percentage * 2) - 1;
-    return w;
+    double step = note_frequencies[note] / sample_rate;
+    // m_pos keeps track of the time since the last random sample
+    m_pos[note] += step;
+    if (m_pos[note] > 0.05) {
+        double random_percentage = static_cast<double>(rand()) / RAND_MAX;
+        m_last_w[note] = (random_percentage * 2) - 1;
+        m_pos[note] = 0;
+    }
+    return m_last_w[note];
 }
 
-Audio::Sample Track::recorded_sample(size_t note)
+Audio::Frame Track::recorded_sample(size_t note)
 {
     int t = m_pos[note];
     if (t >= static_cast<int>(m_recorded_sample.size()))
@@ -271,9 +260,9 @@ void Track::sync_roll(int note)
 {
     auto it = m_roll_notes[note].find_if([&](auto& roll_note) { return roll_note.off_sample > m_time; });
     if (it.is_end())
-        m_roll_iters[note] = m_roll_notes[note].begin();
+        m_roll_iterators[note] = m_roll_notes[note].begin();
     else
-        m_roll_iters[note] = it;
+        m_roll_iterators[note] = it;
 }
 
 void Track::set_roll_note(int note, u32 on_sample, u32 off_sample)
@@ -293,14 +282,14 @@ void Track::set_roll_note(int note, u32 on_sample, u32 off_sample)
         if (it->on_sample <= new_roll_note.on_sample && it->off_sample >= new_roll_note.on_sample) {
             if (m_time >= it->on_sample && m_time <= it->off_sample)
                 set_note(note, Off);
-            m_roll_notes[note].remove(it);
+            it.remove(m_roll_notes[note]);
             sync_roll(note);
             return;
         }
         if ((new_roll_note.on_sample == 0 || it->on_sample >= new_roll_note.on_sample - 1) && it->on_sample <= new_roll_note.off_sample) {
             if (m_time >= new_roll_note.off_sample && m_time <= it->off_sample)
                 set_note(note, Off);
-            m_roll_notes[note].remove(it);
+            it.remove(m_roll_notes[note]);
             it = m_roll_notes[note].begin();
             continue;
         }
@@ -326,6 +315,12 @@ void Track::set_wave(Direction direction)
         if (--m_wave < first_wave)
             m_wave = last_wave;
     }
+}
+
+void Track::set_volume(int volume)
+{
+    VERIFY(volume >= 0);
+    m_volume = volume;
 }
 
 void Track::set_attack(int attack)

@@ -1,44 +1,23 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Math.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Frame.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/Menu.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Path.h>
 #include <unistd.h>
-
-#include <math.h>
 
 class MainFrame final : public GUI::Frame {
     C_OBJECT(MainFrame);
@@ -120,17 +99,17 @@ public:
             Gfx::IntPoint p3;
             Gfx::IntPoint p4;
 
-            p1.set_x(radius * cos(M_PI * m_wheel_delta_acc / 18) + off_x);
-            p1.set_y(radius * sin(M_PI * m_wheel_delta_acc / 18) + off_y);
+            p1.set_x(radius * AK::cos(AK::Pi<double> * m_wheel_delta_acc / 18.) + off_x);
+            p1.set_y(radius * AK::sin(AK::Pi<double> * m_wheel_delta_acc / 18.) + off_y);
 
-            p2.set_x(radius * cos(M_PI * (m_wheel_delta_acc + 18) / 18) + off_x);
-            p2.set_y(radius * sin(M_PI * (m_wheel_delta_acc + 18) / 18) + off_y);
+            p2.set_x(radius * AK::cos(AK::Pi<double> * (m_wheel_delta_acc + 18) / 18.) + off_x);
+            p2.set_y(radius * AK::sin(AK::Pi<double> * (m_wheel_delta_acc + 18) / 18.) + off_y);
 
-            p3.set_x(radius * cos(M_PI * (m_wheel_delta_acc + 9) / 18) + off_x);
-            p3.set_y(radius * sin(M_PI * (m_wheel_delta_acc + 9) / 18) + off_y);
+            p3.set_x(radius * AK::cos(AK::Pi<double> * (m_wheel_delta_acc + 9) / 18.) + off_x);
+            p3.set_y(radius * AK::sin(AK::Pi<double> * (m_wheel_delta_acc + 9) / 18.) + off_y);
 
-            p4.set_x(radius * cos(M_PI * (m_wheel_delta_acc + 27) / 18) + off_x);
-            p4.set_y(radius * sin(M_PI * (m_wheel_delta_acc + 27) / 18) + off_y);
+            p4.set_x(radius * AK::cos(AK::Pi<double> * (m_wheel_delta_acc + 27) / 18.) + off_x);
+            p4.set_y(radius * AK::sin(AK::Pi<double> * (m_wheel_delta_acc + 27) / 18.) + off_y);
 
             painter.draw_line(p1, p2, Color::Red, 2);
             painter.draw_line(p3, p4, Color::Red, 2);
@@ -198,14 +177,12 @@ int main(int argc, char** argv)
     auto& main_widget = window->set_main_widget<MainFrame>();
     main_widget.set_fill_with_background_color(true);
 
-    auto menubar = GUI::MenuBar::construct();
-    auto& app_menu = menubar->add_menu("Mouse Demo");
-    app_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
 
-    auto& help_menu = menubar->add_menu("Help");
+    auto& help_menu = window->add_menu("&Help");
     help_menu.add_action(GUI::CommonActions::make_about_action("Mouse Demo", app_icon, window));
 
-    app->set_menubar(move(menubar));
     window->set_resizable(false);
     window->show();
     return app->exec();

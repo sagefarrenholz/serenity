@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -30,7 +10,7 @@
 #include <AK/SinglyLinkedListWithCount.h>
 #include <Kernel/DoubleBuffer.h>
 #include <Kernel/KBuffer.h>
-#include <Kernel/Lock.h>
+#include <Kernel/Locking/ProtectedValue.h>
 #include <Kernel/Net/IPv4.h>
 #include <Kernel/Net/IPv4SocketTuple.h>
 #include <Kernel/Net/Socket.h>
@@ -41,12 +21,17 @@ class NetworkAdapter;
 class TCPPacket;
 class TCPSocket;
 
+struct PortAllocationResult {
+    KResultOr<u16> error_or_port;
+    bool did_allocate;
+};
+
 class IPv4Socket : public Socket {
 public:
     static KResultOr<NonnullRefPtr<Socket>> create(int type, int protocol);
     virtual ~IPv4Socket() override;
 
-    static Lockable<HashTable<IPv4Socket*>>& all_sockets();
+    static ProtectedValue<HashTable<IPv4Socket*>>& all_sockets();
 
     virtual KResult close() override;
     virtual KResult bind(Userspace<const sockaddr*>, socklen_t) override;
@@ -61,9 +46,9 @@ public:
     virtual KResult setsockopt(int level, int option, Userspace<const void*>, socklen_t) override;
     virtual KResult getsockopt(FileDescription&, int level, int option, Userspace<void*>, Userspace<socklen_t*>) override;
 
-    virtual int ioctl(FileDescription&, unsigned request, FlatPtr arg) override;
+    virtual KResult ioctl(FileDescription&, unsigned request, Userspace<void*> arg) override;
 
-    bool did_receive(const IPv4Address& peer_address, u16 peer_port, KBuffer&&, const Time&);
+    bool did_receive(const IPv4Address& peer_address, u16 peer_port, ReadonlyBytes, const Time&);
 
     const IPv4Address& local_address() const { return m_local_address; }
     u16 local_port() const { return m_local_port; }
@@ -73,6 +58,8 @@ public:
     const IPv4Address& peer_address() const { return m_peer_address; }
     u16 peer_port() const { return m_peer_port; }
     void set_peer_port(u16 port) { m_peer_port = port; }
+
+    const Vector<IPv4Address>& multicast_memberships() const { return m_multicast_memberships; }
 
     IPv4SocketTuple tuple() const { return IPv4SocketTuple(m_local_address, m_local_port, m_peer_address, m_peer_port); }
 
@@ -87,23 +74,25 @@ public:
     BufferMode buffer_mode() const { return m_buffer_mode; }
 
 protected:
-    IPv4Socket(int type, int protocol);
-    virtual const char* class_name() const override { return "IPv4Socket"; }
+    IPv4Socket(int type, int protocol, NonnullOwnPtr<DoubleBuffer> receive_buffer, OwnPtr<KBuffer> optional_scratch_buffer);
+    virtual StringView class_name() const override { return "IPv4Socket"; }
 
-    int allocate_local_port_if_needed();
+    PortAllocationResult allocate_local_port_if_needed();
 
     virtual KResult protocol_bind() { return KSuccess; }
-    virtual KResult protocol_listen() { return KSuccess; }
-    virtual KResultOr<size_t> protocol_receive(ReadonlyBytes /* raw_ipv4_packet */, UserOrKernelBuffer&, size_t, int) { return -ENOTIMPL; }
-    virtual KResultOr<size_t> protocol_send(const UserOrKernelBuffer&, size_t) { return -ENOTIMPL; }
+    virtual KResult protocol_listen([[maybe_unused]] bool did_allocate_port) { return KSuccess; }
+    virtual KResultOr<size_t> protocol_receive(ReadonlyBytes /* raw_ipv4_packet */, UserOrKernelBuffer&, size_t, int) { return ENOTIMPL; }
+    virtual KResultOr<size_t> protocol_send(const UserOrKernelBuffer&, size_t) { return ENOTIMPL; }
     virtual KResult protocol_connect(FileDescription&, ShouldBlock) { return KSuccess; }
-    virtual int protocol_allocate_local_port() { return 0; }
+    virtual KResultOr<u16> protocol_allocate_local_port() { return ENOPROTOOPT; }
     virtual bool protocol_is_disconnected() const { return false; }
 
     virtual void shut_down_for_reading() override;
 
     void set_local_address(IPv4Address address) { m_local_address = address; }
     void set_peer_address(IPv4Address address) { m_peer_address = address; }
+
+    static OwnPtr<DoubleBuffer> create_receive_buffer();
 
 private:
     virtual bool is_ipv4() const override { return true; }
@@ -116,6 +105,9 @@ private:
     IPv4Address m_local_address;
     IPv4Address m_peer_address;
 
+    Vector<IPv4Address> m_multicast_memberships;
+    bool m_multicast_loop { true };
+
     struct ReceivedPacket {
         IPv4Address peer_address;
         u16 peer_port;
@@ -125,7 +117,7 @@ private:
 
     SinglyLinkedListWithCount<ReceivedPacket> m_receive_queue;
 
-    DoubleBuffer m_receive_buffer;
+    NonnullOwnPtr<DoubleBuffer> m_receive_buffer;
 
     u16 m_local_port { 0 };
     u16 m_peer_port { 0 };
@@ -138,7 +130,7 @@ private:
 
     BufferMode m_buffer_mode { BufferMode::Packets };
 
-    Optional<KBuffer> m_scratch_buffer;
+    OwnPtr<KBuffer> m_scratch_buffer;
 };
 
 }

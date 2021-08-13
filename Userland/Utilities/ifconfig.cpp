@@ -1,30 +1,11 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/ByteBuffer.h>
+#include <AK/Assertions.h>
+#include <AK/IPv4Address.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/NumberFormat.h>
@@ -49,17 +30,17 @@ int main(int argc, char** argv)
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Display or modify the configuration of each network interface.");
-    args_parser.add_option(value_ipv4, "Set the IP address of the selected network", "ipv4", 'i', "The new IP of the network");
-    args_parser.add_option(value_adapter, "Select a specific network adapter to configure", "adapter", 'a', "The name of a network adapter");
-    args_parser.add_option(value_gateway, "Set the default gateway of the selected network", "gateway", 'g', "The new IP of the gateway");
-    args_parser.add_option(value_mask, "Set the network mask of the selected network", "mask", 'm', "The new network mask");
+    args_parser.add_option(value_ipv4, "Set the IP address of the selected network", "ipv4", 'i', "ip");
+    args_parser.add_option(value_adapter, "Select a specific network adapter to configure", "adapter", 'a', "adapter");
+    args_parser.add_option(value_gateway, "Set the default gateway of the selected network", "gateway", 'g', "gateway");
+    args_parser.add_option(value_mask, "Set the network mask of the selected network", "mask", 'm', "mask");
     args_parser.parse(argc, argv);
 
     if (!value_ipv4 && !value_adapter && !value_gateway && !value_mask) {
 
         auto file = Core::File::construct("/proc/net/adapters");
-        if (!file->open(Core::IODevice::ReadOnly)) {
-            fprintf(stderr, "Error: %s\n", file->error_string());
+        if (!file->open(Core::OpenMode::ReadOnly)) {
+            outln("Failed to open {}: {}", file->name(), file->error_string());
             return 1;
         }
 
@@ -67,7 +48,7 @@ int main(int argc, char** argv)
         auto json = JsonValue::from_string(file_contents);
         VERIFY(json.has_value());
         json.value().as_array().for_each([](auto& value) {
-            auto if_object = value.as_object();
+            auto& if_object = value.as_object();
 
             auto name = if_object.get("name").to_string();
             auto class_name = if_object.get("class_name").to_string();
@@ -81,21 +62,21 @@ int main(int argc, char** argv)
             auto bytes_out = if_object.get("bytes_out").to_u32();
             auto mtu = if_object.get("mtu").to_u32();
 
-            printf("%s:\n", name.characters());
-            printf("\tmac: %s\n", mac_address.characters());
-            printf("\tipv4: %s\n", ipv4_address.characters());
-            printf("\tnetmask: %s\n", netmask.characters());
-            printf("\tgateway: %s\n", gateway.characters());
-            printf("\tclass: %s\n", class_name.characters());
-            printf("\tRX: %u packets %u bytes (%s)\n", packets_in, bytes_in, human_readable_size(bytes_in).characters());
-            printf("\tTX: %u packets %u bytes (%s)\n", packets_out, bytes_out, human_readable_size(bytes_out).characters());
-            printf("\tMTU: %u\n", mtu);
-            printf("\n");
+            outln("{}:", name);
+            outln("\tmac: {}", mac_address);
+            outln("\tipv4: {}", ipv4_address);
+            outln("\tnetmask: {}", netmask);
+            outln("\tgateway: {}", gateway);
+            outln("\tclass: {}", class_name);
+            outln("\tRX: {} packets {} bytes ({})", packets_in, bytes_in, human_readable_size(bytes_in));
+            outln("\tTX: {} packets {} bytes ({})", packets_out, bytes_out, human_readable_size(bytes_out));
+            outln("\tMTU: {}", mtu);
+            outln();
         });
     } else {
 
         if (!value_adapter) {
-            fprintf(stderr, "No network adapter was specified.\n");
+            warnln("No network adapter was specified.");
             return 1;
         }
 
@@ -105,7 +86,7 @@ int main(int argc, char** argv)
             auto address = IPv4Address::from_string(value_ipv4);
 
             if (!address.has_value()) {
-                fprintf(stderr, "Invalid IPv4 address: '%s'\n", value_ipv4);
+                warnln("Invalid IPv4 address: '{}'", value_ipv4);
                 return 1;
             }
 
@@ -120,7 +101,7 @@ int main(int argc, char** argv)
 
             bool fits = ifname.copy_characters_to_buffer(ifr.ifr_name, IFNAMSIZ);
             if (!fits) {
-                fprintf(stderr, "Interface name '%s' is too long\n", ifname.characters());
+                warnln("Interface name '{}' is too long", ifname);
                 return 1;
             }
             ifr.ifr_addr.sa_family = AF_INET;
@@ -137,7 +118,7 @@ int main(int argc, char** argv)
             auto address = IPv4Address::from_string(value_mask);
 
             if (!address.has_value()) {
-                fprintf(stderr, "Invalid IPv4 mask: '%s'\n", value_mask);
+                warnln("Invalid IPv4 mask: '{}'", value_mask);
                 return 1;
             }
 
@@ -152,7 +133,7 @@ int main(int argc, char** argv)
 
             bool fits = ifname.copy_characters_to_buffer(ifr.ifr_name, IFNAMSIZ);
             if (!fits) {
-                fprintf(stderr, "Interface name '%s' is too long\n", ifname.characters());
+                warnln("Interface name '{}' is too long", ifname);
                 return 1;
             }
             ifr.ifr_netmask.sa_family = AF_INET;

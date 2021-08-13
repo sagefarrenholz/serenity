@@ -1,43 +1,22 @@
 /*
  * Copyright (c) 2021, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Atomic.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Types.h>
-#include <Kernel/CommandLine.h>
+#include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Storage/AHCIController.h>
 #include <Kernel/Storage/SATADiskDevice.h>
-#include <Kernel/VM/MemoryManager.h>
 
 namespace Kernel {
 
 NonnullRefPtr<AHCIController> AHCIController::initialize(PCI::Address address)
 {
-    return adopt(*new AHCIController(address));
+    return adopt_ref(*new AHCIController(address));
 }
 
 bool AHCIController::reset()
@@ -102,7 +81,7 @@ volatile AHCI::HBA& AHCIController::hba() const
 AHCIController::AHCIController(PCI::Address address)
     : StorageController()
     , PCI::DeviceController(address)
-    , m_hba_region(hba_region())
+    , m_hba_region(default_hba_region())
     , m_capabilities(capabilities())
 {
     initialize();
@@ -113,7 +92,7 @@ AHCI::HBADefinedCapabilities AHCIController::capabilities() const
     u32 capabilities = hba().control_regs.cap;
     u32 extended_capabilities = hba().control_regs.cap2;
 
-    dbgln_if(AHCI_DEBUG, "{}: AHCI Controller Capabilities = 0x{:08x}, Extended Capabilities = 0x{:08x}", pci_address(), capabilities, extended_capabilities);
+    dbgln_if(AHCI_DEBUG, "{}: AHCI Controller Capabilities = {:#08x}, Extended Capabilities = {:#08x}", pci_address(), capabilities, extended_capabilities);
 
     return (AHCI::HBADefinedCapabilities) {
         (capabilities & 0b11111) + 1,
@@ -136,8 +115,8 @@ AHCI::HBADefinedCapabilities AHCIController::capabilities() const
         (capabilities & (u32)(AHCI::HBACapabilities::SSNTF)) != 0,
         (capabilities & (u32)(AHCI::HBACapabilities::SNCQ)) != 0,
         (capabilities & (u32)(AHCI::HBACapabilities::S64A)) != 0,
-        (capabilities & (u32)(AHCI::HBACapabilitiesExtended::BOH)) != 0,
-        (capabilities & (u32)(AHCI::HBACapabilitiesExtended::NVMP)) != 0,
+        (extended_capabilities & (u32)(AHCI::HBACapabilitiesExtended::BOH)) != 0,
+        (extended_capabilities & (u32)(AHCI::HBACapabilitiesExtended::NVMP)) != 0,
         (extended_capabilities & (u32)(AHCI::HBACapabilitiesExtended::APST)) != 0,
         (extended_capabilities & (u32)(AHCI::HBACapabilitiesExtended::SDS)) != 0,
         (extended_capabilities & (u32)(AHCI::HBACapabilitiesExtended::SADM)) != 0,
@@ -145,9 +124,9 @@ AHCI::HBADefinedCapabilities AHCIController::capabilities() const
     };
 }
 
-NonnullOwnPtr<Region> AHCIController::hba_region() const
+NonnullOwnPtr<Memory::Region> AHCIController::default_hba_region() const
 {
-    auto region = MM.allocate_kernel_region(PhysicalAddress(PCI::get_BAR5(pci_address())).page_base(), page_round_up(sizeof(AHCI::HBA)), "AHCI HBA", Region::Access::Read | Region::Access::Write);
+    auto region = MM.allocate_kernel_region(PhysicalAddress(PCI::get_BAR5(pci_address())).page_base(), Memory::page_round_up(sizeof(AHCI::HBA)), "AHCI HBA", Memory::Region::Access::ReadWrite);
     return region.release_nonnull();
 }
 
@@ -157,28 +136,19 @@ AHCIController::~AHCIController()
 
 void AHCIController::initialize()
 {
-    if (kernel_command_line().ahci_reset_mode() != AHCIResetMode::None) {
-        if (!reset()) {
-            dmesgln("{}: AHCI controller reset failed", pci_address());
-            return;
-        }
-        dmesgln("{}: AHCI controller reset", pci_address());
+    if (!reset()) {
+        dmesgln("{}: AHCI controller reset failed", pci_address());
+        return;
     }
+    dmesgln("{}: AHCI controller reset", pci_address());
     dbgln("{}: AHCI command list entries count - {}", pci_address(), hba_capabilities().max_command_list_entries_count);
 
     u32 version = hba().control_regs.version;
-    dbgln_if(AHCI_DEBUG, "{}: AHCI Controller Version = 0x{:08x}", pci_address(), version);
+    dbgln_if(AHCI_DEBUG, "{}: AHCI Controller Version = {:#08x}", pci_address(), version);
 
     hba().control_regs.ghc = 0x80000000; // Ensure that HBA knows we are AHCI aware.
     PCI::enable_interrupt_line(pci_address());
     PCI::enable_bus_mastering(pci_address());
-
-    // FIXME: This is a hack for VMWare (and possibly other hardware) that set
-    // the IRQ line to 7 or other weird value. Find a better way to set this
-    // with balancing IRQ sharing in mind.
-    if (kernel_command_line().is_forcing_irq_11_for_ahci())
-        PCI::set_interrupt_line(pci_address(), 11);
-
     enable_global_interrupts();
     m_handlers.append(AHCIPortHandler::create(*this, PCI::get_interrupt_line(pci_address()),
         AHCI::MaskedBitField((volatile u32&)(hba().control_regs.pi))));
@@ -210,12 +180,18 @@ RefPtr<StorageDevice> AHCIController::device_by_port(u32 port_index) const
 RefPtr<StorageDevice> AHCIController::device(u32 index) const
 {
     NonnullRefPtrVector<StorageDevice> connected_devices;
-    for (size_t index = 0; index < (size_t)(hba().control_regs.cap & 0x1F); index++) {
-        auto checked_device = device_by_port(index);
+    u32 pi = hba().control_regs.pi;
+    u32 bit = __builtin_ffsl(pi);
+    while (bit) {
+        dbgln_if(AHCI_DEBUG, "Checking implemented port {}, pi {:b}", bit - 1, pi);
+        pi &= ~(1u << (bit - 1));
+        auto checked_device = device_by_port(bit - 1);
+        bit = __builtin_ffsl(pi);
         if (checked_device.is_null())
             continue;
         connected_devices.append(checked_device.release_nonnull());
     }
+    dbgln_if(AHCI_DEBUG, "Connected device count: {}, Index: {}", connected_devices.size(), index);
     if (index >= connected_devices.size())
         return nullptr;
     return connected_devices[index];

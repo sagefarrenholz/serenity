@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
@@ -173,7 +153,10 @@ void HTMLScriptElement::prepare_script()
         return;
     }
 
-    // FIXME: Check if scripting is disabled, if so return
+    if (is_scripting_disabled()) {
+        dbgln("HTMLScriptElement: Refusing to run script because scripting is disabled.");
+        return;
+    }
 
     if (m_script_type == ScriptType::Classic && has_attribute(HTML::AttributeNames::nomodule)) {
         dbgln("HTMLScriptElement: Refusing to run classic script because it has the nomodule attribute.");
@@ -203,9 +186,6 @@ void HTMLScriptElement::prepare_script()
     // FIXME: Cryptographic nonce
     // FIXME: Check "integrity" attribute
     // FIXME: Check "referrerpolicy" attribute
-
-    m_parser_inserted = !!m_parser_document;
-
     // FIXME: Check fetch options
 
     if (has_attribute(HTML::AttributeNames::src)) {
@@ -227,11 +207,13 @@ void HTMLScriptElement::prepare_script()
         }
 
         if (m_script_type == ScriptType::Classic) {
+            auto request = LoadRequest::create_for_url_on_page(url, document().page());
+
             // FIXME: This load should be made asynchronous and the parser should spin an event loop etc.
-            m_script_filename = url.basename();
+            m_script_filename = url.to_string();
             ResourceLoader::the().load_sync(
-                url,
-                [this, url](auto data, auto&) {
+                request,
+                [this, url](auto data, auto&, auto) {
                     if (data.is_null()) {
                         dbgln("HTMLScriptElement: Failed to load {}", url);
                         return;
@@ -239,7 +221,7 @@ void HTMLScriptElement::prepare_script()
                     m_script_source = String::copy(data);
                     script_became_ready();
                 },
-                [this](auto&) {
+                [this](auto&, auto) {
                     m_failed_to_load = true;
                 });
         } else {
@@ -254,15 +236,15 @@ void HTMLScriptElement::prepare_script()
         }
     }
 
-    if ((m_script_type == ScriptType::Classic && has_attribute(HTML::AttributeNames::src) && has_attribute(HTML::AttributeNames::defer) && m_parser_inserted && !has_attribute(HTML::AttributeNames::async))
-        || (m_script_type == ScriptType::Module && m_parser_inserted && !has_attribute(HTML::AttributeNames::async))) {
+    if ((m_script_type == ScriptType::Classic && has_attribute(HTML::AttributeNames::src) && has_attribute(HTML::AttributeNames::defer) && is_parser_inserted() && !has_attribute(HTML::AttributeNames::async))
+        || (m_script_type == ScriptType::Module && is_parser_inserted() && !has_attribute(HTML::AttributeNames::async))) {
         document().add_script_to_execute_when_parsing_has_finished({}, *this);
         when_the_script_is_ready([this] {
             m_ready_to_be_parser_executed = true;
         });
     }
 
-    else if (m_script_type == ScriptType::Classic && has_attribute(HTML::AttributeNames::src) && m_parser_inserted && !has_attribute(HTML::AttributeNames::async)) {
+    else if (m_script_type == ScriptType::Classic && has_attribute(HTML::AttributeNames::src) && is_parser_inserted() && !has_attribute(HTML::AttributeNames::async)) {
         document().set_pending_parsing_blocking_script({}, this);
         when_the_script_is_ready([this] {
             m_ready_to_be_parser_executed = true;
@@ -329,13 +311,15 @@ void HTMLScriptElement::when_the_script_is_ready(Function<void()> callback)
     m_script_ready_callback = move(callback);
 }
 
-void HTMLScriptElement::inserted_into(Node& parent)
+void HTMLScriptElement::inserted()
 {
-    // FIXME: It would be nice to have a notification for "node became connected"
-    if (is_connected()) {
-        prepare_script();
+    if (!is_parser_inserted()) {
+        // FIXME: Only do this if the element was previously not connected.
+        if (is_connected()) {
+            prepare_script();
+        }
     }
-    HTMLElement::inserted_into(parent);
+    HTMLElement::inserted();
 }
 
 }

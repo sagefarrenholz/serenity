@@ -1,32 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2019-2020, William McPherson <willmcpherson2@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "KeysWidget.h"
 #include "TrackManager.h"
+#include <AK/Array.h>
+#include <AK/StringView.h>
 #include <LibGUI/Painter.h>
 
 KeysWidget::KeysWidget(TrackManager& track_manager)
@@ -127,33 +109,33 @@ constexpr int black_key_width = 16;
 constexpr int black_key_x_offset = black_key_width / 2;
 constexpr int black_key_height = 60;
 
-constexpr char white_key_labels[] = {
-    'A',
-    'S',
-    'D',
-    'F',
-    'G',
-    'H',
-    'J',
-    'K',
-    'L',
-    ';',
-    '\'',
-    'r',
+constexpr int white_key_labels_count = 12;
+constexpr Array<StringView, white_key_labels_count> white_key_labels = {
+    "A",
+    "S",
+    "D",
+    "F",
+    "G",
+    "H",
+    "J",
+    "K",
+    "L",
+    ";",
+    "\'",
+    "\u23CE", // Return key symbol
 };
-constexpr int white_key_labels_count = sizeof(white_key_labels) / sizeof(char);
 
-constexpr char black_key_labels[] = {
-    'W',
-    'E',
-    'T',
-    'Y',
-    'U',
-    'O',
-    'P',
-    ']',
+constexpr int black_key_labels_count = 8;
+constexpr Array<StringView, black_key_labels_count> black_key_labels = {
+    "W",
+    "E",
+    "T",
+    "Y",
+    "U",
+    "O",
+    "P",
+    "]",
 };
-constexpr int black_key_labels_count = sizeof(black_key_labels) / sizeof(char);
 
 constexpr int black_key_offsets[] = {
     white_key_width,
@@ -195,7 +177,7 @@ void KeysWidget::paint_event(GUI::PaintEvent& event)
         painter.draw_rect(rect, Color::Black);
         if (i < white_key_labels_count) {
             rect.set_height(rect.height() * 1.5);
-            painter.draw_text(rect, StringView(&white_key_labels[i], 1), Gfx::TextAlignment::Center, Color::Black);
+            painter.draw_text(rect, white_key_labels[i], Gfx::TextAlignment::Center, Color::Black);
         }
 
         note += white_key_note_accumulator[i % white_keys_per_octave];
@@ -217,7 +199,7 @@ void KeysWidget::paint_event(GUI::PaintEvent& event)
         painter.draw_rect(rect, Color::Black);
         if (i < black_key_labels_count) {
             rect.set_height(rect.height() * 1.5);
-            painter.draw_text(rect, StringView(&black_key_labels[i], 1), Gfx::TextAlignment::Center, Color::White);
+            painter.draw_text(rect, black_key_labels[i], Gfx::TextAlignment::Center, Color::White);
         }
 
         note += black_key_note_accumulator[i % black_keys_per_octave];
@@ -262,7 +244,7 @@ int KeysWidget::note_for_event_position(const Gfx::IntPoint& a_point) const
         return -1;
 
     auto point = a_point;
-    point.move_by(-frame_thickness(), -frame_thickness());
+    point.translate_by(-frame_thickness(), -frame_thickness());
 
     int white_keys = point.x() / white_key_width;
     int note = note_from_white_keys(white_keys);

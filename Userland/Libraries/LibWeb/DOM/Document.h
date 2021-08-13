@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -40,6 +20,7 @@
 #include <LibWeb/CSS/CSSStyleSheet.h>
 #include <LibWeb/CSS/StyleResolver.h>
 #include <LibWeb/CSS/StyleSheetList.h>
+#include <LibWeb/Cookie/Cookie.h>
 #include <LibWeb/DOM/DOMImplementation.h>
 #include <LibWeb/DOM/ExceptionOr.h>
 #include <LibWeb/DOM/NonElementParentNode.h>
@@ -64,7 +45,7 @@ public:
 
     static NonnullRefPtr<Document> create(const URL& url = "about:blank")
     {
-        return adopt(*new Document(url));
+        return adopt_ref(*new Document(url));
     }
     static NonnullRefPtr<Document> create_with_global_object(Bindings::WindowObject&)
     {
@@ -73,8 +54,8 @@ public:
 
     virtual ~Document() override;
 
-    String cookie() const;
-    void set_cookie(String);
+    String cookie(Cookie::Source = Cookie::Source::NonHttp);
+    void set_cookie(String, Cookie::Source = Cookie::Source::NonHttp);
 
     bool should_invalidate_styles_on_attribute_changes() const { return m_should_invalidate_styles_on_attribute_changes; }
     void set_should_invalidate_styles_on_attribute_changes(bool b) { m_should_invalidate_styles_on_attribute_changes = b; }
@@ -110,25 +91,43 @@ public:
     Element* document_element();
     const Element* document_element() const;
 
-    const HTML::HTMLHtmlElement* html_element() const;
-    const HTML::HTMLHeadElement* head() const;
-    const HTML::HTMLElement* body() const;
-    ExceptionOr<void> set_body(HTML::HTMLElement& new_body);
+    HTML::HTMLHtmlElement* html_element();
+    HTML::HTMLHeadElement* head();
+    HTML::HTMLElement* body();
+
+    const HTML::HTMLHtmlElement* html_element() const
+    {
+        return const_cast<Document*>(this)->html_element();
+    }
+
+    const HTML::HTMLHeadElement* head() const
+    {
+        return const_cast<Document*>(this)->head();
+    }
+
+    const HTML::HTMLElement* body() const
+    {
+        return const_cast<Document*>(this)->body();
+    }
+
+    ExceptionOr<void> set_body(HTML::HTMLElement* new_body);
 
     String title() const;
     void set_title(const String&);
 
-    void attach_to_frame(Badge<Frame>, Frame&);
-    void detach_from_frame(Badge<Frame>, Frame&);
+    void attach_to_browsing_context(Badge<BrowsingContext>, BrowsingContext&);
+    void detach_from_browsing_context(Badge<BrowsingContext>, BrowsingContext&);
 
-    Frame* frame() { return m_frame.ptr(); }
-    const Frame* frame() const { return m_frame.ptr(); }
+    BrowsingContext* browsing_context() { return m_browsing_context.ptr(); }
+    const BrowsingContext* browsing_context() const { return m_browsing_context.ptr(); }
 
     Page* page();
     const Page* page() const;
 
     Color background_color(const Gfx::Palette&) const;
     RefPtr<Gfx::Bitmap> background_image() const;
+    CSS::Repeat background_repeat_x() const;
+    CSS::Repeat background_repeat_y() const;
 
     Color link_color() const;
     void set_link_color(Color);
@@ -153,9 +152,18 @@ public:
     void schedule_style_update();
     void schedule_forced_layout();
 
-    NonnullRefPtrVector<Element> get_elements_by_name(const String&) const;
-    NonnullRefPtrVector<Element> get_elements_by_tag_name(const FlyString&) const;
-    NonnullRefPtrVector<Element> get_elements_by_class_name(const FlyString&) const;
+    NonnullRefPtr<HTMLCollection> get_elements_by_name(String const&);
+    NonnullRefPtr<HTMLCollection> get_elements_by_tag_name(FlyString const&);
+    NonnullRefPtr<HTMLCollection> get_elements_by_class_name(FlyString const&);
+
+    NonnullRefPtr<HTMLCollection> applets();
+    NonnullRefPtr<HTMLCollection> anchors();
+    NonnullRefPtr<HTMLCollection> images();
+    NonnullRefPtr<HTMLCollection> embeds();
+    NonnullRefPtr<HTMLCollection> plugins();
+    NonnullRefPtr<HTMLCollection> links();
+    NonnullRefPtr<HTMLCollection> forms();
+    NonnullRefPtr<HTMLCollection> scripts();
 
     const String& source() const { return m_source; }
     void set_source(const String& source) { m_source = source; }
@@ -170,6 +178,7 @@ public:
     NonnullRefPtr<Text> create_text_node(const String& data);
     NonnullRefPtr<Comment> create_comment(const String& data);
     NonnullRefPtr<Range> create_range();
+    NonnullRefPtr<Event> create_event(const String& interface);
 
     void set_pending_parsing_blocking_script(Badge<HTML::HTMLScriptElement>, HTML::HTMLScriptElement*);
     HTML::HTMLScriptElement* pending_parsing_blocking_script() { return m_pending_parsing_blocking_script; }
@@ -186,6 +195,7 @@ public:
     void set_quirks_mode(QuirksMode mode) { m_quirks_mode = mode; }
 
     void adopt_node(Node&);
+    ExceptionOr<NonnullRefPtr<Node>> adopt_node_binding(NonnullRefPtr<Node>);
 
     const DocumentType* doctype() const;
     const String& compat_mode() const;
@@ -197,6 +207,10 @@ public:
     const Element* focused_element() const { return m_focused_element; }
 
     void set_focused_element(Element*);
+
+    const Element* active_element() const { return m_active_element; }
+
+    void set_active_element(Element*);
 
     bool created_for_appropriate_template_contents() const { return m_created_for_appropriate_template_contents; }
     void set_created_for_appropriate_template_contents(bool value) { m_created_for_appropriate_template_contents = value; }
@@ -227,13 +241,15 @@ public:
     const String& content_type() const { return m_content_type; }
     void set_content_type(const String& content_type) { m_content_type = content_type; }
 
-    const String& encoding() const { return m_encoding; }
-    void set_encoding(const String& encoding) { m_encoding = encoding; }
+    bool has_encoding() const { return m_encoding.has_value(); }
+    const Optional<String>& encoding() const { return m_encoding; }
+    String encoding_or_default() const { return m_encoding.value_or("UTF-8"); }
+    void set_encoding(const Optional<String>& encoding) { m_encoding = encoding; }
 
     // NOTE: These are intended for the JS bindings
-    const String& character_set() const { return encoding(); }
-    const String& charset() const { return encoding(); }
-    const String& input_encoding() const { return encoding(); }
+    String character_set() const { return encoding_or_default(); }
+    String charset() const { return encoding_or_default(); }
+    String input_encoding() const { return encoding_or_default(); }
 
     bool ready_for_post_load_tasks() const { return m_ready_for_post_load_tasks; }
     void set_ready_for_post_load_tasks(bool ready) { m_ready_for_post_load_tasks = ready; }
@@ -250,6 +266,8 @@ public:
     void decrement_ignore_destructive_writes_counter() { m_ignore_destructive_writes_counter--; }
 
     virtual EventTarget* get_parent(const Event&) override;
+
+    String dump_dom_tree_as_json() const;
 
 private:
     explicit Document(const URL&);
@@ -285,7 +303,7 @@ private:
     RefPtr<CSS::StyleSheetList> m_style_sheets;
     RefPtr<Node> m_hovered_node;
     RefPtr<Node> m_inspected_node;
-    WeakPtr<Frame> m_frame;
+    WeakPtr<BrowsingContext> m_browsing_context;
     URL m_url;
 
     RefPtr<Window> m_window;
@@ -311,13 +329,14 @@ private:
     bool m_editable { false };
 
     WeakPtr<Element> m_focused_element;
+    WeakPtr<Element> m_active_element;
 
     bool m_created_for_appropriate_template_contents { false };
     RefPtr<Document> m_associated_inert_template_document;
 
     String m_ready_state { "loading" };
     String m_content_type { "application/xml" };
-    String m_encoding { "UTF-8" };
+    Optional<String> m_encoding;
 
     bool m_ready_for_post_load_tasks { false };
 

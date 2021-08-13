@@ -3,12 +3,6 @@ test("length is 1", () => {
 });
 
 describe("errors", () => {
-    test("requires at least one argument", () => {
-        expect(() => {
-            [].every();
-        }).toThrowWithMessage(TypeError, "Array.prototype.every() requires at least one argument");
-    });
-
     test("callback must be a function", () => {
         expect(() => {
             [].every(undefined);
@@ -46,7 +40,7 @@ describe("normal behavior", () => {
         var array = [1, 2, 3, 4, 5];
 
         expect(
-            arrayTwo.every((value, index, arr) => {
+            array.every((value, index, arr) => {
                 arr.push(6);
                 return value <= 5;
             })

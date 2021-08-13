@@ -1,27 +1,8 @@
 /*
- * Copyright (c) 2020-2021, SerenityOS developers
- * All rights reserved.
+ * Copyright (c) 2020-2021, the SerenityOS developers.
+ * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -36,7 +17,7 @@ class Token {
     friend class Tokenizer;
 
 public:
-    enum class TokenType {
+    enum class Type {
         Invalid,
         EndOfFile,
         Ident,
@@ -75,31 +56,88 @@ public:
         Number,
     };
 
-    bool is_eof() const { return m_type == TokenType::EndOfFile; }
-    bool is_whitespace() const { return m_type == TokenType::Whitespace; }
-    bool is_cdo() const { return m_type == TokenType::CDO; }
-    bool is_cdc() const { return m_type == TokenType::CDC; }
-    bool is_at() const { return m_type == TokenType::AtKeyword; }
-    bool is_semicolon() const { return m_type == TokenType::Semicolon; }
-    bool is_open_curly() const { return m_type == TokenType::OpenCurly; }
-    bool is_open_square() const { return m_type == TokenType::OpenSquare; }
-    bool is_open_paren() const { return m_type == TokenType::OpenParen; }
-    bool is_close_paren() const { return m_type == TokenType::CloseParen; }
-    bool is_close_square() const { return m_type == TokenType::CloseSquare; }
-    bool is_close_curly() const { return m_type == TokenType::CloseCurly; }
-    bool is_function() const { return m_type == TokenType::Function; }
-    bool is_colon() const { return m_type == TokenType::Colon; }
-    bool is_ident() const { return m_type == TokenType::Ident; }
-    bool is_delim() const { return m_type == TokenType::Delim; }
-    bool is_comma() const { return m_type == TokenType::Comma; }
+    bool is(Type type) const { return m_type == type; }
 
-    TokenType mirror_variant() const;
+    StringView ident() const
+    {
+        VERIFY(m_type == Type::Ident);
+        return m_value.string_view();
+    }
+
+    StringView delim() const
+    {
+        VERIFY(m_type == Type::Delim);
+        return m_value.string_view();
+    }
+
+    StringView string() const
+    {
+        VERIFY(m_type == Type::String);
+        return m_value.string_view();
+    }
+
+    StringView url() const
+    {
+        VERIFY(m_type == Type::Url);
+        return m_value.string_view();
+    }
+
+    StringView at_keyword() const
+    {
+        VERIFY(m_type == Type::AtKeyword);
+        return m_value.string_view();
+    }
+
+    HashType hash_type() const
+    {
+        VERIFY(m_type == Type::Hash);
+        return m_hash_type;
+    }
+    StringView hash_value() const
+    {
+        VERIFY(m_type == Type::Hash);
+        return m_value.string_view();
+    }
+
+    bool is(NumberType number_type) const { return is(Token::Type::Number) && m_number_type == number_type; }
+    StringView number_string_value() const
+    {
+        VERIFY(m_type == Type::Number);
+        return m_value.string_view();
+    }
+    int to_integer() const
+    {
+        VERIFY(m_type == Type::Number && m_number_type == NumberType::Integer);
+        return number_string_value().to_int().value();
+    }
+    bool is_integer_value_signed() const { return number_string_value().starts_with('-') || number_string_value().starts_with('+'); }
+
+    StringView dimension_unit() const
+    {
+        VERIFY(m_type == Type::Dimension);
+        return m_unit.string_view();
+    }
+    StringView dimension_value() const
+    {
+        VERIFY(m_type == Type::Dimension);
+        return m_value.string_view();
+    }
+    int dimension_value_int() const { return dimension_value().to_int().value(); }
+
+    NumberType number_type() const
+    {
+        VERIFY((m_type == Type::Number) || (m_type == Type::Dimension));
+        return m_number_type;
+    }
+
+    Type mirror_variant() const;
     String bracket_string() const;
     String bracket_mirror_string() const;
-    String to_string() const;
+
+    String to_debug_string() const;
 
 private:
-    TokenType m_type { TokenType::Invalid };
+    Type m_type { Type::Invalid };
 
     StringBuilder m_value;
     StringBuilder m_unit;

@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Luke Wilde <luke.wilde@live.co.uk>
- * All rights reserved.
+ * Copyright (c) 2020, Luke Wilde <lukew@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "DisassemblyModel.h"
@@ -29,19 +9,19 @@
 #include <AK/StringBuilder.h>
 #include <LibDebug/DebugSession.h>
 #include <LibELF/Image.h>
+#include <LibSymbolication/Symbolication.h>
 #include <LibX86/Disassembler.h>
 #include <LibX86/ELFSymbolProvider.h>
-#include <ctype.h>
 #include <stdio.h>
 
 namespace HackStudio {
 
 DisassemblyModel::DisassemblyModel(const Debug::DebugSession& debug_session, const PtraceRegisters& regs)
 {
-    auto lib = debug_session.library_at(regs.eip);
+    auto lib = debug_session.library_at(regs.ip());
     if (!lib)
         return;
-    auto containing_function = lib->debug_info->get_containing_function(regs.eip - lib->base_address);
+    auto containing_function = lib->debug_info->get_containing_function(regs.ip() - lib->base_address);
     if (!containing_function.has_value()) {
         dbgln("Cannot disassemble as the containing function was not found.");
         return;
@@ -50,8 +30,10 @@ DisassemblyModel::DisassemblyModel(const Debug::DebugSession& debug_session, con
     OwnPtr<ELF::Image> kernel_elf;
     const ELF::Image* elf = nullptr;
 
-    if (containing_function.value().address_low >= 0xc0000000) {
-        auto file_or_error = MappedFile::map("/boot/Kernel");
+    auto maybe_kernel_base = Symbolication::kernel_base();
+
+    if (maybe_kernel_base.has_value() && containing_function.value().address_low >= maybe_kernel_base.value()) {
+        auto file_or_error = MappedFile::map("/boot/Kernel.debug");
         if (file_or_error.is_error())
             return;
         kernel_elf = make<ELF::Image>(file_or_error.value()->bytes());
@@ -127,11 +109,6 @@ GUI::Variant DisassemblyModel::data(const GUI::ModelIndex& index, GUI::ModelRole
         return {};
     }
     return {};
-}
-
-void DisassemblyModel::update()
-{
-    did_update();
 }
 
 }

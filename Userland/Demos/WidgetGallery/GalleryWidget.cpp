@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2021, the SerenityOS developers
- * All rights reserved.
+ * Copyright (c) 2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "GalleryWidget.h"
@@ -41,7 +21,6 @@
 #include <LibGUI/InputBox.h>
 #include <LibGUI/ItemListModel.h>
 #include <LibGUI/MessageBox.h>
-#include <LibGUI/SeparatorWidget.h>
 #include <LibGUI/SortingProxyModel.h>
 #include <LibGUI/SpinBox.h>
 #include <LibGUI/TabWidget.h>
@@ -92,9 +71,9 @@ GalleryWidget::GalleryWidget()
         m_label_frame->set_frame_thickness(value);
     };
 
-    m_button_icons.append(Gfx::Bitmap::load_from_file("/res/icons/16x16/book-open.png"));
-    m_button_icons.append(Gfx::Bitmap::load_from_file("/res/icons/16x16/inspector-object.png"));
-    m_button_icons.append(Gfx::Bitmap::load_from_file("/res/icons/16x16/ladybug.png"));
+    m_button_icons.append(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/book-open.png"));
+    m_button_icons.append(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/inspector-object.png"));
+    m_button_icons.append(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/ladybug.png"));
 
     m_icon_button = basics_tab.find_descendant_of_type_named<GUI::Button>("icon_button");
     m_icon_button->set_icon(*m_button_icons[2]);
@@ -102,7 +81,7 @@ GalleryWidget::GalleryWidget()
     m_disabled_icon_button = basics_tab.find_descendant_of_type_named<GUI::Button>("disabled_icon_button");
     m_disabled_icon_button->set_icon(*m_button_icons[2]);
 
-    m_icon_button->on_click = [&]() {
+    m_icon_button->on_click = [&](auto) {
         static size_t i;
         if (i >= m_button_icons.size())
             i = 0;
@@ -114,9 +93,9 @@ GalleryWidget::GalleryWidget()
     m_text_editor = basics_tab.find_descendant_of_type_named<GUI::TextEditor>("text_editor");
 
     m_font_button = basics_tab.find_descendant_of_type_named<GUI::Button>("font_button");
-    m_font_button->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-font-editor.png"));
+    m_font_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-font-editor.png"));
 
-    m_font_button->on_click = [&]() {
+    m_font_button->on_click = [&](auto) {
         auto picker = GUI::FontPicker::construct(window(), &m_text_editor->font(), false);
         if (picker->exec() == GUI::Dialog::ExecOK) {
             m_text_editor->set_font(picker->font());
@@ -124,9 +103,9 @@ GalleryWidget::GalleryWidget()
     };
 
     m_file_button = basics_tab.find_descendant_of_type_named<GUI::Button>("file_button");
-    m_file_button->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/open.png"));
+    m_file_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/open.png"));
 
-    m_file_button->on_click = [&]() {
+    m_file_button->on_click = [&](auto) {
         Optional<String> open_path = GUI::FilePicker::get_open_filepath(window());
         if (!open_path.has_value())
             return;
@@ -134,9 +113,9 @@ GalleryWidget::GalleryWidget()
     };
 
     m_input_button = basics_tab.find_descendant_of_type_named<GUI::Button>("input_button");
-    m_input_button->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/properties.png"));
+    m_input_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/properties.png"));
 
-    m_input_button->on_click = [&]() {
+    m_input_button->on_click = [&](auto) {
         String value;
         if (GUI::InputBox::show(window(), value, "Enter input:", "Input") == GUI::InputBox::ExecOK && !value.is_empty())
             m_text_editor->set_text(value);
@@ -152,7 +131,7 @@ GalleryWidget::GalleryWidget()
     };
 
     m_msgbox_button = basics_tab.find_descendant_of_type_named<GUI::Button>("msgbox_button");
-    m_msgbox_button->set_icon(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-irc-client.png"));
+    m_msgbox_button->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/16x16/app-irc-client.png"));
 
     m_msgbox_type = GUI::MessageBox::Type::None;
     m_msgbox_input_type = GUI::MessageBox::InputType::OK;
@@ -184,17 +163,17 @@ GalleryWidget::GalleryWidget()
         m_msgbox_input_type = static_cast<GUI::MessageBox::InputType>(index.row());
     };
 
-    m_msgbox_button->on_click = [&]() {
+    m_msgbox_button->on_click = [&](auto) {
         GUI::MessageBox::show(window(), m_text_editor->text(), "Message", m_msgbox_type, m_msgbox_input_type);
     };
 
     auto& sliders_tab = tab_widget.add_tab<GUI::Widget>("Sliders");
     sliders_tab.load_from_gml(sliders_tab_gml);
 
-    m_vertical_progressbar_left = sliders_tab.find_descendant_of_type_named<GUI::VerticalProgressBar>("vertical_progressbar_left");
+    m_vertical_progressbar_left = sliders_tab.find_descendant_of_type_named<GUI::VerticalProgressbar>("vertical_progressbar_left");
     m_vertical_progressbar_left->set_value(0);
 
-    m_vertical_progressbar_right = sliders_tab.find_descendant_of_type_named<GUI::VerticalProgressBar>("vertical_progressbar_right");
+    m_vertical_progressbar_right = sliders_tab.find_descendant_of_type_named<GUI::VerticalProgressbar>("vertical_progressbar_right");
     m_vertical_progressbar_right->set_value(100);
 
     m_vertical_slider_left = sliders_tab.find_descendant_of_type_named<GUI::VerticalSlider>("vertical_slider_left");
@@ -208,7 +187,7 @@ GalleryWidget::GalleryWidget()
         m_vertical_progressbar_right->set_value((100 / m_vertical_slider_right->max()) * (m_vertical_slider_right->max() - value));
     };
 
-    m_horizontal_progressbar = sliders_tab.find_descendant_of_type_named<GUI::HorizontalProgressBar>("horizontal_progressbar");
+    m_horizontal_progressbar = sliders_tab.find_descendant_of_type_named<GUI::HorizontalProgressbar>("horizontal_progressbar");
     m_horizontal_progressbar->set_value(0);
 
     m_horizontal_slider_left = sliders_tab.find_descendant_of_type_named<GUI::HorizontalSlider>("horizontal_slider_left");
@@ -225,10 +204,10 @@ GalleryWidget::GalleryWidget()
         m_horizontal_slider_left->set_value((value * 100) / m_horizontal_slider_right->max());
     };
 
-    m_enabled_scrollbar = sliders_tab.find_descendant_of_type_named<GUI::ScrollBar>("enabled_scrollbar");
+    m_enabled_scrollbar = sliders_tab.find_descendant_of_type_named<GUI::Scrollbar>("enabled_scrollbar");
     m_enabled_scrollbar->set_orientation(Orientation::Horizontal);
 
-    m_disabled_scrollbar = sliders_tab.find_descendant_of_type_named<GUI::ScrollBar>("disabled_scrollbar");
+    m_disabled_scrollbar = sliders_tab.find_descendant_of_type_named<GUI::Scrollbar>("disabled_scrollbar");
     m_disabled_scrollbar->set_orientation(Orientation::Horizontal);
 
     m_opacity_imagewidget = sliders_tab.find_descendant_of_type_named<GUI::ImageWidget>("opacity_imagewidget");
@@ -279,11 +258,9 @@ GalleryWidget::GalleryWidget()
         " _||_-\n"
     };
 
-    StringBuilder sb;
-    sb.appendf("%s%s", serenityos_ascii, wizard_ascii);
-    m_wizard_output->set_text(sb.to_string());
+    m_wizard_output->set_text(String::formatted("{}{}", serenityos_ascii, wizard_ascii));
 
-    m_wizard_button->on_click = [&]() {
+    m_wizard_button->on_click = [&](auto) {
         StringBuilder sb;
         sb.append(m_wizard_output->get_text());
         sb.append("\nWizard started.");
@@ -306,7 +283,6 @@ GalleryWidget::GalleryWidget()
     m_cursors_tableview->set_alternating_row_colors(false);
     m_cursors_tableview->set_vertical_padding(16);
     m_cursors_tableview->set_column_headers_visible(false);
-    m_cursors_tableview->set_font(Gfx::BitmapFont::load_from_file("/res/fonts/KaticaRegular12.font"));
     m_cursors_tableview->set_highlight_key_column(false);
 
     auto sorting_proxy_model = GUI::SortingProxyModel::create(MouseCursorModel::create());
@@ -314,7 +290,7 @@ GalleryWidget::GalleryWidget()
 
     m_cursors_tableview->set_model(sorting_proxy_model);
     m_cursors_tableview->set_key_column_and_sort_order(MouseCursorModel::Column::Name, GUI::SortOrder::Ascending);
-    m_cursors_tableview->model()->update();
+    m_cursors_tableview->model()->invalidate();
     m_cursors_tableview->set_column_width(0, 25);
 
     m_cursors_tableview->on_activation = [&](const GUI::ModelIndex& index) {
@@ -380,7 +356,6 @@ GalleryWidget::GalleryWidget()
     m_icons_tableview->set_alternating_row_colors(false);
     m_icons_tableview->set_vertical_padding(24);
     m_icons_tableview->set_column_headers_visible(false);
-    m_icons_tableview->set_font(Gfx::BitmapFont::load_from_file("/res/fonts/KaticaRegular12.font"));
     m_icons_tableview->set_highlight_key_column(false);
 
     auto sorting_proxy_icons_model = GUI::SortingProxyModel::create(FileIconsModel::create());
@@ -388,7 +363,7 @@ GalleryWidget::GalleryWidget()
 
     m_icons_tableview->set_model(sorting_proxy_icons_model);
     m_icons_tableview->set_key_column_and_sort_order(FileIconsModel::Column::Name, GUI::SortOrder::Ascending);
-    m_icons_tableview->model()->update();
+    m_icons_tableview->model()->invalidate();
     m_icons_tableview->set_column_width(0, 36);
     m_icons_tableview->set_column_width(1, 20);
 }

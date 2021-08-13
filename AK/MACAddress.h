@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -77,9 +57,36 @@ public:
         return String::formatted("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", m_data[0], m_data[1], m_data[2], m_data[3], m_data[4], m_data[5]);
     }
 
+    static Optional<MACAddress> from_string(const StringView& string)
+    {
+        if (string.is_null())
+            return {};
+
+        const auto parts = string.split_view(":");
+        if (parts.size() != 6)
+            return {};
+
+        auto a = AK::StringUtils::convert_to_uint_from_hex(parts[0]).value_or(256);
+        auto b = AK::StringUtils::convert_to_uint_from_hex(parts[1]).value_or(256);
+        auto c = AK::StringUtils::convert_to_uint_from_hex(parts[2]).value_or(256);
+        auto d = AK::StringUtils::convert_to_uint_from_hex(parts[3]).value_or(256);
+        auto e = AK::StringUtils::convert_to_uint_from_hex(parts[4]).value_or(256);
+        auto f = AK::StringUtils::convert_to_uint_from_hex(parts[5]).value_or(256);
+
+        if (a > 255 || b > 255 || c > 255 || d > 255 || e > 255 || f > 255)
+            return {};
+
+        return MACAddress(a, b, c, d, e, f);
+    }
+
     constexpr bool is_zero() const
     {
-        return all_of(m_data.begin(), m_data.end(), [](const auto octet) { return octet == 0; });
+        return all_of(m_data, [](const auto octet) { return octet == 0; });
+    }
+
+    void copy_to(Bytes destination) const
+    {
+        m_data.span().copy_to(destination);
     }
 
 private:

@@ -1,37 +1,47 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Assertions.h>
 #include <AK/ByteBuffer.h>
 #include <AK/String.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <LibMarkdown/Document.h>
+#include <fcntl.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+static pid_t pipe_to_pager(String const& command)
+{
+    char const* argv[] = { "sh", "-c", command.characters(), nullptr };
+
+    int stdout_pipe[2] = {};
+    if (pipe2(stdout_pipe, O_CLOEXEC)) {
+        perror("pipe2");
+        exit(1);
+    }
+    posix_spawn_file_actions_t action;
+    posix_spawn_file_actions_init(&action);
+    posix_spawn_file_actions_adddup2(&action, stdout_pipe[0], STDIN_FILENO);
+
+    pid_t pid;
+    if ((errno = posix_spawnp(&pid, argv[0], &action, nullptr, const_cast<char**>(argv), environ))) {
+        perror("posix_spawn");
+        exit(1);
+    }
+    posix_spawn_file_actions_destroy(&action);
+
+    dup2(stdout_pipe[1], STDOUT_FILENO);
+    close(stdout_pipe[1]);
+    close(stdout_pipe[0]);
+    return pid;
+}
 
 int main(int argc, char* argv[])
 {
@@ -45,7 +55,7 @@ int main(int argc, char* argv[])
     if (view_width == 0)
         view_width = 80;
 
-    if (pledge("stdio rpath", nullptr) < 0) {
+    if (pledge("stdio rpath exec proc", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -55,15 +65,22 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    if (unveil("/bin", "x") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
     unveil(nullptr, nullptr);
 
     const char* section = nullptr;
     const char* name = nullptr;
+    const char* pager = nullptr;
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Read manual pages. Try 'man man' to get started.");
     args_parser.add_positional_argument(section, "Section of the man page", "section", Core::ArgsParser::Required::No);
     args_parser.add_positional_argument(name, "Name of the man page", "name");
+    args_parser.add_option(pager, "Pager to pipe the man page to", "pager", 'P', "pager");
 
     args_parser.parse(argc, argv);
 
@@ -89,7 +106,7 @@ int main(int argc, char* argv[])
             }
         }
         if (!section) {
-            fprintf(stderr, "No man page for %s\n", name);
+            warnln("No man page for {}", name);
             exit(1);
         }
     }
@@ -97,12 +114,23 @@ int main(int argc, char* argv[])
     auto file = Core::File::construct();
     file->set_filename(make_path(section));
 
-    if (!file->open(Core::IODevice::OpenMode::ReadOnly)) {
+    String pager_command = pager;
+    if (!pager) {
+        String clean_name(name);
+        String clean_section(section);
+
+        clean_name.replace("'", "'\\''");
+        clean_section.replace("'", "'\\''");
+        pager_command = String::formatted("less -P 'Manual Page {}({}) line %l?e (END):.'", clean_name, clean_section);
+    }
+    pid_t pager_pid = pipe_to_pager(pager_command);
+
+    if (!file->open(Core::OpenMode::ReadOnly)) {
         perror("Failed to open man page file");
         exit(1);
     }
 
-    if (pledge("stdio", nullptr) < 0) {
+    if (pledge("stdio proc", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -111,11 +139,17 @@ int main(int argc, char* argv[])
     auto buffer = file->read_all();
     auto source = String::copy(buffer);
 
-    printf("%s(%s)\t\tSerenityOS manual\n", name, section);
+    outln("{}({})\t\tSerenityOS manual", name, section);
 
     auto document = Markdown::Document::parse(source);
     VERIFY(document);
 
     String rendered = document->render_for_terminal(view_width);
-    printf("%s", rendered.characters());
+    out("{}", rendered);
+
+    // FIXME: Remove this wait, it shouldn't be necessary but Shell does not
+    //        resume properly without it. This wait also breaks <C-z> backgrounding
+    fclose(stdout);
+    int wstatus;
+    waitpid(pager_pid, &wstatus, 0);
 }

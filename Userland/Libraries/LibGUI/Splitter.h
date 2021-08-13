@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -36,6 +16,11 @@ class Splitter : public Widget {
 public:
     virtual ~Splitter() override;
 
+    int first_resizee_minimum_size() { return m_first_resizee_minimum_size; }
+    void set_first_resizee_minimum_size(int minimum_size) { m_first_resizee_minimum_size = minimum_size; }
+    int second_resizee_minimum_size() { return m_second_resizee_minimum_size; }
+    void set_second_resizee_minimum_size(int minimum_size) { m_second_resizee_minimum_size = minimum_size; }
+
 protected:
     explicit Splitter(Gfx::Orientation);
 
@@ -49,9 +34,8 @@ protected:
     virtual void did_layout() override;
 
 private:
-    void recompute_grabbable_rect(const Widget&, const Widget&);
-    bool get_resize_candidates_at(const Gfx::IntPoint&, Widget*&, Widget*&);
     void override_cursor(bool do_override);
+    Gfx::IntRect rect_between_widgets(GUI::Widget const& first_widget, GUI::Widget const& second_widget, bool honor_content_margins) const;
 
     Gfx::Orientation m_orientation;
     bool m_resizing { false };
@@ -61,7 +45,29 @@ private:
     WeakPtr<Widget> m_second_resizee;
     Gfx::IntSize m_first_resizee_start_size;
     Gfx::IntSize m_second_resizee_start_size;
-    Gfx::IntRect m_grabbable_rect;
+    int m_first_resizee_minimum_size { 0 };
+    int m_second_resizee_minimum_size { 0 };
+
+    void recompute_grabbables();
+
+    struct Grabbable {
+        // Index in m_grabbables, for convenience.
+        size_t index { 0 };
+
+        // The full grabbable rect, includes the content margin of adjacent elements.
+        Gfx::IntRect grabbable_rect;
+        // The rect used for painting. Does not include content margins.
+        Gfx::IntRect paint_rect;
+
+        WeakPtr<Widget> first_widget;
+        WeakPtr<Widget> second_widget;
+    };
+
+    Grabbable* grabbable_at(Gfx::IntPoint const&);
+    void set_hovered_grabbable(Grabbable*);
+
+    Vector<Grabbable> m_grabbables;
+    Optional<size_t> m_hovered_index;
 };
 
 class VerticalSplitter final : public Splitter {

@@ -1,12 +1,14 @@
-# Contributing to Serenity
+# Contributing to SerenityOS
 
-When contributing to the Serenity operating system, please be sure that the change(s) you wish to make are in line with the project vision. If you are unsure about this, open an issue first, so we can discuss it. If you are already confident that it's a good fit, you can proceed directly to a Pull Request.
+When contributing to SerenityOS, make sure that the changes you wish to make are in line with the project direction. If you are not sure about this, open an issue first, so we can discuss it.
+
+**For your first couple of PR's, start with something small to get familiar with the project and its development processes. Please do not start by adding a new application, library or other large component.**
 
 Everyone is welcome to work on the project, and while we have lots of fun, it's a serious kind of fun. :^)
 
 ## Communication
 
-The easiest way to get in touch is by joining the `#serenityos` channel on the Freenode IRC network.
+Join our Discord server: [SerenityOS Discord](https://discord.gg/serenityos)
 
 ## Issue policy
 
@@ -15,17 +17,21 @@ Unlike many other software projects, SerenityOS is not concerned with gaining th
 That said, please do file any bugs you find, keeping the following in mind:
 
 * One issue per bug. Putting multiple things in the same issue makes both discussion and completion unnecessarily complicated.
-* No build issues (or other support requests). If the GitHub Actions CI build succeeds, the build problem is most likely on your side. Work it out locally, or ask on IRC.
+* No build issues (or other support requests). If the GitHub Actions CI build succeeds, the build problem is most likely on your side. Work it out locally, or ask in the `#build-problems` channel on Discord.
+* Don't comment on issues just to add a joke or irrelevant commentary. Hundreds of people get notified about comments so let's keep them relevant.
+* For bare metal issues, please include the complete debug log from the serial console and what you tried to do to solve the issue before opening the issue. Don't forget to add the hardware model of your machine and relevant details about it, to help us diagnose what is the problem.
 
-## Feature policy
+## Human language policy
 
-As a labor of love, Serenity is strongly user-focused. When proposing or building a new feature, you should start by imagining how a person would use it. Like a tree falling in the woods with nobody around, does a feature with no user impact really provide value?
+In SerenityOS, we treat human language as seriously as we do programming language.
 
-Maybe your feature involves a GUI application, or maybe it's more suited to a CLI program. Either way, a useful exercise is to imagine what the user interface would be for your idea. Let's say you want to implement a fan speed monitor in the kernel because you recently read about how the related hardware interfaces work - rather than diving right into the kernel implementation, it would be good to imagine how that might be exposed to a user. You might want to build a simple taskbar widget, or maybe a command-line program, or even something as simple as a `/proc` interface, and fill it with mock data to begin with. Whatever your interface is, it should "fit" with the rest of the system, and it should provide some utility to a user.
+The following applies to all user-facing strings, code, comments, and commit messages:
 
-Sometimes there is no obvious user-facing interface for a feature. In those cases you should still think about the impact that your feature or change will have on a user. If possible, you should devise a way to measure your feature - maybe it reduces memory consumption, maybe it results in fewer page faults, maybe it makes more efficient use of network resources. Whatever that metric is, try to capture it, and provide a summary in your proposal or pull request. If your numbers win, you have a good chance of getting your feature into the system. If your numbers don't win, you have valuable data that you can use to improve your feature.
+* The official project language is American English with ISO 8601 dates and metric units.
+* Use proper spelling, grammar, and punctuation.
+* Write in an authoritative and technical tone.
 
-If you can think of no user-facing interface for your feature, and no user impact at all, please do feel free to start a discussion about it. But please don't spend your precious time building a feature or implementing a change if there's no way for someone to use it and no way to quantify the overall improvement.
+Everyone is encouraged to make use of tooling (spell checkers, etc) to make this easier.
 
 ## Code submission policy
 
@@ -33,15 +39,18 @@ Nobody is perfect, and sometimes we mess things up. That said, here are some goo
 
 **Do:**
 
-* Write in idiomatic Serenity C++20, using the `AK` containers in all code.
-* Conform to the project coding style found in [CodingStyle.md](https://github.com/SerenityOS/serenity/blob/master/Documentation/CodingStyle.md). Please use `clang-format` (version 11 or later) to automatically format C++ files.
+* Write in idiomatic SerenityOS C++20, using the `AK` containers in all code.
+* Conform to the project coding style found in [CodingStyle.md](https://github.com/SerenityOS/serenity/blob/master/Documentation/CodingStyle.md). Use `clang-format` (version 11 or later) to automatically format C++ files.
 * Choose expressive variable, function and class names. Make it as obvious as possible what the code is doing.
-* Split your changes into separate, atomic commits.
+* Split your changes into separate, atomic commits (i.e. A commit per feature or fix, where the build, tests and the system are all functioning).
 * Make sure your commits are rebased on the master branch.
 * Wrap your commit messages at 72 characters.
-* The first line of the commit message should have the format "Category: Brief description of what's being changed". The "category" can be a subdirectory, but also something like "POSIX compliance" or "ClassName". Whatever seems logical.
+* The first line of the commit message is the subject line, and should have the format "Category: Brief description of what's being changed". The "category" can be a subdirectory, but also something like "POSIX compliance" or "ClassName". Whatever seems logical.
+* Write the commit message subject line in the imperative mood ("Foo: Change the way dates work", not "Foo: Changed the way dates work").
 * Write your commit messages in proper English, with care and punctuation.
 * Squash your commits when making revisions after a patch review.
+* Add your personal copyright line to files when making substantive changes. (Optional but encouraged!)
+* Check the spelling of your code, comments and commit messages.
 
 **Don't:**
 
@@ -49,5 +58,48 @@ Nobody is perfect, and sometimes we mess things up. That said, here are some goo
 * Touch anything outside the stated scope of the PR.
 * Iterate excessively on your design across multiple commits.
 * Use weasel-words like "refactor" or "fix" to avoid explaining what's being changed.
+* End commit message subject lines with a period.
 * Include commented-out code.
-* Write in C.
+* Write in C. (Instead, take advantage of C++'s amenities, and don't limit yourself to the standard C library.)
+* Attempt large architectural changes until you are familiar with the system and have worked on it for a while.
+
+## Pull Request Q&A
+
+### I've submitted a PR and it passes CI. When can I expect to get some review feedback?
+
+While unadvertised PR's may get randomly merged by curious maintainers, you will have a much smoother time if you engage with the community on Discord.
+
+### If my PR isn't getting attention, how long should I wait before pinging one of the project maintainers?
+
+Ping them right away if it's something urgent! If it's less urgent, advertise your PR on Discord (`#code-review`) and ask if someone could review it.
+
+### Who are the project maintainers?
+
+The project maintainers at this time are [@awesomekling](https://github.com/awesomekling), [@linusg](https://github.com/linusg), [@alimpfard](https://github.com/alimpfard), and [@gunnarbeutner](https://github.com/gunnarbeutner).
+
+Maintainership is by invitation only and does not correlate with any particular metric.
+
+### Is there a policy for branches/PRs that haven't been touched in X days? Should they be closed?
+
+Yes, we have a "stalebot" that will mark untouched PR's as "stale" after 21 days, and close them after another 7 days if nothing happens.
+
+### Are there specific people to reach out to for different subsystems (e.g. Kernel, Browser, GUI, etc)?
+
+In theory, the best person to speak with is whoever wrote most code adjacent to what you're working on. In practice, asking in one of the development channels on Discord is usually easier/better, since that allows many people to join the discussion.
+
+### Is Discord the place to ask for review help, or is Github preferred?
+
+It's definitely better to ask on Discord. Due to the volume of GitHub notifications, many of us turn them off and rely on Discord for learning about review requests.
+
+## Commit Hooks
+
+The repository contains a file called `.pre-commit-config.yaml` that defines several 'commit hooks' that can be run automatically just before and after creating a new commit. These hooks lint your commit message, and the changes it contains to ensure they will pass the automated CI for pull requests.
+To enable these hooks firstly follow the installation instructions available at https://pre-commit.com/#install and then enable one or both of the following hooks:
+ - pre-commit hook - Runs Meta/lint-ci.sh and Meta/lint-ports.py to ensure changes to the code will pass linting:
+   ```console
+   pre-commit install
+   ```
+ - post-commit hook - Lints the commit message to ensure it will pass the commit linting:
+   ```console
+   pre-commit install --hook-type commit-msg
+   ```

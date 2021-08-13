@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -31,9 +11,6 @@
 #include <LibAudio/ClientConnection.h>
 #include <LibAudio/Loader.h>
 #include <LibCore/Timer.h>
-
-#define PLAYBACK_MANAGER_BUFFER_SIZE 64 * KiB
-#define PLAYBACK_MANAGER_RATE 44100
 
 class PlaybackManager final {
 public:
@@ -47,6 +24,7 @@ public:
     void loop(bool);
     bool toggle_pause();
     void set_loader(NonnullRefPtr<Audio::Loader>&&);
+    size_t device_sample_rate() const { return m_device_sample_rate; }
 
     int last_seek() const { return m_last_seek; }
     bool is_paused() const { return m_paused; }
@@ -56,22 +34,29 @@ public:
     NonnullRefPtr<Audio::ClientConnection> connection() const { return m_connection; }
 
     Function<void()> on_update;
+    Function<void(Audio::Buffer&)> on_load_sample_buffer;
+    Function<void()> on_finished_playing;
 
 private:
     void next_buffer();
     void set_paused(bool);
-    void load_next_buffer();
-    void remove_dead_buffers();
 
     bool m_paused { true };
     bool m_loop = { false };
-    size_t m_next_ptr { 0 };
     size_t m_last_seek { 0 };
     float m_total_length { 0 };
+    // FIXME: Get this from the audio server
+    size_t m_device_sample_rate { 44100 };
+    size_t m_device_samples_per_buffer { 0 };
+    size_t m_source_buffer_size_bytes { 0 };
     RefPtr<Audio::Loader> m_loader { nullptr };
     NonnullRefPtr<Audio::ClientConnection> m_connection;
-    RefPtr<Audio::Buffer> m_next_buffer;
     RefPtr<Audio::Buffer> m_current_buffer;
-    Vector<RefPtr<Audio::Buffer>> m_buffers;
     RefPtr<Core::Timer> m_timer;
+
+    // Controls the GUI update rate. A smaller value makes the visualizations nicer.
+    static constexpr u32 update_rate_ms = 50;
+
+    // Number of milliseconds of audio data contained in each audio buffer
+    static constexpr u32 buffer_size_ms = 100;
 };

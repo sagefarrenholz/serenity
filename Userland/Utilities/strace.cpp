@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
@@ -52,7 +32,7 @@ static void handle_sigint(int)
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio proc exec ptrace sigaction", nullptr) < 0) {
+    if (pledge("stdio wpath cpath proc exec ptrace sigaction", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -60,9 +40,10 @@ int main(int argc, char** argv)
     Vector<const char*> child_argv;
 
     const char* output_filename = nullptr;
-    auto trace_file = Core::File::standard_output();
+    auto trace_file = Core::File::standard_error();
 
     Core::ArgsParser parser;
+    parser.set_stop_on_first_non_option(true);
     parser.set_general_help(
         "Trace all syscalls and their result.");
     parser.add_option(g_pid, "Trace the given PID", "pid", 'p', "pid");
@@ -72,7 +53,7 @@ int main(int argc, char** argv)
     parser.parse(argc, argv);
 
     if (output_filename != nullptr) {
-        auto open_result = Core::File::open(output_filename, Core::IODevice::OpenMode::WriteOnly);
+        auto open_result = Core::File::open(output_filename, Core::OpenMode::WriteOnly);
         if (open_result.is_error()) {
             outln(stderr, "Failed to open output file: {}", open_result.error());
             return 1;
@@ -80,10 +61,15 @@ int main(int argc, char** argv)
         trace_file = open_result.value();
     }
 
+    if (pledge("stdio proc exec ptrace sigaction", nullptr) < 0) {
+        perror("pledge");
+        return 1;
+    }
+
     int status;
     if (g_pid == -1) {
         if (child_argv.is_empty()) {
-            outln(stderr, "strace: Expected either a pid or some arguments\n");
+            warnln("strace: Expected either a pid or some arguments");
             return 1;
         }
 
@@ -142,10 +128,17 @@ int main(int argc, char** argv)
             perror("getregs");
             return 1;
         }
+#if ARCH(I386)
         u32 syscall_index = regs.eax;
         u32 arg1 = regs.edx;
         u32 arg2 = regs.ecx;
         u32 arg3 = regs.ebx;
+#else
+        u64 syscall_index = regs.rax;
+        u64 arg1 = regs.rdx;
+        u64 arg2 = regs.rcx;
+        u64 arg3 = regs.rbx;
+#endif
 
         if (ptrace(PT_SYSCALL, g_pid, 0, 0) == -1) {
             perror("syscall");
@@ -161,15 +154,23 @@ int main(int argc, char** argv)
             return 1;
         }
 
+#if ARCH(I386)
         u32 res = regs.eax;
+#else
+        u64 res = regs.rax;
+#endif
 
-        trace_file->printf("%s(0x%x, 0x%x, 0x%x)\t=%d\n",
-            Syscall::to_string(
-                (Syscall::Function)syscall_index),
+        auto string = String::formatted("{}({:#08x}, {:#08x}, {:#08x})\t={}\n",
+            Syscall::to_string((Syscall::Function)syscall_index),
             arg1,
             arg2,
             arg3,
             res);
+
+        if (!trace_file->write(string)) {
+            warnln("write: {}", trace_file->error_string());
+            return 1;
+        }
     }
 
     return 0;

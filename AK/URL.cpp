@@ -1,485 +1,409 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Max Wipfli <mail@maxwipfli.ch>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/CharacterTypes.h>
+#include <AK/Debug.h>
 #include <AK/LexicalPath.h>
 #include <AK/StringBuilder.h>
 #include <AK/URL.h>
 #include <AK/URLParser.h>
+#include <AK/Utf8View.h>
 
 namespace AK {
 
-static inline bool is_valid_protocol_character(char ch)
+// FIXME: It could make sense to force users of URL to use URLParser::parse() explicitly instead of using a constructor.
+URL::URL(StringView const& string)
+    : URL(URLParser::parse({}, string))
 {
-    return ch >= 'a' && ch <= 'z';
-}
-
-static inline bool is_valid_hostname_character(char ch)
-{
-    return ch && ch != '/' && ch != ':';
-}
-
-static inline bool is_digit(char ch)
-{
-    return ch >= '0' && ch <= '9';
-}
-
-bool URL::parse(const StringView& string)
-{
-    if (string.is_null())
-        return false;
-
-    enum class State {
-        InProtocol,
-        InHostname,
-        InPort,
-        InPath,
-        InQuery,
-        InFragment,
-        InDataMimeType,
-        InDataPayload,
-    };
-
-    Vector<char, 256> buffer;
-    State state { State::InProtocol };
-
-    size_t index = 0;
-
-    auto peek = [&] {
-        if (index >= string.length())
-            return '\0';
-        return string[index];
-    };
-
-    auto consume = [&] {
-        if (index >= string.length())
-            return '\0';
-        return string[index++];
-    };
-
-    while (index < string.length()) {
-        switch (state) {
-        case State::InProtocol: {
-            if (is_valid_protocol_character(peek())) {
-                buffer.append(consume());
-                continue;
-            }
-            if (consume() != ':')
-                return false;
-
-            m_protocol = String::copy(buffer);
-
-            if (m_protocol == "data") {
-                buffer.clear();
-                m_host = "";
-                state = State::InDataMimeType;
-                continue;
-            }
-
-            if (m_protocol == "about") {
-                buffer.clear();
-                m_host = "";
-                state = State::InPath;
-                continue;
-            }
-
-            if (consume() != '/')
-                return false;
-            if (consume() != '/')
-                return false;
-            if (buffer.is_empty())
-                return false;
-            state = State::InHostname;
-            buffer.clear();
-            continue;
-        }
-        case State::InHostname:
-            if (is_valid_hostname_character(peek())) {
-                buffer.append(consume());
-                continue;
-            }
-            if (buffer.is_empty()) {
-                if (m_protocol == "file") {
-                    m_host = "";
-                    state = State::InPath;
-                    continue;
-                }
-                return false;
-            }
-            m_host = String::copy(buffer);
-            buffer.clear();
-            if (peek() == ':') {
-                consume();
-                state = State::InPort;
-                continue;
-            }
-            if (peek() == '/') {
-                state = State::InPath;
-                continue;
-            }
-            return false;
-        case State::InPort:
-            if (is_digit(peek())) {
-                buffer.append(consume());
-                continue;
-            }
-            if (buffer.is_empty())
-                return false;
-            {
-                auto port_opt = String::copy(buffer).to_uint();
-                buffer.clear();
-                if (!port_opt.has_value())
-                    return false;
-                m_port = port_opt.value();
-            }
-            if (peek() == '/') {
-                state = State::InPath;
-                continue;
-            }
-            return false;
-        case State::InPath:
-            if (peek() == '?' || peek() == '#') {
-                m_path = String::copy(buffer);
-                buffer.clear();
-                state = peek() == '?' ? State::InQuery : State::InFragment;
-                consume();
-                continue;
-            }
-            buffer.append(consume());
-            continue;
-        case State::InQuery:
-            if (peek() == '#') {
-                m_query = String::copy(buffer);
-                buffer.clear();
-                consume();
-                state = State::InFragment;
-                continue;
-            }
-            buffer.append(consume());
-            continue;
-        case State::InFragment:
-            buffer.append(consume());
-            continue;
-        case State::InDataMimeType: {
-            if (peek() != ';' && peek() != ',') {
-                buffer.append(consume());
-                continue;
-            }
-
-            m_data_mime_type = String::copy(buffer);
-            buffer.clear();
-
-            if (peek() == ';') {
-                consume();
-                if (consume() != 'b')
-                    return false;
-                if (consume() != 'a')
-                    return false;
-                if (consume() != 's')
-                    return false;
-                if (consume() != 'e')
-                    return false;
-                if (consume() != '6')
-                    return false;
-                if (consume() != '4')
-                    return false;
-                m_data_payload_is_base64 = true;
-            }
-
-            if (consume() != ',')
-                return false;
-
-            state = State::InDataPayload;
-            break;
-        }
-        case State::InDataPayload:
-            buffer.append(consume());
-            break;
-        }
+    if constexpr (URL_PARSER_DEBUG) {
+        if (m_valid)
+            dbgln("URL constructor: Parsed URL to be '{}'.", serialize());
+        else
+            dbgln("URL constructor: Parsed URL to be invalid.");
     }
-    if (state == State::InHostname) {
-        // We're still in the hostname, so e.g "http://serenityos.org"
-        if (buffer.is_empty())
-            return false;
-        m_host = String::copy(buffer);
-        m_path = "/";
-    }
-    if (state == State::InProtocol)
-        return false;
-    if (state == State::InPath)
-        m_path = String::copy(buffer);
-    if (state == State::InQuery)
-        m_query = String::copy(buffer);
-    if (state == State::InFragment)
-        m_fragment = String::copy(buffer);
-    if (state == State::InDataPayload)
-        m_data_payload = urldecode(String::copy(buffer));
-    if (state == State::InPort) {
-        auto port_opt = String::copy(buffer).to_uint();
-        if (port_opt.has_value())
-            m_port = port_opt.value();
-    }
-
-    if (m_query.is_null())
-        m_query = "";
-    if (m_fragment.is_null())
-        m_fragment = "";
-
-    if (!m_port && protocol_requires_port(m_protocol))
-        set_port(default_port_for_protocol(m_protocol));
-
-    return compute_validity();
 }
 
-URL::URL(const StringView& string)
+String URL::path() const
 {
-    m_valid = parse(string);
-}
-
-String URL::to_string() const
-{
+    if (cannot_be_a_base_url())
+        return paths()[0];
     StringBuilder builder;
-    builder.append(m_protocol);
-
-    if (m_protocol == "about") {
-        builder.append(':');
-        builder.append(m_path);
-        return builder.to_string();
-    }
-
-    if (m_protocol == "data") {
-        builder.append(':');
-        builder.append(m_data_mime_type);
-        if (m_data_payload_is_base64)
-            builder.append(";base64");
-        builder.append(',');
-        builder.append(m_data_payload);
-        return builder.to_string();
-    }
-
-    builder.append("://");
-    builder.append(m_host);
-    if (default_port_for_protocol(protocol()) != port()) {
-        builder.append(':');
-        builder.append(String::number(m_port));
-    }
-
-    builder.append(m_path);
-    if (!m_query.is_empty()) {
-        builder.append('?');
-        builder.append(m_query);
-    }
-    if (!m_fragment.is_empty()) {
-        builder.append('#');
-        builder.append(m_fragment);
+    for (auto& path : m_paths) {
+        builder.append('/');
+        builder.append(path);
     }
     return builder.to_string();
 }
 
-URL URL::complete_url(const String& string) const
+URL URL::complete_url(String const& string) const
 {
     if (!is_valid())
         return {};
 
-    URL url(string);
-    if (url.is_valid())
-        return url;
-
-    if (protocol() == "data")
-        return {};
-
-    if (string.starts_with("//")) {
-        URL url(String::formatted("{}:{}", m_protocol, string));
-        if (url.is_valid())
-            return url;
-    }
-
-    if (string.starts_with("/")) {
-        url = *this;
-        url.set_path(string);
-        return url;
-    }
-
-    if (string.starts_with("#")) {
-        url = *this;
-        url.set_fragment(string.substring(1, string.length() - 1));
-        return url;
-    }
-
-    StringBuilder builder;
-    LexicalPath lexical_path(path());
-    builder.append('/');
-
-    bool document_url_ends_in_slash = path()[path().length() - 1] == '/';
-
-    for (size_t i = 0; i < lexical_path.parts().size(); ++i) {
-        if (i == lexical_path.parts().size() - 1 && !document_url_ends_in_slash)
-            break;
-        builder.append(lexical_path.parts()[i]);
-        builder.append('/');
-    }
-    builder.append(string);
-    auto built = builder.to_string();
-    lexical_path = LexicalPath(built);
-
-    built = lexical_path.string();
-    if (string.ends_with('/') && !built.ends_with('/')) {
-        builder.clear();
-        builder.append(built);
-        builder.append('/');
-        built = builder.to_string();
-    }
-
-    url = *this;
-    url.set_path(built);
-    return url;
+    return URLParser::parse({}, string, this);
 }
 
-void URL::set_protocol(const String& protocol)
+void URL::set_scheme(String scheme)
 {
-    m_protocol = protocol;
+    m_scheme = move(scheme);
     m_valid = compute_validity();
 }
 
-void URL::set_host(const String& host)
+void URL::set_username(String username)
 {
-    m_host = host;
+    m_username = move(username);
+    m_valid = compute_validity();
+}
+
+void URL::set_password(String password)
+{
+    m_password = move(password);
+    m_valid = compute_validity();
+}
+
+void URL::set_host(String host)
+{
+    m_host = move(host);
     m_valid = compute_validity();
 }
 
 void URL::set_port(u16 port)
 {
+    if (port == default_port_for_scheme(m_scheme)) {
+        m_port = 0;
+        return;
+    }
     m_port = port;
     m_valid = compute_validity();
 }
 
-void URL::set_path(const String& path)
+void URL::set_paths(Vector<String> paths)
 {
-    m_path = path;
+    m_paths = move(paths);
     m_valid = compute_validity();
 }
 
-void URL::set_query(const String& query)
+void URL::set_query(String query)
 {
-    m_query = query;
+    m_query = move(query);
 }
 
-void URL::set_fragment(const String& fragment)
+void URL::set_fragment(String fragment)
 {
-    m_fragment = fragment;
+    m_fragment = move(fragment);
 }
 
+// FIXME: This is by no means complete.
+// NOTE: This relies on some assumptions about how the spec-defined URL parser works that may turn out to be wrong.
 bool URL::compute_validity() const
 {
-    // FIXME: This is by no means complete.
-    if (m_protocol.is_empty())
+    if (m_scheme.is_empty())
         return false;
 
-    if (m_protocol == "about") {
-        if (m_path.is_empty())
-            return false;
-        return true;
-    }
-
-    if (m_protocol == "file") {
-        if (m_path.is_empty())
-            return false;
-        return true;
-    }
-
-    if (m_protocol == "data") {
+    if (m_scheme == "data") {
         if (m_data_mime_type.is_empty())
             return false;
-        return true;
+        if (m_data_payload_is_base64) {
+            if (m_data_payload.length() % 4 != 0)
+                return false;
+            for (auto character : m_data_payload) {
+                if (!is_ascii_alphanumeric(character) || character == '+' || character == '/' || character == '=')
+                    return false;
+            }
+        }
+    } else if (m_cannot_be_a_base_url) {
+        if (m_paths.size() != 1)
+            return false;
+        if (m_paths[0].is_empty())
+            return false;
+    } else {
+        if (m_scheme.is_one_of("about", "mailto"))
+            return false;
+        // NOTE: Maybe it is allowed to have a zero-segment path.
+        if (m_paths.size() == 0)
+            return false;
     }
 
-    if (m_host.is_empty())
-        return false;
-
-    if (!m_port && protocol_requires_port(m_protocol))
+    // NOTE: A file URL's host should be the empty string for localhost, not null.
+    if (m_scheme == "file" && m_host.is_null())
         return false;
 
     return true;
 }
 
-bool URL::protocol_requires_port(const String& protocol)
+bool URL::scheme_requires_port(StringView const& scheme)
 {
-    return (default_port_for_protocol(protocol) != 0);
+    return (default_port_for_scheme(scheme) != 0);
 }
 
-u16 URL::default_port_for_protocol(const String& protocol)
+u16 URL::default_port_for_scheme(StringView const& scheme)
 {
-    if (protocol == "http")
+    if (scheme == "http")
         return 80;
-    if (protocol == "https")
+    if (scheme == "https")
         return 443;
-    if (protocol == "gemini")
+    if (scheme == "gemini")
         return 1965;
-    if (protocol == "irc")
+    if (scheme == "irc")
         return 6667;
-    if (protocol == "ircs")
+    if (scheme == "ircs")
         return 6697;
+    if (scheme == "ws")
+        return 80;
+    if (scheme == "wss")
+        return 443;
     return 0;
 }
 
-URL URL::create_with_file_protocol(const String& path, const String& fragment)
+URL URL::create_with_file_scheme(String const& path, String const& fragment, String const& hostname)
 {
+    LexicalPath lexical_path(path);
+    if (!lexical_path.is_absolute())
+        return {};
+
     URL url;
-    url.set_protocol("file");
-    url.set_path(path);
+    url.set_scheme("file");
+    // NOTE: If the hostname is localhost (or null, which implies localhost), it should be set to the empty string.
+    //       This is because a file URL always needs a non-null hostname.
+    url.set_host(hostname.is_null() || hostname == "localhost" ? String::empty() : hostname);
+    url.set_paths(lexical_path.parts());
+    // NOTE: To indicate that we want to end the path with a slash, we have to append an empty path segment.
+    if (path.ends_with('/'))
+        url.append_path("");
     url.set_fragment(fragment);
     return url;
 }
 
-URL URL::create_with_url_or_path(const String& url_or_path)
+URL URL::create_with_url_or_path(String const& url_or_path)
 {
     URL url = url_or_path;
     if (url.is_valid())
         return url;
 
     String path = LexicalPath::canonicalized_path(url_or_path);
-    return URL::create_with_file_protocol(path);
+    return URL::create_with_file_scheme(path);
 }
 
-URL URL::create_with_data(const StringView& mime_type, const StringView& payload, bool is_base64)
+// https://url.spec.whatwg.org/#special-scheme
+bool URL::is_special_scheme(StringView const& scheme)
 {
-    URL url;
-    url.set_protocol("data");
-    url.m_valid = true;
-    url.m_data_payload = payload;
-    url.m_data_mime_type = mime_type;
-    url.m_data_payload_is_base64 = is_base64;
+    return scheme.is_one_of("ftp", "file", "http", "https", "ws", "wss");
+}
 
-    return url;
+String URL::serialize_data_url() const
+{
+    VERIFY(m_scheme == "data");
+    VERIFY(!m_data_mime_type.is_null());
+    VERIFY(!m_data_payload.is_null());
+    StringBuilder builder;
+    builder.append(m_scheme);
+    builder.append(':');
+    builder.append(m_data_mime_type);
+    if (m_data_payload_is_base64)
+        builder.append(";base64");
+    builder.append(',');
+    // NOTE: The specification does not say anything about encoding this, but we should encode at least control and non-ASCII
+    //       characters (since this is also a valid representation of the same data URL).
+    builder.append(URL::percent_encode(m_data_payload, PercentEncodeSet::C0Control));
+    return builder.to_string();
+}
+
+// https://url.spec.whatwg.org/#concept-url-serializer
+String URL::serialize(ExcludeFragment exclude_fragment) const
+{
+    if (m_scheme == "data")
+        return serialize_data_url();
+    StringBuilder builder;
+    builder.append(m_scheme);
+    builder.append(':');
+
+    if (!m_host.is_null()) {
+        builder.append("//");
+
+        if (includes_credentials()) {
+            builder.append(percent_encode(m_username, PercentEncodeSet::Userinfo));
+            if (!m_password.is_empty()) {
+                builder.append(':');
+                builder.append(percent_encode(m_password, PercentEncodeSet::Userinfo));
+            }
+            builder.append('@');
+        }
+
+        builder.append(m_host);
+        if (m_port != 0)
+            builder.appendff(":{}", m_port);
+    }
+
+    if (cannot_be_a_base_url()) {
+        builder.append(percent_encode(m_paths[0], PercentEncodeSet::Path));
+    } else {
+        if (m_host.is_null() && m_paths.size() > 1 && m_paths[0].is_empty())
+            builder.append("/.");
+        for (auto& segment : m_paths) {
+            builder.append('/');
+            builder.append(percent_encode(segment, PercentEncodeSet::Path));
+        }
+    }
+
+    if (!m_query.is_null()) {
+        builder.append('?');
+        builder.append(percent_encode(m_query, is_special() ? URL::PercentEncodeSet::SpecialQuery : URL::PercentEncodeSet::Query));
+    }
+
+    if (exclude_fragment == ExcludeFragment::No && !m_fragment.is_null()) {
+        builder.append('#');
+        builder.append(percent_encode(m_fragment, PercentEncodeSet::Fragment));
+    }
+
+    return builder.to_string();
+}
+
+// https://url.spec.whatwg.org/#url-rendering
+// NOTE: This does e.g. not display credentials.
+// FIXME: Parts of the URL other than the host should have their sequences of percent-encoded bytes replaced with code points
+//        resulting from percent-decoding those sequences converted to bytes, unless that renders those sequences invisible.
+String URL::serialize_for_display() const
+{
+    VERIFY(m_valid);
+    if (m_scheme == "data")
+        return serialize_data_url();
+    StringBuilder builder;
+    builder.append(m_scheme);
+    builder.append(':');
+
+    if (!m_host.is_null()) {
+        builder.append("//");
+        builder.append(m_host);
+        if (m_port != 0)
+            builder.appendff(":{}", m_port);
+    }
+
+    if (cannot_be_a_base_url()) {
+        builder.append(percent_encode(m_paths[0], PercentEncodeSet::Path));
+    } else {
+        if (m_host.is_null() && m_paths.size() > 1 && m_paths[0].is_empty())
+            builder.append("/.");
+        for (auto& segment : m_paths) {
+            builder.append('/');
+            builder.append(percent_encode(segment, PercentEncodeSet::Path));
+        }
+    }
+
+    if (!m_query.is_null()) {
+        builder.append('?');
+        builder.append(percent_encode(m_query, is_special() ? URL::PercentEncodeSet::SpecialQuery : URL::PercentEncodeSet::Query));
+    }
+
+    if (!m_fragment.is_null()) {
+        builder.append('#');
+        builder.append(percent_encode(m_fragment, PercentEncodeSet::Fragment));
+    }
+
+    return builder.to_string();
+}
+
+bool URL::equals(URL const& other, ExcludeFragment exclude_fragments) const
+{
+    if (this == &other)
+        return true;
+    if (!m_valid || !other.m_valid)
+        return false;
+    return serialize(exclude_fragments) == other.serialize(exclude_fragments);
 }
 
 String URL::basename() const
 {
     if (!m_valid)
         return {};
-    return LexicalPath(m_path).basename();
+    if (m_paths.is_empty())
+        return {};
+    return m_paths.last();
+}
+
+void URL::append_percent_encoded(StringBuilder& builder, u32 code_point)
+{
+    if (code_point <= 0x7f)
+        builder.appendff("%{:02X}", code_point);
+    else if (code_point <= 0x07ff)
+        builder.appendff("%{:02X}%{:02X}", ((code_point >> 6) & 0x1f) | 0xc0, (code_point & 0x3f) | 0x80);
+    else if (code_point <= 0xffff)
+        builder.appendff("%{:02X}%{:02X}%{:02X}", ((code_point >> 12) & 0x0f) | 0xe0, ((code_point >> 6) & 0x3f) | 0x80, (code_point & 0x3f) | 0x80);
+    else if (code_point <= 0x10ffff)
+        builder.appendff("%{:02X}%{:02X}%{:02X}%{:02X}", ((code_point >> 18) & 0x07) | 0xf0, ((code_point >> 12) & 0x3f) | 0x80, ((code_point >> 6) & 0x3f) | 0x80, (code_point & 0x3f) | 0x80);
+    else
+        VERIFY_NOT_REACHED();
+}
+
+// https://url.spec.whatwg.org/#c0-control-percent-encode-set
+constexpr bool code_point_is_in_percent_encode_set(u32 code_point, URL::PercentEncodeSet set)
+{
+    switch (set) {
+    case URL::PercentEncodeSet::C0Control:
+        return code_point < 0x20 || code_point > 0x7E;
+    case URL::PercentEncodeSet::Fragment:
+        return code_point_is_in_percent_encode_set(code_point, URL::PercentEncodeSet::C0Control) || " \"<>`"sv.contains(code_point);
+    case URL::PercentEncodeSet::Query:
+        return code_point_is_in_percent_encode_set(code_point, URL::PercentEncodeSet::C0Control) || " \"#<>"sv.contains(code_point);
+    case URL::PercentEncodeSet::SpecialQuery:
+        return code_point_is_in_percent_encode_set(code_point, URL::PercentEncodeSet::Query) || code_point == '\'';
+    case URL::PercentEncodeSet::Path:
+        return code_point_is_in_percent_encode_set(code_point, URL::PercentEncodeSet::Query) || "?`{}"sv.contains(code_point);
+    case URL::PercentEncodeSet::Userinfo:
+        return code_point_is_in_percent_encode_set(code_point, URL::PercentEncodeSet::Path) || "/:;=@[\\]^|"sv.contains(code_point);
+    case URL::PercentEncodeSet::Component:
+        return code_point_is_in_percent_encode_set(code_point, URL::PercentEncodeSet::Userinfo) || "$%&+,"sv.contains(code_point);
+    case URL::PercentEncodeSet::ApplicationXWWWFormUrlencoded:
+        return code_point >= 0x7E || !(is_ascii_alphanumeric(code_point) || "!'()~"sv.contains(code_point));
+    case URL::PercentEncodeSet::EncodeURI:
+        // NOTE: This is the same percent encode set that JS encodeURI() uses.
+        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURI
+        return code_point >= 0x7E || (!is_ascii_alphanumeric(code_point) && !";,/?:@&=+$-_.!~*'()#"sv.contains(code_point));
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+void URL::append_percent_encoded_if_necessary(StringBuilder& builder, u32 code_point, URL::PercentEncodeSet set)
+{
+    if (code_point_is_in_percent_encode_set(code_point, set))
+        append_percent_encoded(builder, code_point);
+    else
+        builder.append_code_point(code_point);
+}
+
+String URL::percent_encode(StringView const& input, URL::PercentEncodeSet set)
+{
+    StringBuilder builder;
+    for (auto code_point : Utf8View(input)) {
+        append_percent_encoded_if_necessary(builder, code_point, set);
+    }
+    return builder.to_string();
+}
+
+String URL::percent_decode(StringView const& input)
+{
+    if (!input.contains('%'))
+        return input;
+    StringBuilder builder;
+    Utf8View utf8_view(input);
+    for (auto it = utf8_view.begin(); !it.done(); ++it) {
+        if (*it != '%') {
+            builder.append_code_point(*it);
+        } else if (!is_ascii_hex_digit(it.peek(1).value_or(0)) || !is_ascii_hex_digit(it.peek(2).value_or(0))) {
+            builder.append_code_point(*it);
+        } else {
+            ++it;
+            u8 byte = parse_ascii_hex_digit(*it) << 4;
+            ++it;
+            byte += parse_ascii_hex_digit(*it);
+            builder.append(byte);
+        }
+    }
+    return builder.to_string();
 }
 
 }

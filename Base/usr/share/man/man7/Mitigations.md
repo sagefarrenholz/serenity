@@ -23,13 +23,12 @@ Author: Andreas Kling <awesomekling@gmail.com>
 Date:   Wed Jan 1 01:56:58 2020 +0100
 
 Kernel: Enable x86 SMEP (Supervisor Mode Execution Protection)
-
 ```
 
 ### SMAP (Supervisor Mode Access Prevention)
 
 [Supervisor Mode Access Prevention](https://en.wikipedia.org/wiki/Supervisor_Mode_Access_Prevention)
-compliments SMEP by also guarding read/write access to
+complements SMEP by also guarding read/write access to
 userspace memory while executing in kernel mode.
 
 It was enabled in the following [commit](https://github.com/SerenityOS/serenity/commit/9eef39d68a99c5e29099ae4eb4a56934b35eecde):
@@ -133,7 +132,7 @@ Kernel: KUBSAN! (Kernel Undefined Behavior SANitizer) :^)
 
 ### Kernel unmap-after-init
 
-Umap-after-init allows the kerenel to remove functions which contain potentially
+Unmap-after-init allows the kernel to remove functions which contain potentially
 dangerous [ROP gadgets](https://en.wikipedia.org/wiki/Return-oriented_programming)
 from kernel memory after we've booted up and they are no longer needed. Notably the
 `write_cr4(..)` function used to control processor features like the SMEP/SMAP bits
@@ -158,7 +157,7 @@ Kernel: Add .unmap_after_init section for code we don't need after init
 in the linker and loader that hardens the data sections of an ELF binary.
 
 When enabled, it segregates function pointers resolved by the dynamic loader
-into a separate section of the runtie executable memory, and allows the loader
+into a separate section of the runtime executable memory, and allows the loader
 to make that memory read-only before passing control to the main executable.
 
 This prevents attackers from overwriting the [Global Offset Table (GOT)](https://en.wikipedia.org/wiki/Global_Offset_Table).
@@ -218,8 +217,8 @@ Kernel+LibC: Build with basic -fstack-protector support
 ```
 
 It was later re-enabled and refined to `-fstack-protector-strong` in the following commits:
-```
 
+```
 commit fd08c93ef57f71360d74b035214c71d7f7bfc5b8
 Author: Brian Gianforcaro <b.gianfo@gmail.com>
 Date:   Sat Jan 2 04:27:35 2021 -0800
@@ -237,6 +236,40 @@ Author: Brian Gianforcaro <b.gianfo@gmail.com>
 Date:   Fri Jan 1 15:27:42 2021 -0800
 
 Build + LibC: Enable -fstack-protector-strong in user space
+```
+### Protected Kernel Process Data
+
+The kernel applies a exploit mitigation technique where vulnerable data
+related to the state of a process is separated out into it's own region
+in memory which is always remmaped as read-only after it's initialized
+or updated. This means that an attacker needs more than an arbitrary
+kernel write primitive to be able to elevate a process to root for example.
+
+It was first enabled in the following [commit](https://github.com/SerenityOS/serenity/commit/cbcf891040e9921ff628fdda668c9738f358a178):
+```
+commit cbcf891040e9921ff628fdda668c9738f358a178
+Author: Andreas Kling <kling@serenityos.org>
+Date:   Wed Mar 10 19:59:46 2021 +0100
+
+Kernel: Move select Process members into protected memory
+```
+
+### -fzero-call-used-regs
+
+GCC-11 added a new option `-fzero-call-used-regs` which causes the
+compiler to zero function arguments before return of a function. The
+goal being to reduce the possible attack surface by disarming ROP
+gadgets that might be potentially useful to attackers, and reducing
+the risk of information leaks via stale register data.
+
+It was first enabled when compiling the Kernel in the following [commit](https://github.com/SerenityOS/serenity/commit/204d5ff8f86547a8b100cf26a958aaabf49211f2):
+
+```
+commit 204d5ff8f86547a8b100cf26a958aaabf49211f2
+Author: Brian Gianforcaro <bgianf@serenityos.org>
+Date:   Fri Jul 23 00:42:54 2021 -0700
+
+Kernel: Reduce useful ROP gadgets by zeroing used function registers
 ```
 
 ## See also

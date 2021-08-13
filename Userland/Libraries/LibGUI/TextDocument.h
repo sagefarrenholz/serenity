@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -46,7 +26,7 @@ namespace GUI {
 struct TextDocumentSpan {
     TextRange range;
     Gfx::TextAttributes attributes;
-    void* data { nullptr };
+    u64 data { 0 };
     bool is_skippable { false };
 };
 
@@ -67,6 +47,7 @@ public:
         virtual void document_did_change() = 0;
         virtual void document_did_set_text() = 0;
         virtual void document_did_set_cursor(const TextPosition&) = 0;
+        virtual void document_did_update_undo_stack() = 0;
 
         virtual bool is_automatic_indentation_enabled() const = 0;
         virtual int soft_tab_width() const = 0;
@@ -125,12 +106,16 @@ public:
     TextPosition first_word_break_before(const TextPosition&, bool start_at_column_before) const;
     TextPosition first_word_break_after(const TextPosition&) const;
 
+    TextPosition first_word_before(const TextPosition&, bool start_at_column_before) const;
+
     void add_to_undo_stack(NonnullOwnPtr<TextDocumentUndoCommand>);
 
     bool can_undo() const { return m_undo_stack.can_undo(); }
     bool can_redo() const { return m_undo_stack.can_redo(); }
     void undo();
     void redo();
+
+    UndoStack const& undo_stack() const { return m_undo_stack; }
 
     void notify_did_change();
     void set_all_cursors(const TextPosition&);
@@ -142,13 +127,13 @@ public:
     virtual bool is_code_document() const { return false; }
 
     bool is_empty() const;
+    bool is_modified() const { return m_undo_stack.is_current_modified(); }
+    void set_unmodified();
 
 protected:
     explicit TextDocument(Client* client);
 
 private:
-    void update_undo_timer();
-
     NonnullOwnPtrVector<TextDocumentLine> m_lines;
     Vector<TextDocumentSpan> m_spans;
 
@@ -156,7 +141,6 @@ private:
     bool m_client_notifications_enabled { true };
 
     UndoStack m_undo_stack;
-    RefPtr<Core::Timer> m_undo_timer;
 
     RegexResult m_regex_result;
     size_t m_regex_result_match_index { 0 };
@@ -190,6 +174,7 @@ public:
     size_t first_non_whitespace_column() const;
     Optional<size_t> last_non_whitespace_column() const;
     bool ends_in_whitespace() const;
+    bool can_select() const;
     bool is_empty() const { return length() == 0; }
     size_t leading_spaces() const;
 
@@ -222,7 +207,8 @@ public:
     virtual void perform_formatting(const TextDocument::Client&) override;
     virtual void undo() override;
     virtual void redo() override;
-    virtual bool is_insert_text() const override { return true; }
+    virtual bool merge_with(GUI::Command const&) override;
+    virtual String action_text() const override;
     const String& text() const { return m_text; }
     const TextRange& range() const { return m_range; }
 
@@ -236,8 +222,9 @@ public:
     RemoveTextCommand(TextDocument&, const String&, const TextRange&);
     virtual void undo() override;
     virtual void redo() override;
-    virtual bool is_remove_text() const override { return true; }
     const TextRange& range() const { return m_range; }
+    virtual bool merge_with(GUI::Command const&) override;
+    virtual String action_text() const override;
 
 private:
     String m_text;

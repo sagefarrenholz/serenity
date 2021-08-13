@@ -1,32 +1,13 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include "Spreadsheet.h"
+#include "SpreadsheetModel.h"
 #include <LibGUI/AbstractTableView.h>
 #include <LibGUI/ModelEditingDelegate.h>
 #include <LibGUI/TableView.h>
@@ -93,10 +74,12 @@ private:
     }
     virtual void did_scroll() override;
     virtual void mousemove_event(GUI::MouseEvent&) override;
+    virtual void mousedown_event(GUI::MouseEvent&) override;
     virtual void mouseup_event(GUI::MouseEvent&) override;
 
     bool m_should_intercept_drag { false };
     bool m_has_committed_to_dragging { false };
+    bool m_is_dragging_for_copy { false };
     GUI::ModelIndex m_starting_selection_index;
     RefPtr<Core::Timer> m_horizontal_scroll_end_timer;
     RefPtr<Core::Timer> m_vertical_scroll_end_timer;
@@ -118,6 +101,8 @@ public:
     Function<void(Vector<Position>&&)> on_selection_changed;
     Function<void()> on_selection_dropped;
 
+    void move_cursor(GUI::AbstractView::CursorMovement);
+
 private:
     virtual void hide_event(GUI::HideEvent&) override;
     virtual void show_event(GUI::ShowEvent&) override;
@@ -132,7 +117,7 @@ private:
             : m_sheet(sheet)
         {
         }
-        virtual void set_value(const GUI::Variant& value) override;
+        virtual void set_value(GUI::Variant const&, GUI::ModelEditingDelegate::SelectionBehavior) override;
 
         virtual RefPtr<Widget> create_widget() override
         {
@@ -144,10 +129,14 @@ private:
                 commit();
                 on_cursor_key_pressed(event);
             };
+            textbox->on_focusout = [this] {
+                on_cell_focusout(index(), value());
+            };
             return textbox;
         }
 
         Function<void(GUI::KeyEvent&)> on_cursor_key_pressed;
+        Function<void(const GUI::ModelIndex&, const GUI::Variant&)> on_cell_focusout;
 
     private:
         bool m_has_set_initial_value { false };
@@ -167,6 +156,7 @@ private:
     };
 
     NonnullRefPtr<Sheet> m_sheet;
+    NonnullRefPtr<SheetModel> m_sheet_model;
     RefPtr<InfinitelyScrollableTableView> m_table_view;
     RefPtr<GUI::Menu> m_cell_range_context_menu;
 };

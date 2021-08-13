@@ -1,28 +1,8 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * Copyright (c) 2021, Idan Horowitz <idan.horowitz@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -81,9 +61,9 @@ public:
         return m_stream.discard_or_error(count);
     }
 
-    u32 read_bits(size_t count)
+    u64 read_bits(size_t count)
     {
-        u32 result = 0;
+        u64 result = 0;
 
         size_t nread = 0;
         while (nread < count) {
@@ -108,7 +88,45 @@ public:
         return result;
     }
 
+    u64 read_bits_big_endian(size_t count)
+    {
+        u64 result = 0;
+
+        size_t nread = 0;
+        while (nread < count) {
+            if (m_stream.has_any_error()) {
+                set_fatal_error();
+                return 0;
+            }
+
+            if (m_next_byte.has_value()) {
+                // read an entire byte
+                if (((count - nread) >= 8) && m_bit_offset == 0) {
+                    // shift existing bytes over
+                    result <<= 8;
+                    result |= m_next_byte.value();
+                    nread += 8;
+                    m_next_byte.clear();
+                } else {
+                    const auto bit = (m_next_byte.value() >> (7 - m_bit_offset)) & 1;
+                    result <<= 1;
+                    result |= bit;
+                    ++nread;
+                    if (m_bit_offset++ == 7)
+                        m_next_byte.clear();
+                }
+            } else {
+                m_stream >> m_next_byte;
+                m_bit_offset = 0;
+            }
+        }
+
+        return result;
+    }
+
     bool read_bit() { return static_cast<bool>(read_bits(1)); }
+
+    bool read_bit_big_endian() { return static_cast<bool>(read_bits_big_endian(1)); }
 
     void align_to_byte_boundary()
     {

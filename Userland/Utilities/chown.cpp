@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/String.h>
@@ -41,8 +21,8 @@ int main(int argc, char** argv)
     }
 
     if (argc < 3) {
-        printf("usage: chown <uid[:gid]> <path>\n");
-        return 0;
+        warnln("usage: chown <uid[:gid]> <path>");
+        return 1;
     }
 
     uid_t new_uid = -1;
@@ -50,11 +30,11 @@ int main(int argc, char** argv)
 
     auto parts = String(argv[1]).split(':', true);
     if (parts.is_empty()) {
-        fprintf(stderr, "Empty uid/gid spec\n");
+        warnln("Empty uid/gid spec");
         return 1;
     }
     if (parts[0].is_empty() || (parts.size() == 2 && parts[1].is_empty()) || parts.size() > 2) {
-        fprintf(stderr, "Invalid uid/gid spec\n");
+        warnln("Invalid uid/gid spec");
         return 1;
     }
 
@@ -64,7 +44,7 @@ int main(int argc, char** argv)
     } else {
         auto* passwd = getpwnam(parts[0].characters());
         if (!passwd) {
-            fprintf(stderr, "Unknown user '%s'\n", parts[0].characters());
+            warnln("Unknown user '{}'", parts[0]);
             return 1;
         }
         new_uid = passwd->pw_uid;
@@ -77,7 +57,7 @@ int main(int argc, char** argv)
         } else {
             auto* group = getgrnam(parts[1].characters());
             if (!group) {
-                fprintf(stderr, "Unknown group '%s'\n", parts[1].characters());
+                warnln("Unknown group '{}'", parts[1]);
                 return 1;
             }
             new_gid = group->gr_gid;

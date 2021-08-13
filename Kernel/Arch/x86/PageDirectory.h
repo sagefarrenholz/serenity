@@ -1,54 +1,32 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Badge.h>
 #include <AK/Types.h>
+#include <Kernel/Forward.h>
+#include <Kernel/PhysicalAddress.h>
 
 namespace Kernel {
 
-class PageDirectory;
-class PageTableEntry;
-
 class PageDirectoryEntry {
 public:
-    const PageTableEntry* page_table_base() const { return reinterpret_cast<PageTableEntry*>(m_raw & 0xfffff000u); }
-    PageTableEntry* page_table_base() { return reinterpret_cast<PageTableEntry*>(m_raw & 0xfffff000u); }
+    PhysicalPtr page_table_base() const { return PhysicalAddress::physical_page_base(m_raw); }
     void set_page_table_base(u32 value)
     {
         m_raw &= 0x8000000000000fffULL;
-        m_raw |= value & 0xfffff000;
+        m_raw |= PhysicalAddress::physical_page_base(value);
     }
 
     bool is_null() const { return m_raw == 0; }
     void clear() { m_raw = 0; }
 
     u64 raw() const { return m_raw; }
-    void copy_from(Badge<PageDirectory>, const PageDirectoryEntry& other) { m_raw = other.m_raw; }
+    void copy_from(Badge<Memory::PageDirectory>, const PageDirectoryEntry& other) { m_raw = other.m_raw; }
 
     enum Flags {
         Present = 1 << 0,
@@ -99,11 +77,11 @@ private:
 
 class PageTableEntry {
 public:
-    void* physical_page_base() { return reinterpret_cast<void*>(m_raw & 0xfffff000u); }
-    void set_physical_page_base(u32 value)
+    PhysicalPtr physical_page_base() { return PhysicalAddress::physical_page_base(m_raw); }
+    void set_physical_page_base(PhysicalPtr value)
     {
         m_raw &= 0x8000000000000fffULL;
-        m_raw |= value & 0xfffff000;
+        m_raw |= PhysicalAddress::physical_page_base(value);
     }
 
     u64 raw() const { return (u32)m_raw; }
@@ -161,10 +139,11 @@ class PageDirectoryPointerTable {
 public:
     PageDirectoryEntry* directory(size_t index)
     {
-        return (PageDirectoryEntry*)(raw[index] & ~0xfffu);
+        VERIFY(index <= (NumericLimits<size_t>::max() << 30));
+        return (PageDirectoryEntry*)(PhysicalAddress::physical_page_base(raw[index]));
     }
 
-    u64 raw[4];
+    u64 raw[512];
 };
 
 }

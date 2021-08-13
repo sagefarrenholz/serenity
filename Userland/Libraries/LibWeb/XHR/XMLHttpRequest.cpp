@@ -1,30 +1,11 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <LibWeb/Bindings/EventWrapper.h>
 #include <LibWeb/Bindings/XMLHttpRequestWrapper.h>
 #include <LibWeb/DOM/DOMException.h>
@@ -66,7 +47,7 @@ void XMLHttpRequest::fire_progress_event(const String& event_name, u64 transmitt
 
 String XMLHttpRequest::response_text() const
 {
-    if (m_response_object.is_null())
+    if (m_response_object.is_empty())
         return {};
     return String::copy(m_response_object);
 }
@@ -124,6 +105,7 @@ DOM::ExceptionOr<void> XMLHttpRequest::set_request_header(const String& header, 
     return {};
 }
 
+// https://xhr.spec.whatwg.org/#dom-xmlhttprequest-open
 DOM::ExceptionOr<void> XMLHttpRequest::open(const String& method, const String& url)
 {
     // FIXME: Let settingsObject be this’s relevant settings object.
@@ -135,10 +117,9 @@ DOM::ExceptionOr<void> XMLHttpRequest::open(const String& method, const String& 
     if (is_forbidden_method(method))
         return DOM::SecurityError::create("Forbidden method, must not be 'CONNECT', 'TRACE', or 'TRACK'");
 
-    String normalized_method = normalize_method(method);
+    auto normalized_method = normalize_method(method);
 
-    // FIXME: Pass in settingObject's API base URL and API URL character encoding.
-    URL parsed_url(url);
+    auto parsed_url = m_window->document().complete_url(url);
     if (!parsed_url.is_valid())
         return DOM::SyntaxError::create("Invalid URL");
 
@@ -201,9 +182,8 @@ DOM::ExceptionOr<void> XMLHttpRequest::send()
         return {};
     }
 
-    LoadRequest request;
+    auto request = LoadRequest::create_for_url_on_page(request_url, m_window->document().page());
     request.set_method(m_method);
-    request.set_url(request_url);
     for (auto& it : m_request_headers)
         request.set_header(it.key, it.value);
 
@@ -228,7 +208,7 @@ DOM::ExceptionOr<void> XMLHttpRequest::send()
         // we need to make ResourceLoader give us more detailed updates than just "done" and "error".
         ResourceLoader::the().load(
             request,
-            [weak_this = make_weak_ptr()](auto data, auto&) {
+            [weak_this = make_weak_ptr()](auto data, auto& response_headers, auto status_code) {
                 if (!weak_this)
                     return;
                 auto& xhr = const_cast<XMLHttpRequest&>(*weak_this);
@@ -243,16 +223,19 @@ DOM::ExceptionOr<void> XMLHttpRequest::send()
                 }
 
                 xhr.m_ready_state = ReadyState::Done;
+                xhr.m_status = status_code.value_or(0);
+                xhr.m_response_headers = move(response_headers);
                 xhr.m_send = false;
                 xhr.dispatch_event(DOM::Event::create(EventNames::readystatechange));
                 xhr.fire_progress_event(EventNames::load, transmitted, length);
                 xhr.fire_progress_event(EventNames::loadend, transmitted, length);
             },
-            [weak_this = make_weak_ptr()](auto& error) {
+            [weak_this = make_weak_ptr()](auto& error, auto status_code) {
                 if (!weak_this)
                     return;
                 dbgln("XHR failed to load: {}", error);
                 const_cast<XMLHttpRequest&>(*weak_this).set_ready_state(ReadyState::Done);
+                const_cast<XMLHttpRequest&>(*weak_this).set_status(status_code.value_or(0));
                 const_cast<XMLHttpRequest&>(*weak_this).dispatch_event(DOM::Event::create(HTML::EventNames::error));
             });
     } else {

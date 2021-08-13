@@ -1,29 +1,10 @@
 /*
- * Copyright (c) 2020, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/ErrorConstructor.h>
 #include <LibJS/Runtime/GlobalObject.h>
@@ -31,7 +12,7 @@
 namespace JS {
 
 ErrorConstructor::ErrorConstructor(GlobalObject& global_object)
-    : NativeFunction(vm().names.Error, *global_object.function_prototype())
+    : NativeFunction(vm().names.Error.as_string(), *global_object.function_prototype())
 {
 }
 
@@ -39,60 +20,95 @@ void ErrorConstructor::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property(vm.names.prototype, global_object.error_prototype(), 0);
-    define_property(vm.names.length, Value(1), Attribute::Configurable);
+
+    // 20.5.2.1 Error.prototype, https://tc39.es/ecma262/#sec-error.prototype
+    define_direct_property(vm.names.prototype, global_object.error_prototype(), 0);
+
+    define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
 }
 
-ErrorConstructor::~ErrorConstructor()
-{
-}
-
+// 20.5.1.1 Error ( message ), https://tc39.es/ecma262/#sec-error-message
 Value ErrorConstructor::call()
 {
     return construct(*this);
 }
 
-Value ErrorConstructor::construct(Function&)
+// 20.5.1.1 Error ( message ), https://tc39.es/ecma262/#sec-error-message
+Value ErrorConstructor::construct(FunctionObject& new_target)
 {
     auto& vm = this->vm();
-    String message = "";
-    if (!vm.call_frame().arguments.is_empty() && !vm.call_frame().arguments[0].is_undefined()) {
-        message = vm.call_frame().arguments[0].to_string(global_object());
+    auto& global_object = this->global_object();
+
+    auto* error = ordinary_create_from_constructor<Error>(global_object, new_target, &GlobalObject::error_prototype);
+    if (vm.exception())
+        return {};
+
+    if (!vm.argument(0).is_undefined()) {
+        auto message = vm.argument(0).to_string(global_object);
         if (vm.exception())
             return {};
+        error->create_non_enumerable_data_property_or_throw(vm.names.message, js_string(vm, message));
     }
-    return Error::create(global_object(), vm.names.Error, message);
+
+    error->install_error_cause(vm.argument(1));
+    if (vm.exception())
+        return {};
+
+    return error;
 }
 
-#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType)                 \
-    ConstructorName::ConstructorName(GlobalObject& global_object)                                        \
-        : NativeFunction(*global_object.function_prototype())                                            \
-    {                                                                                                    \
-    }                                                                                                    \
-    void ConstructorName::initialize(GlobalObject& global_object)                                        \
-    {                                                                                                    \
-        auto& vm = this->vm();                                                                           \
-        NativeFunction::initialize(global_object);                                                       \
-        define_property(vm.names.prototype, global_object.snake_name##_prototype(), 0);                  \
-        define_property(vm.names.length, Value(1), Attribute::Configurable);                             \
-    }                                                                                                    \
-    ConstructorName::~ConstructorName() { }                                                              \
-    Value ConstructorName::call()                                                                        \
-    {                                                                                                    \
-        return construct(*this);                                                                         \
-    }                                                                                                    \
-    Value ConstructorName::construct(Function&)                                                          \
-    {                                                                                                    \
-        String message = "";                                                                             \
-        if (!vm().call_frame().arguments.is_empty() && !vm().call_frame().arguments[0].is_undefined()) { \
-            message = vm().call_frame().arguments[0].to_string(global_object());                         \
-            if (vm().exception())                                                                        \
-                return {};                                                                               \
-        }                                                                                                \
-        return ClassName::create(global_object(), message);                                              \
+#define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType)                   \
+    ConstructorName::ConstructorName(GlobalObject& global_object)                                          \
+        : NativeFunction(*static_cast<Object*>(global_object.error_constructor()))                         \
+    {                                                                                                      \
+    }                                                                                                      \
+                                                                                                           \
+    void ConstructorName::initialize(GlobalObject& global_object)                                          \
+    {                                                                                                      \
+        auto& vm = this->vm();                                                                             \
+        NativeFunction::initialize(global_object);                                                         \
+                                                                                                           \
+        /* 20.5.6.2.1 NativeError.prototype,                                                               \
+           https://tc39.es/ecma262/#sec-nativeerror.prototype */                                           \
+        define_direct_property(vm.names.prototype, global_object.snake_name##_prototype(), 0);             \
+                                                                                                           \
+        define_direct_property(vm.names.length, Value(1), Attribute::Configurable);                        \
+    }                                                                                                      \
+                                                                                                           \
+    ConstructorName::~ConstructorName() { }                                                                \
+                                                                                                           \
+    /* 20.5.6.1.1 NativeError ( message ), https://tc39.es/ecma262/#sec-nativeerror */                     \
+    Value ConstructorName::call()                                                                          \
+    {                                                                                                      \
+        return construct(*this);                                                                           \
+    }                                                                                                      \
+                                                                                                           \
+    /* 20.5.6.1.1 NativeError ( message ), https://tc39.es/ecma262/#sec-nativeerror */                     \
+    Value ConstructorName::construct(FunctionObject& new_target)                                           \
+    {                                                                                                      \
+        auto& vm = this->vm();                                                                             \
+        auto& global_object = this->global_object();                                                       \
+                                                                                                           \
+        auto* error = ordinary_create_from_constructor<ClassName>(                                         \
+            global_object, new_target, &GlobalObject::snake_name##_prototype);                             \
+        if (vm.exception())                                                                                \
+            return {};                                                                                     \
+                                                                                                           \
+        if (!vm.argument(0).is_undefined()) {                                                              \
+            auto message = vm.argument(0).to_string(global_object);                                        \
+            if (vm.exception())                                                                            \
+                return {};                                                                                 \
+            error->create_non_enumerable_data_property_or_throw(vm.names.message, js_string(vm, message)); \
+        }                                                                                                  \
+                                                                                                           \
+        error->install_error_cause(vm.argument(1));                                                        \
+        if (vm.exception())                                                                                \
+            return {};                                                                                     \
+                                                                                                           \
+        return error;                                                                                      \
     }
 
-JS_ENUMERATE_ERROR_SUBCLASSES
+JS_ENUMERATE_NATIVE_ERRORS
 #undef __JS_ENUMERATE
 
 }

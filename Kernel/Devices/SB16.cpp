@@ -1,38 +1,20 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Memory.h>
 #include <AK/Singleton.h>
 #include <AK/StringView.h>
+#include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Devices/SB16.h>
 #include <Kernel/IO.h>
+#include <Kernel/Memory/AnonymousVMObject.h>
+#include <Kernel/Memory/MemoryManager.h>
+#include <Kernel/Sections.h>
 #include <Kernel/Thread.h>
-#include <Kernel/VM/AnonymousVMObject.h>
-#include <Kernel/VM/MemoryManager.h>
 
 namespace Kernel {
 #define SB16_DEFAULT_IRQ 5
@@ -76,7 +58,7 @@ void SB16::set_sample_rate(uint16_t hz)
     dsp_write((u8)hz);
 }
 
-static AK::Singleton<SB16> s_the;
+static Singleton<SB16> s_the;
 
 UNMAP_AFTER_INIT SB16::SB16()
     : IRQHandler(SB16_DEFAULT_IRQ)
@@ -220,13 +202,18 @@ void SB16::dma_start(uint32_t length)
 
     // Write the buffer
     IO::out8(0x8b, addr >> 16);
+    auto page_number = addr >> 16;
+    VERIFY(page_number <= NumericLimits<u8>::max());
+    IO::out8(0x8b, page_number);
 
     // Enable the DMA channel
     IO::out8(0xd4, (channel % 4));
 }
 
-void SB16::handle_irq(const RegisterState&)
+bool SB16::handle_irq(const RegisterState&)
 {
+    // FIXME: Check if the interrupt was actually for us or not... (shared IRQs)
+
     // Stop sound output ready for the next block.
     dsp_write(0xd5);
 
@@ -235,6 +222,7 @@ void SB16::handle_irq(const RegisterState&)
         IO::in8(DSP_R_ACK); // 16 bit interrupt
 
     m_irq_queue.wake_all();
+    return true;
 }
 
 void SB16::wait_for_irq()
@@ -249,8 +237,11 @@ KResultOr<size_t> SB16::write(FileDescription&, u64, const UserOrKernelBuffer& d
         auto page = MM.allocate_supervisor_physical_page();
         if (!page)
             return ENOMEM;
-        auto vmobject = AnonymousVMObject::create_with_physical_page(*page);
-        m_dma_region = MM.allocate_kernel_region_with_vmobject(*vmobject, PAGE_SIZE, "SB16 DMA buffer", Region::Access::Write);
+        auto nonnull_page = page.release_nonnull();
+        auto vmobject = Memory::AnonymousVMObject::try_create_with_physical_pages({ &nonnull_page, 1 });
+        if (!vmobject)
+            return ENOMEM;
+        m_dma_region = MM.allocate_kernel_region_with_vmobject(*vmobject, PAGE_SIZE, "SB16 DMA buffer", Memory::Region::Access::Write);
         if (!m_dma_region)
             return ENOMEM;
     }

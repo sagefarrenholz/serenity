@@ -15,11 +15,13 @@ set(SOURCES
     IODevice.cpp
     LocalServer.cpp
     LocalSocket.cpp
+    LockFile.cpp
     MimeData.cpp
     NetworkJob.cpp
     NetworkResponse.cpp
     Notifier.cpp
     Object.cpp
+    Process.cpp
     ProcessStatisticsReader.cpp
     Property.cpp
     Socket.cpp

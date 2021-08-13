@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/BoxLayout.h>
@@ -30,7 +10,6 @@
 #include <LibGUI/Label.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGfx/Font.h>
-#include <stdio.h>
 
 namespace GUI {
 
@@ -65,13 +44,13 @@ RefPtr<Gfx::Bitmap> MessageBox::icon() const
 {
     switch (m_type) {
     case Type::Information:
-        return Gfx::Bitmap::load_from_file("/res/icons/32x32/msgbox-information.png");
+        return Gfx::Bitmap::try_load_from_file("/res/icons/32x32/msgbox-information.png");
     case Type::Warning:
-        return Gfx::Bitmap::load_from_file("/res/icons/32x32/msgbox-warning.png");
+        return Gfx::Bitmap::try_load_from_file("/res/icons/32x32/msgbox-warning.png");
     case Type::Error:
-        return Gfx::Bitmap::load_from_file("/res/icons/32x32/msgbox-error.png");
+        return Gfx::Bitmap::try_load_from_file("/res/icons/32x32/msgbox-error.png");
     case Type::Question:
-        return Gfx::Bitmap::load_from_file("/res/icons/32x32/msgbox-question.png");
+        return Gfx::Bitmap::try_load_from_file("/res/icons/32x32/msgbox-question.png");
     default:
         return nullptr;
     }
@@ -102,6 +81,9 @@ void MessageBox::build()
     auto& widget = set_main_widget<Widget>();
 
     int text_width = widget.font().width(m_text);
+    auto number_of_lines = m_text.split('\n').size();
+    int padded_text_height = widget.font().glyph_height() * 1.6;
+    int total_text_height = number_of_lines * padded_text_height;
     int icon_width = 0;
 
     widget.set_layout<VerticalBoxLayout>();
@@ -112,18 +94,20 @@ void MessageBox::build()
 
     auto& message_container = widget.add<Widget>();
     message_container.set_layout<HorizontalBoxLayout>();
-    message_container.layout()->set_margins({ 8, 0, 0, 0 });
     message_container.layout()->set_spacing(8);
 
     if (m_type != Type::None) {
         auto& icon_image = message_container.add<ImageWidget>();
         icon_image.set_bitmap(icon());
-        if (icon())
+        if (icon()) {
             icon_width = icon()->width();
+            if (icon_width > 0)
+                message_container.layout()->set_margins({ 8, 0, 0, 0 });
+        }
     }
 
     auto& label = message_container.add<Label>(m_text);
-    label.set_fixed_height(16);
+    label.set_fixed_height(total_text_height);
     if (m_type != Type::None)
         label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
 
@@ -159,7 +143,7 @@ void MessageBox::build()
     int width = (button_count * button_width) + ((button_count - 1) * button_container.layout()->spacing()) + 32;
     width = max(width, text_width + icon_width + 56);
 
-    set_rect(x(), y(), width, 96);
+    set_rect(x(), y(), width, 80 + label.max_height());
     set_resizable(false);
 }
 

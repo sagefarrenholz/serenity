@@ -7,7 +7,7 @@ describe("errors", () => {
         [null, undefined, "foo", 123, NaN, Infinity].forEach(value => {
             expect(() => {
                 Reflect.get(value);
-            }).toThrowWithMessage(TypeError, "First argument of Reflect.get() must be an object");
+            }).toThrowWithMessage(TypeError, `${value} is not an object`);
         });
     });
 });
@@ -62,6 +62,7 @@ describe("normal behavior", () => {
     });
 
     test("native getter function", () => {
-        expect(Reflect.get(String.prototype, "length", "foo")).toBe(3);
+        const typedArray = new Uint8Array(3);
+        expect(Reflect.get(Uint8Array.prototype, "length", typedArray)).toBe(3);
     });
 });

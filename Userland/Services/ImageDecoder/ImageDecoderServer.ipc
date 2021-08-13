@@ -1,6 +1,7 @@
-endpoint ImageDecoderServer = 7001
-{
-    Greet() => ()
+#include <LibCore/AnonymousBuffer.h>
+#include <LibGfx/ShareableBitmap.h>
 
-    DecodeImage(Core::AnonymousBuffer data) => (bool is_animated, u32 loop_count, Vector<Gfx::ShareableBitmap> bitmaps, Vector<u32> durations)
+endpoint ImageDecoderServer
+{
+    decode_image(Core::AnonymousBuffer data) => (bool is_animated, u32 loop_count, Vector<Gfx::ShareableBitmap> bitmaps, Vector<u32> durations)
 }

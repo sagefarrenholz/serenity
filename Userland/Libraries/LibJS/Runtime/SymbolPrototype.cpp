@@ -1,32 +1,12 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
+ * Copyright (c) 2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Function.h>
-#include <AK/StringBuilder.h>
-#include <LibJS/Heap/Heap.h>
+#include <AK/TypeCasts.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Object.h>
@@ -34,7 +14,6 @@
 #include <LibJS/Runtime/SymbolObject.h>
 #include <LibJS/Runtime/SymbolPrototype.h>
 #include <LibJS/Runtime/Value.h>
-#include <string.h>
 
 namespace JS {
 
@@ -47,51 +26,64 @@ void SymbolPrototype::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     Object::initialize(global_object);
-    define_native_property(vm.names.description, description_getter, {}, Attribute::Configurable);
-    define_native_function(vm.names.toString, to_string, 0, Attribute::Writable | Attribute::Configurable);
-    define_native_function(vm.names.valueOf, value_of, 0, Attribute::Writable | Attribute::Configurable);
+    u8 attr = Attribute::Writable | Attribute::Configurable;
+    define_native_function(vm.names.toString, to_string, 0, attr);
+    define_native_function(vm.names.valueOf, value_of, 0, attr);
+    define_native_accessor(vm.names.description, description_getter, {}, Attribute::Configurable);
+    define_native_function(*vm.well_known_symbol_to_primitive(), symbol_to_primitive, 1, Attribute::Configurable);
 
-    define_property(global_object.vm().well_known_symbol_to_string_tag(), js_string(global_object.heap(), "Symbol"), Attribute::Configurable);
+    // 20.4.3.6 Symbol.prototype [ @@toStringTag ], https://tc39.es/ecma262/#sec-symbol.prototype-@@tostringtag
+    define_direct_property(*vm.well_known_symbol_to_string_tag(), js_string(global_object.heap(), "Symbol"), Attribute::Configurable);
 }
 
 SymbolPrototype::~SymbolPrototype()
 {
 }
 
-static SymbolObject* typed_this(VM& vm, GlobalObject& global_object)
+// thisSymbolValue ( value ), https://tc39.es/ecma262/#thissymbolvalue
+static Value this_symbol_value(GlobalObject& global_object, Value value)
 {
-    auto* this_object = vm.this_value(global_object).to_object(global_object);
-    if (!this_object)
-        return nullptr;
-    if (!is<SymbolObject>(this_object)) {
-        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Symbol");
-        return nullptr;
-    }
-    return static_cast<SymbolObject*>(this_object);
+    if (value.is_symbol())
+        return value;
+    if (value.is_object() && is<SymbolObject>(value.as_object()))
+        return static_cast<SymbolObject&>(value.as_object()).value_of();
+    auto& vm = global_object.vm();
+    vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Symbol");
+    return {};
 }
 
+// 20.4.3.2 get Symbol.prototype.description, https://tc39.es/ecma262/#sec-symbol.prototype.description
 JS_DEFINE_NATIVE_GETTER(SymbolPrototype::description_getter)
 {
-    auto* this_object = typed_this(vm, global_object);
-    if (!this_object)
+    auto symbol_value = this_symbol_value(global_object, vm.this_value(global_object));
+    if (vm.exception())
         return {};
-    return js_string(vm, this_object->description());
+    auto& description = symbol_value.as_symbol().raw_description();
+    if (!description.has_value())
+        return js_undefined();
+    return js_string(vm, *description);
 }
 
+// 20.4.3.3 Symbol.prototype.toString ( ), https://tc39.es/ecma262/#sec-symbol.prototype.tostring
 JS_DEFINE_NATIVE_FUNCTION(SymbolPrototype::to_string)
 {
-    auto* this_object = typed_this(vm, global_object);
-    if (!this_object)
+    auto symbol_value = this_symbol_value(global_object, vm.this_value(global_object));
+    if (vm.exception())
         return {};
-    auto string = this_object->primitive_symbol().to_string();
-    return js_string(vm, move(string));
+    return js_string(vm, symbol_value.as_symbol().to_string());
 }
 
+// 20.4.3.4 Symbol.prototype.valueOf ( ), https://tc39.es/ecma262/#sec-symbol.prototype.valueof
 JS_DEFINE_NATIVE_FUNCTION(SymbolPrototype::value_of)
 {
-    auto* this_object = typed_this(vm, global_object);
-    if (!this_object)
-        return {};
-    return this_object->value_of();
+    return this_symbol_value(global_object, vm.this_value(global_object));
 }
+
+// 20.4.3.5 Symbol.prototype [ @@toPrimitive ] ( hint ), https://tc39.es/ecma262/#sec-symbol.prototype-@@toprimitive
+JS_DEFINE_NATIVE_FUNCTION(SymbolPrototype::symbol_to_primitive)
+{
+    // The hint argument is ignored.
+    return this_symbol_value(global_object, vm.this_value(global_object));
+}
+
 }

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Hüseyin Aslıtürk <asliturk@hotmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "CharacterMapFile.h"
@@ -31,28 +11,30 @@
 
 namespace Keyboard {
 
-Optional<CharacterMapData> CharacterMapFile::load_from_file(const String& file_name)
+Optional<CharacterMapData> CharacterMapFile::load_from_file(const String& filename)
 {
-    auto path = file_name;
+    auto path = filename;
     if (!path.ends_with(".json")) {
         StringBuilder full_path;
         full_path.append("/res/keymaps/");
-        full_path.append(file_name);
+        full_path.append(filename);
         full_path.append(".json");
         path = full_path.to_string();
     }
 
     auto file = Core::File::construct(path);
-    file->open(Core::IODevice::ReadOnly);
+    file->open(Core::OpenMode::ReadOnly);
     if (!file->is_open()) {
-        dbgln("Failed to open {}: {}", file_name, file->error_string());
+        dbgln("Failed to open {}: {}", path, file->error_string());
         return {};
     }
 
     auto file_contents = file->read_all();
     auto json_result = JsonValue::from_string(file_contents);
-    if (!json_result.has_value())
+    if (!json_result.has_value()) {
+        dbgln("Failed to load character map from file {}", path);
         return {};
+    }
     auto json = json_result.value().as_object();
 
     Vector<u32> map = read_map(json, "map");
@@ -92,7 +74,7 @@ Vector<u32> CharacterMapFile::read_map(const JsonObject& json, const String& nam
     buffer.resize(CHAR_MAP_SIZE);
 
     auto map_arr = json.get(name).as_array();
-    for (int i = 0; i < map_arr.size(); i++) {
+    for (size_t i = 0; i < map_arr.size(); i++) {
         auto key_value = map_arr.at(i).as_string();
         if (key_value.length() == 0) {
             buffer[i] = 0;

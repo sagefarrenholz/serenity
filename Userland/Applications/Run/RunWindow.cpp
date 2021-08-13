@@ -1,33 +1,12 @@
 /*
  * Copyright (c) 2021, Nick Vella <nick@nxk.io>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "RunWindow.h"
 #include <AK/LexicalPath.h>
 #include <AK/URL.h>
-#include <AK/URLParser.h>
 #include <Applications/Run/RunGML.h>
 #include <LibCore/File.h>
 #include <LibCore/StandardPaths.h>
@@ -39,7 +18,6 @@
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Widget.h>
-#include <serenity.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/wait.h>
@@ -55,7 +33,7 @@ RunWindow::RunWindow()
 
     set_title("Run");
     set_icon(app_icon.bitmap_for_size(16));
-    resize(345, 140);
+    resize(345, 100);
     set_resizable(false);
     set_minimizable(false);
 
@@ -84,7 +62,7 @@ RunWindow::RunWindow()
 
     m_browse_button = *find_descendant_of_type_named<GUI::Button>("browse_button");
     m_browse_button->on_click = [this](auto) {
-        Optional<String> path = GUI::FilePicker::get_open_filepath(this);
+        Optional<String> path = GUI::FilePicker::get_open_filepath(this, {}, Core::StandardPaths::home_directory(), false, GUI::Dialog::ScreenPosition::Center);
         if (path.has_value())
             m_path_combo_box->set_text(path.value().view());
     };
@@ -192,7 +170,7 @@ String RunWindow::history_file_path()
 void RunWindow::load_history()
 {
     m_path_history.clear();
-    auto file_or_error = Core::File::open(history_file_path(), Core::IODevice::ReadOnly);
+    auto file_or_error = Core::File::open(history_file_path(), Core::OpenMode::ReadOnly);
     if (file_or_error.is_error())
         return;
 
@@ -206,7 +184,7 @@ void RunWindow::load_history()
 
 void RunWindow::save_history()
 {
-    auto file_or_error = Core::File::open(history_file_path(), Core::IODevice::WriteOnly);
+    auto file_or_error = Core::File::open(history_file_path(), Core::OpenMode::WriteOnly);
     if (file_or_error.is_error())
         return;
 

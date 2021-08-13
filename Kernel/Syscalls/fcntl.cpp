@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <Kernel/Debug.h>
@@ -30,11 +10,12 @@
 
 namespace Kernel {
 
-KResultOr<int> Process::sys$fcntl(int fd, int cmd, u32 arg)
+KResultOr<FlatPtr> Process::sys$fcntl(int fd, int cmd, u32 arg)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     REQUIRE_PROMISE(stdio);
     dbgln_if(IO_DEBUG, "sys$fcntl: fd={}, cmd={}, arg={}", fd, cmd, arg);
-    auto description = file_description(fd);
+    auto description = fds().file_description(fd);
     if (!description)
         return EBADF;
     // NOTE: The FD flags are not shared between FileDescription objects.
@@ -44,11 +25,12 @@ KResultOr<int> Process::sys$fcntl(int fd, int cmd, u32 arg)
         int arg_fd = (int)arg;
         if (arg_fd < 0)
             return EINVAL;
-        int new_fd = alloc_fd(arg_fd);
-        if (new_fd < 0)
-            return new_fd;
-        m_fds[new_fd].set(*description);
-        return new_fd;
+        auto new_fd_or_error = fds().allocate(arg_fd);
+        if (new_fd_or_error.is_error())
+            return new_fd_or_error.error();
+        auto new_fd = new_fd_or_error.release_value();
+        m_fds[new_fd.fd].set(*description);
+        return new_fd.fd;
     }
     case F_GETFD:
         return m_fds[fd].flags();
@@ -62,6 +44,10 @@ KResultOr<int> Process::sys$fcntl(int fd, int cmd, u32 arg)
         break;
     case F_ISTTY:
         return description->is_tty();
+    case F_GETLK:
+        return description->get_flock(Userspace<flock*>(arg));
+    case F_SETLK:
+        return description->apply_flock(*Process::current(), Userspace<const flock*>(arg));
     default:
         return EINVAL;
     }

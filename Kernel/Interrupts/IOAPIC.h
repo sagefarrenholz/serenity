@@ -1,33 +1,13 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <Kernel/Interrupts/IRQController.h>
-#include <Kernel/VM/TypedMapping.h>
+#include <Kernel/Memory/TypedMapping.h>
 
 namespace Kernel {
 struct [[gnu::packed]] ioapic_mmio_regs {
@@ -70,8 +50,8 @@ public:
     virtual u16 get_isr() const override;
     virtual u16 get_irr() const override;
     virtual u32 gsi_base() const override { return m_gsi_base; }
-    virtual size_t interrupt_vectors_count() const { return m_redirection_entries_count; }
-    virtual const char* model() const override { return "IOAPIC"; };
+    virtual size_t interrupt_vectors_count() const override { return m_redirection_entries_count; }
+    virtual StringView model() const override { return "IOAPIC"sv; };
     virtual IRQControllerType type() const override { return IRQControllerType::i82093AA; }
 
 private:
@@ -98,7 +78,7 @@ private:
     void isa_identity_map(int index);
 
     PhysicalAddress m_address;
-    mutable TypedMapping<ioapic_mmio_regs> m_regs;
+    mutable Memory::TypedMapping<ioapic_mmio_regs> m_regs;
     u32 m_gsi_base;
     u8 m_id;
     u8 m_version;

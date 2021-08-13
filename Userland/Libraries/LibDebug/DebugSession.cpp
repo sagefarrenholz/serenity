@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "DebugSession.h"
@@ -29,9 +9,11 @@
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
 #include <AK/Optional.h>
+#include <AK/Platform.h>
 #include <LibCore/File.h>
 #include <LibRegex/Regex.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 
 namespace Debug {
 
@@ -52,12 +34,17 @@ DebugSession::~DebugSession()
     }
     m_breakpoints.clear();
 
+    for (const auto& wp : m_watchpoints) {
+        disable_watchpoint(wp.key);
+    }
+    m_watchpoints.clear();
+
     if (ptrace(PT_DETACH, m_debuggee_pid, 0, 0) < 0) {
         perror("PT_DETACH");
     }
 }
 
-OwnPtr<DebugSession> DebugSession::exec_and_attach(const String& command, String source_root)
+OwnPtr<DebugSession> DebugSession::exec_and_attach(String const& command, String source_root)
 {
     auto pid = fork();
 
@@ -141,6 +128,24 @@ Optional<u32> DebugSession::peek(u32* address) const
     return result;
 }
 
+bool DebugSession::poke_debug(u32 register_index, u32 data)
+{
+    if (ptrace(PT_POKEDEBUG, m_debuggee_pid, reinterpret_cast<u32*>(register_index), data) < 0) {
+        perror("PT_POKEDEBUG");
+        return false;
+    }
+    return true;
+}
+
+Optional<u32> DebugSession::peek_debug(u32 register_index) const
+{
+    Optional<u32> result;
+    int rc = ptrace(PT_PEEKDEBUG, m_debuggee_pid, reinterpret_cast<u32*>(register_index), 0);
+    if (errno == 0)
+        result = static_cast<u32>(rc);
+    return result;
+}
+
 bool DebugSession::insert_breakpoint(void* address)
 {
     // We insert a software breakpoint by
@@ -209,6 +214,68 @@ bool DebugSession::breakpoint_exists(void* address) const
     return m_breakpoints.contains(address);
 }
 
+bool DebugSession::insert_watchpoint(void* address, u32 ebp)
+{
+    auto current_register_status = peek_debug(DEBUG_CONTROL_REGISTER);
+    if (!current_register_status.has_value())
+        return false;
+    u32 dr7_value = current_register_status.value();
+    u32 next_available_index;
+    for (next_available_index = 0; next_available_index < 4; next_available_index++) {
+        auto bitmask = 1 << (next_available_index * 2);
+        if ((dr7_value & bitmask) == 0)
+            break;
+    }
+    if (next_available_index > 3)
+        return false;
+    WatchPoint watchpoint { address, next_available_index, ebp };
+
+    if (!poke_debug(next_available_index, reinterpret_cast<uintptr_t>(address)))
+        return false;
+
+    dr7_value |= (1u << (next_available_index * 2)); // Enable local breakpoint for our index
+    auto condition_shift = 16 + (next_available_index * 4);
+    dr7_value &= ~(0b11u << condition_shift);
+    dr7_value |= 1u << condition_shift; // Trigger on writes
+    auto length_shift = 18 + (next_available_index * 4);
+    dr7_value &= ~(0b11u << length_shift);
+    // FIXME: take variable size into account?
+    dr7_value |= 0b11u << length_shift; // 4 bytes wide
+    if (!poke_debug(DEBUG_CONTROL_REGISTER, dr7_value))
+        return false;
+
+    m_watchpoints.set(address, watchpoint);
+    return true;
+}
+
+bool DebugSession::remove_watchpoint(void* address)
+{
+    if (!disable_watchpoint(address))
+        return false;
+    return m_watchpoints.remove(address);
+}
+
+bool DebugSession::disable_watchpoint(void* address)
+{
+    VERIFY(watchpoint_exists(address));
+    auto watchpoint = m_watchpoints.get(address).value();
+    if (!poke_debug(watchpoint.debug_register_index, 0))
+        return false;
+    auto current_register_status = peek_debug(DEBUG_CONTROL_REGISTER);
+    if (!current_register_status.has_value())
+        return false;
+    u32 dr7_value = current_register_status.value();
+    dr7_value &= ~(1u << watchpoint.debug_register_index * 2);
+    if (!poke_debug(watchpoint.debug_register_index, dr7_value))
+        return false;
+    return true;
+}
+
+bool DebugSession::watchpoint_exists(void* address) const
+{
+    return m_watchpoints.contains(address);
+}
+
 PtraceRegisters DebugSession::get_registers() const
 {
     PtraceRegisters regs;
@@ -219,7 +286,7 @@ PtraceRegisters DebugSession::get_registers() const
     return regs;
 }
 
-void DebugSession::set_registers(const PtraceRegisters& regs)
+void DebugSession::set_registers(PtraceRegisters const& regs)
 {
     if (ptrace(PT_SETREGS, m_debuggee_pid, reinterpret_cast<void*>(&const_cast<PtraceRegisters&>(regs)), 0) < 0) {
         perror("PT_SETREGS");
@@ -257,7 +324,11 @@ void* DebugSession::single_step()
 
     auto regs = get_registers();
     constexpr u32 TRAP_FLAG = 0x100;
+#if ARCH(I386)
     regs.eflags |= TRAP_FLAG;
+#else
+    regs.rflags |= TRAP_FLAG;
+#endif
     set_registers(regs);
 
     continue_debuggee();
@@ -268,9 +339,13 @@ void* DebugSession::single_step()
     }
 
     regs = get_registers();
+#if ARCH(I386)
     regs.eflags &= ~(TRAP_FLAG);
+#else
+    regs.rflags &= ~(TRAP_FLAG);
+#endif
     set_registers(regs);
-    return (void*)regs.eip;
+    return (void*)regs.ip();
 }
 
 void DebugSession::detach()
@@ -278,10 +353,12 @@ void DebugSession::detach()
     for (auto& breakpoint : m_breakpoints.keys()) {
         remove_breakpoint(breakpoint);
     }
+    for (auto& watchpoint : m_watchpoints.keys())
+        remove_watchpoint(watchpoint);
     continue_debuggee();
 }
 
-Optional<DebugSession::InsertBreakpointAtSymbolResult> DebugSession::insert_breakpoint(const String& symbol_name)
+Optional<DebugSession::InsertBreakpointAtSymbolResult> DebugSession::insert_breakpoint(String const& symbol_name)
 {
     Optional<InsertBreakpointAtSymbolResult> result;
     for_each_loaded_library([this, symbol_name, &result](auto& lib) {
@@ -304,9 +381,9 @@ Optional<DebugSession::InsertBreakpointAtSymbolResult> DebugSession::insert_brea
     return result;
 }
 
-Optional<DebugSession::InsertBreakpointAtSourcePositionResult> DebugSession::insert_breakpoint(const String& file_name, size_t line_number)
+Optional<DebugSession::InsertBreakpointAtSourcePositionResult> DebugSession::insert_breakpoint(String const& filename, size_t line_number)
 {
-    auto address_and_source_position = get_address_from_source_position(file_name, line_number);
+    auto address_and_source_position = get_address_from_source_position(filename, line_number);
     if (!address_and_source_position.has_value())
         return {};
 
@@ -323,8 +400,8 @@ Optional<DebugSession::InsertBreakpointAtSourcePositionResult> DebugSession::ins
 
 void DebugSession::update_loaded_libs()
 {
-    auto file = Core::File::construct(String::format("/proc/%u/vm", m_debuggee_pid));
-    bool rc = file->open(Core::IODevice::ReadOnly);
+    auto file = Core::File::construct(String::formatted("/proc/{}/vm", m_debuggee_pid));
+    bool rc = file->open(Core::OpenMode::ReadOnly);
     VERIFY(rc);
 
     auto file_contents = file->read_all();
@@ -334,17 +411,17 @@ void DebugSession::update_loaded_libs()
     auto vm_entries = json.value().as_array();
     Regex<PosixExtended> re("(.+): \\.text");
 
-    auto get_path_to_object = [&re](const String& vm_name) -> Optional<String> {
+    auto get_path_to_object = [&re](String const& vm_name) -> Optional<String> {
         if (vm_name == "/usr/lib/Loader.so")
             return vm_name;
         RegexResult result;
         auto rc = re.search(vm_name, result);
         if (!rc)
             return {};
-        auto lib_name = result.capture_group_matches.at(0).at(0).view.u8view().to_string();
+        auto lib_name = result.capture_group_matches.at(0).at(0).view.string_view().to_string();
         if (lib_name.starts_with("/"))
             return lib_name;
-        return String::format("/usr/lib/%s", lib_name.characters());
+        return String::formatted("/usr/lib/{}", lib_name);
     };
 
     vm_entries.for_each([&](auto& entry) {
@@ -357,7 +434,7 @@ void DebugSession::update_loaded_libs()
 
         String lib_name = object_path.value();
         if (lib_name.ends_with(".so"))
-            lib_name = LexicalPath(object_path.value()).basename();
+            lib_name = LexicalPath::basename(object_path.value());
 
         // FIXME: DebugInfo currently cannot parse the debug information of libgcc_s.so
         if (lib_name == "libgcc_s.so")
@@ -370,9 +447,10 @@ void DebugSession::update_loaded_libs()
         if (file_or_error.is_error())
             return IterationDecision::Continue;
 
-        FlatPtr base_address = entry.as_object().get("address").as_u32();
-        auto debug_info = make<DebugInfo>(make<ELF::Image>(file_or_error.value()->bytes()), m_source_root, base_address);
-        auto lib = make<LoadedLibrary>(lib_name, file_or_error.release_value(), move(debug_info), base_address);
+        FlatPtr base_address = entry.as_object().get("address").to_addr();
+        auto image = make<ELF::Image>(file_or_error.value()->bytes());
+        auto debug_info = make<DebugInfo>(*image, m_source_root, base_address);
+        auto lib = make<LoadedLibrary>(lib_name, file_or_error.release_value(), move(image), move(debug_info), base_address);
         m_loaded_libraries.set(lib_name, move(lib));
 
         return IterationDecision::Continue;
@@ -402,10 +480,10 @@ Optional<DebugSession::SymbolicationResult> DebugSession::symbolicate(FlatPtr ad
     return { { lib->name, symbol } };
 }
 
-Optional<DebugInfo::SourcePositionAndAddress> DebugSession::get_address_from_source_position(const String& file, size_t line) const
+Optional<DebugInfo::SourcePositionAndAddress> DebugSession::get_address_from_source_position(String const& file, size_t line) const
 {
     Optional<DebugInfo::SourcePositionAndAddress> result;
-    for_each_loaded_library([this, file, line, &result](auto& lib) {
+    for_each_loaded_library([file, line, &result](auto& lib) {
         // The loader contains its own definitions for LibC symbols, so we don't want to include it in the search.
         if (lib.name == "Loader.so")
             return IterationDecision::Continue;

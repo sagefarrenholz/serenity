@@ -1,33 +1,14 @@
 /*
- * Copyright (c) 2021, the SerenityOS developers
- * All rights reserved.
+ * Copyright (c) 2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/MACAddress.h>
 #include <Kernel/Debug.h>
 #include <Kernel/IO.h>
 #include <Kernel/Net/NE2000NetworkAdapter.h>
+#include <Kernel/Sections.h>
 
 namespace Kernel {
 
@@ -135,7 +116,7 @@ static constexpr int NE2K_RAM_END = 32768;
 static constexpr int NE2K_RAM_SIZE = NE2K_RAM_END - NE2K_RAM_BEGIN;
 
 static constexpr int NE2K_RAM_SEND_BEGIN = 16384;
-static constexpr int NE2K_RAM_SEND_END = 16384 + 6 * 256;
+static constexpr int NE2K_RAM_SEND_END = 16384 + 6 * NE2K_PAGE_SIZE;
 static constexpr int NE2K_RAM_SEND_SIZE = NE2K_RAM_SEND_END - NE2K_RAM_SEND_BEGIN;
 
 static constexpr int NE2K_RAM_RECV_BEGIN = NE2K_RAM_SEND_END;
@@ -155,9 +136,9 @@ struct [[gnu::packed]] received_packet_header {
     u16 length;
 };
 
-UNMAP_AFTER_INIT void NE2000NetworkAdapter::detect()
+UNMAP_AFTER_INIT RefPtr<NE2000NetworkAdapter> NE2000NetworkAdapter::try_to_initialize(PCI::Address address)
 {
-    static const auto ne2k_ids = Array<PCI::ID, 11> {
+    constexpr auto ne2k_ids = Array {
         PCI::ID { 0x10EC, 0x8029 }, // RealTek RTL-8029(AS)
 
         // List of clones, taken from Linux's ne2k-pci.c
@@ -172,21 +153,18 @@ UNMAP_AFTER_INIT void NE2000NetworkAdapter::detect()
         PCI::ID { 0x12c3, 0x5598 }, // Holtek HT80229
         PCI::ID { 0x8c4a, 0x1980 }, // Winbond W89C940 (misprogrammed)
     };
-    PCI::enumerate([&](const PCI::Address& address, PCI::ID id) {
-        if (address.is_null())
-            return;
-        if (!ne2k_ids.span().contains_slow(id))
-            return;
-        u8 irq = PCI::get_interrupt_line(address);
-        [[maybe_unused]] auto& unused = adopt(*new NE2000NetworkAdapter(address, irq)).leak_ref();
-    });
+    auto id = PCI::get_id(address);
+    if (!ne2k_ids.span().contains_slow(id))
+        return {};
+    u8 irq = PCI::get_interrupt_line(address);
+    return adopt_ref_if_nonnull(new (nothrow) NE2000NetworkAdapter(address, irq));
 }
 
 UNMAP_AFTER_INIT NE2000NetworkAdapter::NE2000NetworkAdapter(PCI::Address address, u8 irq)
     : PCI::Device(address, irq)
     , m_io_base(PCI::get_BAR0(pci_address()) & ~3)
 {
-    set_interface_name("ne2k");
+    set_interface_name(address);
 
     dmesgln("NE2000: Found @ {}", pci_address());
 
@@ -195,7 +173,7 @@ UNMAP_AFTER_INIT NE2000NetworkAdapter::NE2000NetworkAdapter(PCI::Address address
     dmesgln("NE2000: Interrupt line: {}", m_interrupt_line);
 
     int ram_errors = ram_test();
-    dmesgln("NE2000: RAM test {}, got {} byte errors", (ram_errors > 0 ? "OK" : "KO"), ram_errors);
+    dmesgln("NE2000: RAM test {}, got {} byte errors", (ram_errors == 0 ? "OK" : "KO"), ram_errors);
 
     reset();
     set_mac_address(m_mac_address);
@@ -207,10 +185,16 @@ UNMAP_AFTER_INIT NE2000NetworkAdapter::~NE2000NetworkAdapter()
 {
 }
 
-void NE2000NetworkAdapter::handle_irq(const RegisterState&)
+bool NE2000NetworkAdapter::handle_irq(const RegisterState&)
 {
     u8 status = in8(REG_RW_INTERRUPTSTATUS);
-    dbgln_if(NE2000_DEBUG, "NE2000NetworkAdapter: Got interrupt, status=0x{}", String::format("%02x", status));
+
+    m_entropy_source.add_random_event(status);
+
+    dbgln_if(NE2000_DEBUG, "NE2000NetworkAdapter: Got interrupt, status={:#02x}", status);
+    if (status == 0) {
+        return false;
+    }
 
     if (status & BIT_INTERRUPTMASK_PRX) {
         dbgln_if(NE2000_DEBUG, "NE2000NetworkAdapter: Interrupt for packet received");
@@ -246,9 +230,10 @@ void NE2000NetworkAdapter::handle_irq(const RegisterState&)
     m_wait_queue.wake_all();
 
     out8(REG_RW_INTERRUPTSTATUS, status);
+    return true;
 }
 
-int NE2000NetworkAdapter::ram_test()
+UNMAP_AFTER_INIT int NE2000NetworkAdapter::ram_test()
 {
     IOAddress io(PCI::get_BAR0(pci_address()) & ~3);
     int errors = 0;
@@ -426,7 +411,7 @@ void NE2000NetworkAdapter::receive()
         dbgln_if(NE2000_DEBUG, "NE2000NetworkAdapter: Packet received {} length={}", (packet_ok ? "intact" : "damaged"), header.length);
 
         if (packet_ok) {
-            auto packet = ByteBuffer::create_uninitialized(sizeof(received_packet_header) + header.length);
+            auto packet = NetworkByteBuffer::create_uninitialized(sizeof(received_packet_header) + header.length);
             int bytes_left = packet.size();
             int current_offset = 0;
             int ring_offset = header_address;
@@ -444,7 +429,7 @@ void NE2000NetworkAdapter::receive()
             did_receive(packet.span().slice(sizeof(received_packet_header)));
         }
 
-        if (header.next_packet_page == NE2K_RAM_RECV_BEGIN)
+        if (header.next_packet_page == (NE2K_RAM_RECV_BEGIN >> 8))
             out8(REG_RW_BOUNDARY, (NE2K_RAM_RECV_END >> 8) - 1);
         else
             out8(REG_RW_BOUNDARY, header.next_packet_page - 1);

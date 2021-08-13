@@ -1,66 +1,65 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/NonnullRefPtrVector.h>
+#include <Kernel/Memory/AnonymousVMObject.h>
+#include <Kernel/Memory/InodeVMObject.h>
+#include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Process.h>
-#include <Kernel/VM/AnonymousVMObject.h>
-#include <Kernel/VM/InodeVMObject.h>
-#include <Kernel/VM/MemoryManager.h>
 
 namespace Kernel {
 
-KResultOr<int> Process::sys$purge(int mode)
+KResultOr<FlatPtr> Process::sys$purge(int mode)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_NO_PROMISES;
     if (!is_superuser())
         return EPERM;
-    int purged_page_count = 0;
+    size_t purged_page_count = 0;
     if (mode & PURGE_ALL_VOLATILE) {
-        NonnullRefPtrVector<AnonymousVMObject> vmobjects;
+        NonnullRefPtrVector<Memory::AnonymousVMObject> vmobjects;
         {
-            InterruptDisabler disabler;
+            KResult result(KSuccess);
             MM.for_each_vmobject([&](auto& vmobject) {
-                if (vmobject.is_anonymous())
-                    vmobjects.append(vmobject);
+                if (vmobject.is_anonymous()) {
+                    // In the event that the append fails, only attempt to continue
+                    // the purge if we have already appended something successfully.
+                    if (!vmobjects.try_append(vmobject) && vmobjects.is_empty()) {
+                        result = ENOMEM;
+                        return IterationDecision::Break;
+                    }
+                }
                 return IterationDecision::Continue;
             });
+
+            if (result.is_error())
+                return result.error();
         }
         for (auto& vmobject : vmobjects) {
             purged_page_count += vmobject.purge();
         }
     }
     if (mode & PURGE_ALL_CLEAN_INODE) {
-        NonnullRefPtrVector<InodeVMObject> vmobjects;
+        NonnullRefPtrVector<Memory::InodeVMObject> vmobjects;
         {
-            InterruptDisabler disabler;
+            KResult result(KSuccess);
             MM.for_each_vmobject([&](auto& vmobject) {
-                if (vmobject.is_inode())
-                    vmobjects.append(static_cast<InodeVMObject&>(vmobject));
+                if (vmobject.is_inode()) {
+                    // In the event that the append fails, only attempt to continue
+                    // the purge if we have already appended something successfully.
+                    if (!vmobjects.try_append(static_cast<Memory::InodeVMObject&>(vmobject)) && vmobjects.is_empty()) {
+                        result = ENOMEM;
+                        return IterationDecision::Break;
+                    }
+                }
                 return IterationDecision::Continue;
             });
+
+            if (result.is_error())
+                return result.error();
         }
         for (auto& vmobject : vmobjects) {
             purged_page_count += vmobject.release_all_clean_pages();

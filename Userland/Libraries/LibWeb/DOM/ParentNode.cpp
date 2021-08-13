@@ -1,30 +1,10 @@
 /*
- * Copyright (c) 2020, Luke Wilde <luke.wilde@live.co.uk>
- * All rights reserved.
+ * Copyright (c) 2020, Luke Wilde <lukew@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/CSS/Parser/DeprecatedCSSParser.h>
+#include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/SelectorEngine.h>
 #include <LibWeb/DOM/ParentNode.h>
 #include <LibWeb/Dump.h>
@@ -33,17 +13,22 @@ namespace Web::DOM {
 
 RefPtr<Element> ParentNode::query_selector(const StringView& selector_text)
 {
-    auto selector = parse_selector(CSS::ParsingContext(*this), selector_text);
-    if (!selector.has_value())
+    auto maybe_selectors = parse_selector(CSS::ParsingContext(*this), selector_text);
+    if (!maybe_selectors.has_value())
         return {};
 
-    dump_selector(selector.value());
+    auto selectors = maybe_selectors.value();
+
+    for (auto& selector : selectors)
+        dump_selector(selector);
 
     RefPtr<Element> result;
-    for_each_in_subtree_of_type<Element>([&](auto& element) {
-        if (SelectorEngine::matches(selector.value(), element)) {
-            result = element;
-            return IterationDecision::Break;
+    for_each_in_inclusive_subtree_of_type<Element>([&](auto& element) {
+        for (auto& selector : selectors) {
+            if (SelectorEngine::matches(selector, element)) {
+                result = element;
+                return IterationDecision::Break;
+            }
         }
         return IterationDecision::Continue;
     });
@@ -53,16 +38,21 @@ RefPtr<Element> ParentNode::query_selector(const StringView& selector_text)
 
 NonnullRefPtrVector<Element> ParentNode::query_selector_all(const StringView& selector_text)
 {
-    auto selector = parse_selector(CSS::ParsingContext(*this), selector_text);
-    if (!selector.has_value())
+    auto maybe_selectors = parse_selector(CSS::ParsingContext(*this), selector_text);
+    if (!maybe_selectors.has_value())
         return {};
 
-    dump_selector(selector.value());
+    auto selectors = maybe_selectors.value();
+
+    for (auto& selector : selectors)
+        dump_selector(selector);
 
     NonnullRefPtrVector<Element> elements;
-    for_each_in_subtree_of_type<Element>([&](auto& element) {
-        if (SelectorEngine::matches(selector.value(), element)) {
-            elements.append(element);
+    for_each_in_inclusive_subtree_of_type<Element>([&](auto& element) {
+        for (auto& selector : selectors) {
+            if (SelectorEngine::matches(selector, element)) {
+                elements.append(element);
+            }
         }
         return IterationDecision::Continue;
     });
@@ -78,6 +68,17 @@ RefPtr<Element> ParentNode::first_element_child()
 RefPtr<Element> ParentNode::last_element_child()
 {
     return last_child_of_type<Element>();
+}
+
+// https://dom.spec.whatwg.org/#dom-parentnode-childelementcount
+u32 ParentNode::child_element_count() const
+{
+    u32 count = 0;
+    for (auto* child = first_child(); child; child = child->next_sibling()) {
+        if (is<Element>(child))
+            ++count;
+    }
+    return count;
 }
 
 }

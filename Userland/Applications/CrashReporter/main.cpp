@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020-2021, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/LexicalPath.h>
@@ -30,6 +10,7 @@
 #include <AK/URL.h>
 #include <Applications/CrashReporter/CrashReporterWindowGML.h>
 #include <LibCore/ArgsParser.h>
+#include <LibCore/File.h>
 #include <LibCoreDump/Backtrace.h>
 #include <LibCoreDump/Reader.h>
 #include <LibDesktop/AppFile.h>
@@ -58,11 +39,12 @@ struct TitleAndText {
 static TitleAndText build_backtrace(const CoreDump::Reader& coredump, const ELF::Core::ThreadInfo& thread_info, size_t thread_index)
 {
     CoreDump::Backtrace backtrace(coredump, thread_info);
+    auto metadata = coredump.metadata();
 
     StringBuilder builder;
 
     auto prepend_metadata = [&](auto& key, StringView fmt) {
-        auto maybe_value = coredump.metadata().get(key);
+        auto maybe_value = metadata.get(key);
         if (!maybe_value.has_value() || maybe_value.value().is_empty())
             return;
         builder.appendff(fmt, maybe_value.value());
@@ -70,12 +52,17 @@ static TitleAndText build_backtrace(const CoreDump::Reader& coredump, const ELF:
         builder.append('\n');
     };
 
-    auto& backtrace_entries = backtrace.entries();
-
-    if (coredump.metadata().contains("assertion"))
+    if (metadata.contains("assertion"))
         prepend_metadata("assertion", "ASSERTION FAILED: {}");
-    else if (coredump.metadata().contains("pledge_violation"))
+    else if (metadata.contains("pledge_violation"))
         prepend_metadata("pledge_violation", "Has not pledged {}");
+
+    auto fault_address = metadata.get("fault_address");
+    auto fault_type = metadata.get("fault_type");
+    auto fault_access = metadata.get("fault_access");
+    if (fault_address.has_value() && fault_type.has_value() && fault_access.has_value()) {
+        builder.appendff("{} fault on {} at address {}\n\n", fault_type.value(), fault_access.value(), fault_address.value());
+    }
 
     auto first_entry = true;
     for (auto& entry : backtrace.entries()) {
@@ -98,11 +85,17 @@ static TitleAndText build_cpu_registers(const ELF::Core::ThreadInfo& thread_info
 
     StringBuilder builder;
 
-    builder.appendff("eax={:08x} ebx={:08x} ecx={:08x} edx={:08x}", regs.eax, regs.ebx, regs.ecx, regs.edx);
-    builder.append('\n');
-    builder.appendff("ebp={:08x} esp={:08x} esi={:08x} edi={:08x}", regs.ebp, regs.esp, regs.esi, regs.edi);
-    builder.append('\n');
-    builder.appendff("eip={:08x} eflags={:08x}", regs.eip, regs.eflags);
+#if ARCH(I386)
+    builder.appendff("eax={:p} ebx={:p} ecx={:p} edx={:p}\n", regs.eax, regs.ebx, regs.ecx, regs.edx);
+    builder.appendff("ebp={:p} esp={:p} esi={:p} edi={:p}\n", regs.ebp, regs.esp, regs.esi, regs.edi);
+    builder.appendff("eip={:p} eflags={:p}", regs.eip, regs.eflags);
+#else
+    builder.appendff("rax={:p} rbx={:p} rcx={:p} rdx={:p}\n", regs.rax, regs.rbx, regs.rcx, regs.rdx);
+    builder.appendff("rbp={:p} rsp={:p} rsi={:p} rdi={:p}\n", regs.rbp, regs.rsp, regs.rsi, regs.rdi);
+    builder.appendff(" r8={:p}  r9={:p} r10={:p} r11={:p}\n", regs.r8, regs.r9, regs.r10, regs.r11);
+    builder.appendff("r12={:p} r13={:p} r14={:p} r15={:p}\n", regs.r12, regs.r13, regs.r14, regs.r15);
+    builder.appendff("rip={:p} rflags={:p}", regs.rip, regs.rflags);
+#endif
 
     return {
         String::formatted("Thread #{} (TID {})", thread_index, thread_info.tid),
@@ -112,16 +105,18 @@ static TitleAndText build_cpu_registers(const ELF::Core::ThreadInfo& thread_info
 
 int main(int argc, char** argv)
 {
-    if (pledge("stdio recvfd sendfd accept cpath rpath unix fattr", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd cpath rpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     const char* coredump_path = nullptr;
+    bool unlink_after_use = false;
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Show information from an application crash coredump.");
     args_parser.add_positional_argument(coredump_path, "Coredump path", "coredump-path");
+    args_parser.add_option(unlink_after_use, "Delete the coredump after its parsed", "unlink", 0);
     args_parser.parse(argc, argv);
 
     Vector<TitleAndText> thread_backtraces;
@@ -155,9 +150,14 @@ int main(int argc, char** argv)
         termination_signal = coredump->process_termination_signal();
     }
 
+    if (unlink_after_use) {
+        if (Core::File::remove(coredump_path, Core::File::RecursionMode::Disallowed, false).is_error())
+            dbgln("Failed deleting coredump file");
+    }
+
     auto app = GUI::Application::construct(argc, argv);
 
-    if (pledge("stdio recvfd sendfd accept rpath unix", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd rpath unix", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -196,7 +196,7 @@ int main(int argc, char** argv)
     auto& icon_image_widget = *widget.find_descendant_of_type_named<GUI::ImageWidget>("icon");
     icon_image_widget.set_bitmap(GUI::FileIconProvider::icon_for_executable(executable_path).bitmap_for_size(32));
 
-    auto app_name = LexicalPath(executable_path).basename();
+    auto app_name = LexicalPath::basename(executable_path);
     auto af = Desktop::AppFile::get_for_app(app_name);
     if (af->is_valid())
         app_name = af->name();

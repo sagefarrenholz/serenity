@@ -1,31 +1,12 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/Optional.h>
 #include <LibCore/ConfigFile.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/MessageBox.h>
@@ -95,16 +76,26 @@ private:
         }
     };
 
+    constexpr static int score_margin = 5;
+
     Gfx::IntRect player_1_score_rect() const
     {
         int score_width = font().width(String::formatted("{}", m_player_1_score));
-        return { (game_width / 2) + score_width + 2, 2, score_width, font().glyph_height() };
+        return { (game_width / 2) + score_margin, score_margin, score_width, font().glyph_height() };
     }
 
     Gfx::IntRect player_2_score_rect() const
     {
         int score_width = font().width(String::formatted("{}", m_player_2_score));
-        return { (game_width / 2) - score_width - 2, 2, score_width, font().glyph_height() };
+        return { (game_width / 2) - score_width - score_margin, score_margin, score_width, font().glyph_height() };
+    }
+
+    Gfx::IntRect cursor_paddle_target_rect() const
+    {
+        int radius = 3;
+        int center_x = m_player1_paddle.rect.center().x();
+        int center_y = *m_cursor_paddle_target_y + m_player1_paddle.rect.height() / 2;
+        return { center_x - radius, center_y - radius, 2 * radius, 2 * radius };
     }
 
     Net m_net;
@@ -115,6 +106,10 @@ private:
     int m_score_to_win = 21;
     int m_player_1_score = 0;
     int m_player_2_score = 0;
+
+    Optional<int> m_cursor_paddle_target_y;
+    bool m_up_key_held = false;
+    bool m_down_key_held = false;
 };
 
 }

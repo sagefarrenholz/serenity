@@ -1,33 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/CharacterTypes.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <LibCore/DateTime.h>
-#include <sys/time.h>
+#include <errno.h>
 #include <time.h>
 
 namespace Core {
@@ -104,7 +85,6 @@ void DateTime::set_time(unsigned year, unsigned month, unsigned day, unsigned ho
 
 String DateTime::to_string(const String& format) const
 {
-
     const char wday_short_names[7][4] = {
         "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
     };
@@ -146,34 +126,34 @@ String DateTime::to_string(const String& format) const
                 builder.append(mon_long_names[tm.tm_mon]);
                 break;
             case 'C':
-                builder.appendf("%02d", (tm.tm_year + 1900) / 100);
+                builder.appendff("{:02}", (tm.tm_year + 1900) / 100);
                 break;
             case 'd':
-                builder.appendf("%02d", tm.tm_mday);
+                builder.appendff("{:02}", tm.tm_mday);
                 break;
             case 'D':
-                builder.appendf("%02d/%02d/%02d", tm.tm_mon + 1, tm.tm_mday, (tm.tm_year + 1900) % 100);
+                builder.appendff("{:02}/{:02}/{:02}", tm.tm_mon + 1, tm.tm_mday, (tm.tm_year + 1900) % 100);
                 break;
             case 'e':
-                builder.appendf("%2d", tm.tm_mday);
+                builder.appendff("{:2}", tm.tm_mday);
                 break;
             case 'h':
                 builder.append(mon_short_names[tm.tm_mon]);
                 break;
             case 'H':
-                builder.appendf("%02d", tm.tm_hour);
+                builder.appendff("{:02}", tm.tm_hour);
                 break;
             case 'I':
-                builder.appendf("%02d", tm.tm_hour % 12);
+                builder.appendff("{:02}", tm.tm_hour % 12);
                 break;
             case 'j':
-                builder.appendf("%03d", tm.tm_yday + 1);
+                builder.appendff("{:03}", tm.tm_yday + 1);
                 break;
             case 'm':
-                builder.appendf("%02d", tm.tm_mon + 1);
+                builder.appendff("{:02}", tm.tm_mon + 1);
                 break;
             case 'M':
-                builder.appendf("%02d", tm.tm_min);
+                builder.appendff("{:02}", tm.tm_min);
                 break;
             case 'n':
                 builder.append('\n');
@@ -182,27 +162,27 @@ String DateTime::to_string(const String& format) const
                 builder.append(tm.tm_hour < 12 ? "a.m." : "p.m.");
                 break;
             case 'r':
-                builder.appendf("%02d:%02d:%02d %s", tm.tm_hour % 12, tm.tm_min, tm.tm_sec, tm.tm_hour < 12 ? "a.m." : "p.m.");
+                builder.appendff("{:02}:{:02}:{:02} {}", tm.tm_hour % 12, tm.tm_min, tm.tm_sec, tm.tm_hour < 12 ? "a.m." : "p.m.");
                 break;
             case 'R':
-                builder.appendf("%02d:%02d", tm.tm_hour, tm.tm_min);
+                builder.appendff("{:02}:{:02}", tm.tm_hour, tm.tm_min);
                 break;
             case 'S':
-                builder.appendf("%02d", tm.tm_sec);
+                builder.appendff("{:02}", tm.tm_sec);
                 break;
             case 't':
                 builder.append('\t');
                 break;
             case 'T':
-                builder.appendf("%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+                builder.appendff("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec);
                 break;
             case 'u':
-                builder.appendf("%d", tm.tm_wday ? tm.tm_wday : 7);
+                builder.appendff("{}", tm.tm_wday ? tm.tm_wday : 7);
                 break;
             case 'U': {
                 const int wday_of_year_beginning = (tm.tm_wday + 6 * tm.tm_yday) % 7;
                 const int week_number = (tm.tm_yday + wday_of_year_beginning) / 7;
-                builder.appendf("%02d", week_number);
+                builder.appendff("{:02}", week_number);
                 break;
             }
             case 'V': {
@@ -219,23 +199,23 @@ String DateTime::to_string(const String& format) const
                             --week_number;
                     }
                 }
-                builder.appendf("%02d", week_number);
+                builder.appendff("{:02}", week_number);
                 break;
             }
             case 'w':
-                builder.appendf("%d", tm.tm_wday);
+                builder.appendff("{}", tm.tm_wday);
                 break;
             case 'W': {
                 const int wday_of_year_beginning = (tm.tm_wday + 6 + 6 * tm.tm_yday) % 7;
                 const int week_number = (tm.tm_yday + wday_of_year_beginning) / 7;
-                builder.appendf("%02d", week_number);
+                builder.appendff("{:02}", week_number);
                 break;
             }
             case 'y':
-                builder.appendf("%02d", (tm.tm_year + 1900) % 100);
+                builder.appendff("{:02}", (tm.tm_year + 1900) % 100);
                 break;
             case 'Y':
-                builder.appendf("%d", tm.tm_year + 1900);
+                builder.appendff("{}", tm.tm_year + 1900);
                 break;
             case '%':
                 builder.append('%');
@@ -249,10 +229,283 @@ String DateTime::to_string(const String& format) const
     return builder.build();
 }
 
-bool DateTime::is_before(const String& other) const
+Optional<DateTime> DateTime::parse(const String& format, const String& string)
 {
-    auto now_string = String::formatted("{:04}{:02}{:02}{:02}{:02}{:02}Z", year(), month(), weekday(), hour(), minute(), second());
-    return __builtin_strcasecmp(now_string.characters(), other.characters()) < 0;
-}
+    unsigned format_pos = 0;
+    unsigned string_pos = 0;
+    struct tm tm = {};
 
+    const StringView wday_short_names[7] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+    };
+    const StringView wday_long_names[7] = {
+        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
+    };
+    const StringView mon_short_names[12] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    const StringView mon_long_names[12] = {
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    };
+
+    auto parsing_failed = false;
+
+    auto parse_number = [&] {
+        if (string_pos >= string.length()) {
+            parsing_failed = true;
+            return 0;
+        }
+
+        char* end_ptr = nullptr;
+        errno = 0;
+        int number = strtol(string.characters() + string_pos, &end_ptr, 10);
+
+        auto chars_parsed = end_ptr - (string.characters() + string_pos);
+        if (chars_parsed == 0 || errno != 0)
+            parsing_failed = true;
+        else
+            string_pos += chars_parsed;
+        return number;
+    };
+
+    auto consume = [&](char x) {
+        if (string_pos >= string.length()) {
+            parsing_failed = true;
+            return;
+        }
+        if (string[string_pos] != x)
+            parsing_failed = true;
+        else
+            string_pos++;
+    };
+
+    while (format_pos < format.length() && string_pos < string.length()) {
+        if (format[format_pos] != '%') {
+            if (format[format_pos] != string[string_pos]) {
+                return {};
+            }
+            format_pos++;
+            string_pos++;
+            continue;
+        }
+
+        format_pos++;
+        if (format_pos == format.length()) {
+            return {};
+        }
+        switch (format[format_pos]) {
+        case 'a': {
+            auto wday = 0;
+            for (auto name : wday_short_names) {
+                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
+                    string_pos += name.length();
+                    tm.tm_wday = wday;
+                    break;
+                }
+                ++wday;
+            }
+            if (wday == 7)
+                return {};
+            break;
+        }
+        case 'A': {
+            auto wday = 0;
+            for (auto name : wday_long_names) {
+                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
+                    string_pos += name.length();
+                    tm.tm_wday = wday;
+                    break;
+                }
+                ++wday;
+            }
+            if (wday == 7)
+                return {};
+            break;
+        }
+        case 'h':
+        case 'b': {
+            auto mon = 0;
+            for (auto name : mon_short_names) {
+                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
+                    string_pos += name.length();
+                    tm.tm_mon = mon;
+                    break;
+                }
+                ++mon;
+            }
+            if (mon == 12)
+                return {};
+            break;
+        }
+        case 'B': {
+            auto mon = 0;
+            for (auto name : mon_long_names) {
+                if (string.substring_view(string_pos).starts_with(name, AK::CaseSensitivity::CaseInsensitive)) {
+                    string_pos += name.length();
+                    tm.tm_mon = mon;
+                    break;
+                }
+                ++mon;
+            }
+            if (mon == 12)
+                return {};
+            break;
+        }
+        case 'C': {
+            int num = parse_number();
+            tm.tm_year = (num - 19) * 100;
+            break;
+        }
+        case 'd': {
+            tm.tm_mday = parse_number();
+            break;
+        }
+        case 'D': {
+            int mon = parse_number();
+            consume('/');
+            int day = parse_number();
+            consume('/');
+            int year = parse_number();
+            tm.tm_mon = mon + 1;
+            tm.tm_mday = day;
+            tm.tm_year = (year + 1900) % 100;
+            break;
+        }
+        case 'e': {
+            tm.tm_mday = parse_number();
+            break;
+        }
+        case 'H': {
+            tm.tm_hour = parse_number();
+            break;
+        }
+        case 'I': {
+            int num = parse_number();
+            tm.tm_hour = num % 12;
+            break;
+        }
+        case 'j': {
+            // a little trickery here... we can get mktime() to figure out mon and mday using out of range values.
+            // yday is not used so setting it is pointless.
+            tm.tm_mday = parse_number();
+            tm.tm_mon = 0;
+            mktime(&tm);
+            break;
+        }
+        case 'm': {
+            int num = parse_number();
+            tm.tm_mon = num - 1;
+            break;
+        }
+        case 'M': {
+            tm.tm_min = parse_number();
+            break;
+        }
+        case 'n':
+        case 't':
+            while (is_ascii_blank(string[string_pos])) {
+                string_pos++;
+            }
+            break;
+        case 'p': {
+            auto ampm = string.substring_view(string_pos, 4);
+            if (ampm == "p.m." && tm.tm_hour < 12) {
+                tm.tm_hour += 12;
+            }
+            string_pos += 4;
+            break;
+        }
+        case 'r': {
+            auto ampm = string.substring_view(string_pos, 4);
+            if (ampm == "p.m." && tm.tm_hour < 12) {
+                tm.tm_hour += 12;
+            }
+            string_pos += 4;
+            break;
+        }
+        case 'R': {
+            tm.tm_hour = parse_number();
+            consume(':');
+            tm.tm_min = parse_number();
+            break;
+        }
+        case 'S':
+            tm.tm_sec = parse_number();
+            break;
+        case 'T':
+            tm.tm_hour = parse_number();
+            consume(':');
+            tm.tm_min = parse_number();
+            consume(':');
+            tm.tm_sec = parse_number();
+            break;
+        case 'w':
+            tm.tm_wday = parse_number();
+            break;
+        case 'y': {
+            int year = parse_number();
+            tm.tm_year = year <= 99 && year > 69 ? 1900 + year : 2000 + year;
+            break;
+        }
+        case 'Y': {
+            int year = parse_number();
+            tm.tm_year = year - 1900;
+            break;
+        }
+        case 'z': {
+            if (string[string_pos] == 'Z') {
+                // UTC time
+                string_pos++;
+                break;
+            }
+            int sign;
+
+            if (string[string_pos] == '+')
+                sign = -1;
+            else if (string[string_pos] == '-')
+                sign = +1;
+            else
+                return {};
+
+            string_pos++;
+
+            auto hours = parse_number();
+            int minutes;
+            if (string_pos < string.length() && string[string_pos] == ':') {
+                string_pos++;
+                minutes = parse_number();
+            } else {
+                minutes = hours % 100;
+                hours = hours / 100;
+            }
+
+            tm.tm_hour += sign * hours;
+            tm.tm_min += sign * minutes;
+            break;
+        }
+        case '%':
+            if (string[string_pos] != '%') {
+                return {};
+            }
+            string_pos += 1;
+            break;
+        default:
+            parsing_failed = true;
+            break;
+        }
+
+        if (parsing_failed) {
+            return {};
+        }
+
+        format_pos++;
+    }
+    if (string_pos != string.length() || format_pos != format.length()) {
+        return {};
+    }
+
+    return DateTime::from_timestamp(mktime(&tm));
+}
 }

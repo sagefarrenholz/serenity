@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Demangle.h>
@@ -35,7 +15,8 @@
 #include <LibWeb/Layout/InitialContainingBlockBox.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/TextNode.h>
-#include <LibWeb/Page/Frame.h>
+#include <LibWeb/Page/BrowsingContext.h>
+#include <typeinfo>
 
 namespace Web::Layout {
 
@@ -87,6 +68,21 @@ const BlockBox* Node::containing_block() const
     return nearest_block_ancestor();
 }
 
+bool Node::establishes_stacking_context() const
+{
+    if (!has_style())
+        return false;
+    if (dom_node() == document().root())
+        return true;
+    auto position = computed_values().position();
+    if (position == CSS::Position::Absolute || position == CSS::Position::Relative || position == CSS::Position::Fixed || position == CSS::Position::Sticky)
+        return true;
+    auto opacity = computed_values().opacity();
+    if (opacity.has_value() && opacity.value() != 1.0f)
+        return true;
+    return false;
+}
+
 void Node::paint(PaintContext& context, PaintPhase phase)
 {
     if (!is_visible())
@@ -112,16 +108,16 @@ HitTestResult Node::hit_test(const Gfx::IntPoint& position, HitTestType type) co
     return result;
 }
 
-const Frame& Node::frame() const
+const BrowsingContext& Node::browsing_context() const
 {
-    VERIFY(document().frame());
-    return *document().frame();
+    VERIFY(document().browsing_context());
+    return *document().browsing_context();
 }
 
-Frame& Node::frame()
+BrowsingContext& Node::browsing_context()
 {
-    VERIFY(document().frame());
-    return *document().frame();
+    VERIFY(document().browsing_context());
+    return *document().browsing_context();
 }
 
 const InitialContainingBlockBox& Node::root() const
@@ -148,7 +144,7 @@ void Node::set_needs_display()
     if (auto* block = containing_block()) {
         block->for_each_fragment([&](auto& fragment) {
             if (&fragment.layout_node() == this || is_ancestor_of(fragment.layout_node())) {
-                frame().set_needs_display(enclosing_int_rect(fragment.absolute_rect()));
+                browsing_context().set_needs_display(enclosing_int_rect(fragment.absolute_rect()));
             }
             return IterationDecision::Continue;
         });
@@ -158,7 +154,7 @@ void Node::set_needs_display()
 Gfx::FloatPoint Node::box_type_agnostic_position() const
 {
     if (is<Box>(*this))
-        return downcast<Box>(*this).absolute_position();
+        return verify_cast<Box>(*this).absolute_position();
     VERIFY(is_inline());
     Gfx::FloatPoint position;
     if (auto* block = containing_block()) {
@@ -176,6 +172,9 @@ Gfx::FloatPoint Node::box_type_agnostic_position() const
 bool Node::is_floating() const
 {
     if (!has_style())
+        return false;
+    // flex-items don't float.
+    if (is_flex_item())
         return false;
     return computed_values().float_() != CSS::Float::None;
 }
@@ -234,15 +233,59 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& specified_style)
         m_background_image = static_ptr_cast<CSS::ImageStyleValue>(bgimage.value());
     }
 
+    auto border_bottom_left_radius = specified_style.property(CSS::PropertyID::BorderBottomLeftRadius);
+    if (border_bottom_left_radius.has_value())
+        computed_values.set_border_bottom_left_radius(border_bottom_left_radius.value()->to_length());
+
+    auto border_bottom_right_radius = specified_style.property(CSS::PropertyID::BorderBottomRightRadius);
+    if (border_bottom_right_radius.has_value())
+        computed_values.set_border_bottom_right_radius(border_bottom_right_radius.value()->to_length());
+
+    auto border_top_left_radius = specified_style.property(CSS::PropertyID::BorderTopLeftRadius);
+    if (border_top_left_radius.has_value())
+        computed_values.set_border_top_left_radius(border_top_left_radius.value()->to_length());
+
+    auto border_top_right_radius = specified_style.property(CSS::PropertyID::BorderTopRightRadius);
+    if (border_top_right_radius.has_value())
+        computed_values.set_border_top_right_radius(border_top_right_radius.value()->to_length());
+
+    auto background_repeat_x = specified_style.background_repeat_x();
+    if (background_repeat_x.has_value())
+        computed_values.set_background_repeat_x(background_repeat_x.value());
+
+    auto background_repeat_y = specified_style.background_repeat_y();
+    if (background_repeat_y.has_value())
+        computed_values.set_background_repeat_y(background_repeat_y.value());
+
     computed_values.set_display(specified_style.display());
 
     auto flex_direction = specified_style.flex_direction();
     if (flex_direction.has_value())
         computed_values.set_flex_direction(flex_direction.value());
 
+    auto flex_wrap = specified_style.flex_wrap();
+    if (flex_wrap.has_value())
+        computed_values.set_flex_wrap(flex_wrap.value());
+
+    auto flex_basis = specified_style.flex_basis();
+    if (flex_basis.has_value())
+        computed_values.set_flex_basis(flex_basis.value());
+
+    computed_values.set_flex_grow_factor(specified_style.flex_grow_factor());
+    computed_values.set_flex_shrink_factor(specified_style.flex_shrink_factor());
+
+    auto justify_content = specified_style.justify_content();
+    if (justify_content.has_value())
+        computed_values.set_justify_content(justify_content.value());
+
     auto position = specified_style.position();
-    if (position.has_value())
+    if (position.has_value()) {
         computed_values.set_position(position.value());
+        if (position.value() == CSS::Position::Absolute) {
+            m_has_definite_width = true;
+            m_has_definite_height = true;
+        }
+    }
 
     auto text_align = specified_style.text_align();
     if (text_align.has_value())
@@ -287,9 +330,18 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& specified_style)
     computed_values.set_background_color(specified_style.color_or_fallback(CSS::PropertyID::BackgroundColor, document(), Color::Transparent));
 
     computed_values.set_z_index(specified_style.z_index());
+    computed_values.set_opacity(specified_style.opacity());
+    if (computed_values.opacity() == 0)
+        m_visible = false;
+
+    if (auto width = specified_style.property(CSS::PropertyID::Width); width.has_value())
+        m_has_definite_width = true;
     computed_values.set_width(specified_style.length_or_fallback(CSS::PropertyID::Width, {}));
     computed_values.set_min_width(specified_style.length_or_fallback(CSS::PropertyID::MinWidth, {}));
     computed_values.set_max_width(specified_style.length_or_fallback(CSS::PropertyID::MaxWidth, {}));
+
+    if (auto height = specified_style.property(CSS::PropertyID::Height); height.has_value())
+        m_has_definite_height = true;
     computed_values.set_height(specified_style.length_or_fallback(CSS::PropertyID::Height, {}));
     computed_values.set_min_height(specified_style.length_or_fallback(CSS::PropertyID::MinHeight, {}));
     computed_values.set_max_height(specified_style.length_or_fallback(CSS::PropertyID::MaxHeight, {}));
@@ -298,10 +350,15 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& specified_style)
     computed_values.set_margin(specified_style.length_box(CSS::PropertyID::MarginLeft, CSS::PropertyID::MarginTop, CSS::PropertyID::MarginRight, CSS::PropertyID::MarginBottom, CSS::Length::make_px(0)));
     computed_values.set_padding(specified_style.length_box(CSS::PropertyID::PaddingLeft, CSS::PropertyID::PaddingTop, CSS::PropertyID::PaddingRight, CSS::PropertyID::PaddingBottom, CSS::Length::make_px(0)));
 
+    computed_values.set_box_shadow(specified_style.box_shadow());
+
     auto do_border_style = [&](CSS::BorderData& border, CSS::PropertyID width_property, CSS::PropertyID color_property, CSS::PropertyID style_property) {
-        border.width = specified_style.length_or_fallback(width_property, {}).resolved_or_zero(*this, 0).to_px(*this);
         border.color = specified_style.color_or_fallback(color_property, document(), Color::Transparent);
         border.line_style = specified_style.line_style(style_property).value_or(CSS::LineStyle::None);
+        if (border.line_style == CSS::LineStyle::None)
+            border.width = 0;
+        else
+            border.width = specified_style.length_or_fallback(width_property, {}).resolved_or_zero(*this, 0).to_px(*this);
     };
 
     do_border_style(computed_values.border_left(), CSS::PropertyID::BorderLeftWidth, CSS::PropertyID::BorderLeftColor, CSS::PropertyID::BorderLeftStyle);
@@ -328,7 +385,7 @@ bool Node::handle_mousewheel(Badge<EventHandler>, const Gfx::IntPoint&, unsigned
         if (!containing_block->is_scrollable())
             return false;
         auto new_offset = containing_block->scroll_offset();
-        new_offset.move_by(0, wheel_delta);
+        new_offset.translate_by(0, wheel_delta);
         containing_block->set_scroll_offset(new_offset);
         return true;
     }
@@ -355,7 +412,7 @@ bool Node::is_inline_block() const
 
 NonnullRefPtr<NodeWithStyle> NodeWithStyle::create_anonymous_wrapper() const
 {
-    auto wrapper = adopt(*new BlockBox(const_cast<DOM::Document&>(document()), nullptr, m_computed_values.clone_inherited_values()));
+    auto wrapper = adopt_ref(*new BlockBox(const_cast<DOM::Document&>(document()), nullptr, m_computed_values.clone_inherited_values()));
     wrapper->m_font = m_font;
     wrapper->m_font_size = m_font_size;
     wrapper->m_line_height = m_line_height;

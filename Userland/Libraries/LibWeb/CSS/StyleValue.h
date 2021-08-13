@@ -1,40 +1,28 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Tobias Christiansen <tobyase@serenityos.org>
+ * Copyright (c) 2021, Sam Atkins <atkinssj@gmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/NonnullOwnPtr.h>
+#include <AK/NonnullOwnPtrVector.h>
+#include <AK/NonnullRefPtrVector.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
 #include <AK/URL.h>
+#include <AK/Variant.h>
+#include <AK/Vector.h>
 #include <AK/WeakPtr.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibWeb/CSS/Length.h>
+#include <LibWeb/CSS/Parser/StyleComponentValueRule.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/CSS/ValueID.h>
 #include <LibWeb/Forward.h>
@@ -98,6 +86,18 @@ enum class FlexDirection {
     RowReverse,
     Column,
     ColumnReverse,
+};
+
+enum class FlexWrap {
+    Nowrap,
+    Wrap,
+    WrapReverse
+};
+
+enum class FlexBasis {
+    Content,
+    Length,
+    Auto,
 };
 
 enum class WhiteSpace {
@@ -179,6 +179,13 @@ enum class ListStyleType {
     Circle,
     Square,
     Decimal,
+    DecimalLeadingZero,
+    LowerAlpha,
+    LowerLatin,
+    LowerRoman,
+    UpperAlpha,
+    UpperLatin,
+    UpperRoman,
 };
 
 enum class Overflow : u8 {
@@ -187,6 +194,21 @@ enum class Overflow : u8 {
     Hidden,
     Scroll,
     Visible,
+};
+
+enum class Repeat : u8 {
+    NoRepeat,
+    Repeat,
+    Round,
+    Space,
+};
+
+enum class JustifyContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
 };
 
 class StyleValue : public RefCounted<StyleValue> {
@@ -202,7 +224,11 @@ public:
         Color,
         Identifier,
         Image,
-        Position,
+        CustomProperty,
+        Numeric,
+        ValueList,
+        Calculated,
+        BoxShadow,
     };
 
     Type type() const { return m_type; }
@@ -214,7 +240,16 @@ public:
     bool is_image() const { return type() == Type::Image; }
     bool is_string() const { return type() == Type::String; }
     bool is_length() const { return type() == Type::Length; }
-    bool is_position() const { return type() == Type::Position; }
+    bool is_custom_property() const { return type() == Type::CustomProperty; }
+    bool is_numeric() const { return type() == Type::Numeric; }
+    bool is_value_list() const { return type() == Type::ValueList; }
+    bool is_box_shadow() const { return type() == Type::BoxShadow; }
+    bool is_calculated() const { return type() == Type::Calculated; }
+
+    bool is_builtin_or_dynamic() const
+    {
+        return is_inherit() || is_initial() || is_custom_property() || is_calculated();
+    }
 
     virtual String to_string() const = 0;
     virtual Length to_length() const { return Length::make_auto(); }
@@ -241,11 +276,51 @@ private:
     Type m_type { Type::Invalid };
 };
 
+// FIXME: Allow for fallback
+class CustomStyleValue : public StyleValue {
+public:
+    static NonnullRefPtr<CustomStyleValue> create(const String& custom_property_name)
+    {
+        return adopt_ref(*new CustomStyleValue(custom_property_name));
+    }
+    String custom_property_name() const { return m_custom_property_name; }
+    String to_string() const override { return m_custom_property_name; }
+
+private:
+    explicit CustomStyleValue(const String& custom_property_name)
+        : StyleValue(Type::CustomProperty)
+        , m_custom_property_name(custom_property_name)
+    {
+    }
+
+    String m_custom_property_name {};
+};
+
+class NumericStyleValue : public StyleValue {
+public:
+    static NonnullRefPtr<NumericStyleValue> create(float value)
+    {
+        return adopt_ref(*new NumericStyleValue(value));
+    }
+
+    float value() const { return m_value; }
+    String to_string() const override { return String::formatted("{}", m_value); }
+
+private:
+    explicit NumericStyleValue(float value)
+        : StyleValue(Type::Numeric)
+        , m_value(value)
+    {
+    }
+
+    float m_value { 0 };
+};
+
 class StringStyleValue : public StyleValue {
 public:
     static NonnullRefPtr<StringStyleValue> create(const String& string)
     {
-        return adopt(*new StringStyleValue(string));
+        return adopt_ref(*new StringStyleValue(string));
     }
     virtual ~StringStyleValue() override { }
 
@@ -261,11 +336,43 @@ private:
     String m_string;
 };
 
+class BoxShadowStyleValue : public StyleValue {
+public:
+    static NonnullRefPtr<BoxShadowStyleValue> create(Length const& offset_x, Length const& offset_y, Length const& blur_radius, Color const& color)
+    {
+        return adopt_ref(*new BoxShadowStyleValue(offset_x, offset_y, blur_radius, color));
+    }
+    virtual ~BoxShadowStyleValue() override { }
+
+    Length const& offset_x() const { return m_offset_x; }
+    Length const& offset_y() const { return m_offset_y; }
+    Length const& blur_radius() const { return m_blur_radius; }
+    Color const& color() const { return m_color; }
+
+    String to_string() const override { return String::formatted("BoxShadow offset_x: {}, offset_y: {}, blur_radius: {}, color: {}",
+        m_offset_x.to_string(), m_offset_y.to_string(), m_blur_radius.to_string(), m_color.to_string()); }
+
+private:
+    explicit BoxShadowStyleValue(Length const& offset_x, Length const& offset_y, Length const& blur_radius, Color const& color)
+        : StyleValue(Type::BoxShadow)
+        , m_offset_x(offset_x)
+        , m_offset_y(offset_y)
+        , m_blur_radius(blur_radius)
+        , m_color(color)
+    {
+    }
+
+    Length m_offset_x;
+    Length m_offset_y;
+    Length m_blur_radius;
+    Color m_color;
+};
+
 class LengthStyleValue : public StyleValue {
 public:
     static NonnullRefPtr<LengthStyleValue> create(const Length& length)
     {
-        return adopt(*new LengthStyleValue(length));
+        return adopt_ref(*new LengthStyleValue(length));
     }
     virtual ~LengthStyleValue() override { }
 
@@ -293,9 +400,116 @@ private:
     Length m_length;
 };
 
+class CalculatedStyleValue : public StyleValue {
+public:
+    struct CalcSum;
+    struct CalcSumPartWithOperator;
+    struct CalcProduct;
+    struct CalcProductPartWithOperator;
+    struct CalcNumberSum;
+    struct CalcNumberSumPartWithOperator;
+    struct CalcNumberProduct;
+    struct CalcNumberProductPartWithOperator;
+
+    using CalcNumberValue = Variant<float, NonnullOwnPtr<CalcNumberSum>>;
+    using CalcValue = Variant<float, CSS::Length, NonnullOwnPtr<CalcSum>>;
+
+    // This represents that: https://drafts.csswg.org/css-values-3/#calc-syntax
+    struct CalcSum {
+        CalcSum(NonnullOwnPtr<CalcProduct> first_calc_product, NonnullOwnPtrVector<CalcSumPartWithOperator> additional)
+            : first_calc_product(move(first_calc_product))
+            , zero_or_more_additional_calc_products(move(additional)) {};
+
+        NonnullOwnPtr<CalcProduct> first_calc_product;
+        NonnullOwnPtrVector<CalcSumPartWithOperator> zero_or_more_additional_calc_products;
+    };
+
+    struct CalcNumberSum {
+        CalcNumberSum(NonnullOwnPtr<CalcNumberProduct> first_calc_number_product, NonnullOwnPtrVector<CalcNumberSumPartWithOperator> additional)
+            : first_calc_number_product(move(first_calc_number_product))
+            , zero_or_more_additional_calc_number_products(move(additional)) {};
+
+        NonnullOwnPtr<CalcNumberProduct> first_calc_number_product;
+        NonnullOwnPtrVector<CalcNumberSumPartWithOperator> zero_or_more_additional_calc_number_products;
+    };
+
+    struct CalcProduct {
+        CalcValue first_calc_value;
+        NonnullOwnPtrVector<CalcProductPartWithOperator> zero_or_more_additional_calc_values;
+    };
+
+    struct CalcSumPartWithOperator {
+        enum Operation {
+            Add,
+            Subtract,
+        };
+
+        CalcSumPartWithOperator(Operation op, NonnullOwnPtr<CalcProduct> calc_product)
+            : op(op)
+            , calc_product(move(calc_product)) {};
+
+        Operation op;
+        NonnullOwnPtr<CalcProduct> calc_product;
+    };
+
+    struct CalcProductPartWithOperator {
+        enum {
+            Multiply,
+            Divide,
+        } op;
+        Variant<CalcValue, CalcNumberValue> value;
+    };
+
+    struct CalcNumberProduct {
+        CalcNumberValue first_calc_number_value;
+        NonnullOwnPtrVector<CalcNumberProductPartWithOperator> zero_or_more_additional_calc_number_values;
+    };
+
+    struct CalcNumberProductPartWithOperator {
+        enum {
+            Multiply,
+            Divide,
+        } op;
+        CalcNumberValue value;
+    };
+
+    struct CalcNumberSumPartWithOperator {
+        enum Operation {
+            Add,
+            Subtract,
+        };
+
+        CalcNumberSumPartWithOperator(Operation op, NonnullOwnPtr<CalcNumberProduct> calc_number_product)
+            : op(op)
+            , calc_number_product(move(calc_number_product)) {};
+
+        Operation op;
+        NonnullOwnPtr<CalcNumberProduct> calc_number_product;
+    };
+
+    static NonnullRefPtr<CalculatedStyleValue> create(String const& expression_string, NonnullOwnPtr<CalcSum> calc_sum)
+    {
+        return adopt_ref(*new CalculatedStyleValue(expression_string, move(calc_sum)));
+    }
+
+    String to_string() const override { return m_expression_string; }
+    NonnullOwnPtr<CalcSum> const& expression() const { return m_expression; }
+
+private:
+    explicit CalculatedStyleValue(String const& expression_string, NonnullOwnPtr<CalcSum> calc_sum)
+        : StyleValue(Type::Calculated)
+        , m_expression_string(expression_string)
+        , m_expression(move(calc_sum))
+    {
+    }
+
+    String m_expression_string;
+    NonnullOwnPtr<CalcSum> m_expression;
+};
+
 class InitialStyleValue final : public StyleValue {
 public:
-    static NonnullRefPtr<InitialStyleValue> create() { return adopt(*new InitialStyleValue); }
+    static NonnullRefPtr<InitialStyleValue> create() { return adopt_ref(*new InitialStyleValue); }
     virtual ~InitialStyleValue() override { }
 
     String to_string() const override { return "initial"; }
@@ -309,7 +523,7 @@ private:
 
 class InheritStyleValue final : public StyleValue {
 public:
-    static NonnullRefPtr<InheritStyleValue> create() { return adopt(*new InheritStyleValue); }
+    static NonnullRefPtr<InheritStyleValue> create() { return adopt_ref(*new InheritStyleValue); }
     virtual ~InheritStyleValue() override { }
 
     String to_string() const override { return "inherit"; }
@@ -325,7 +539,7 @@ class ColorStyleValue : public StyleValue {
 public:
     static NonnullRefPtr<ColorStyleValue> create(Color color)
     {
-        return adopt(*new ColorStyleValue(color));
+        return adopt_ref(*new ColorStyleValue(color));
     }
     virtual ~ColorStyleValue() override { }
 
@@ -354,7 +568,7 @@ class IdentifierStyleValue final : public StyleValue {
 public:
     static NonnullRefPtr<IdentifierStyleValue> create(CSS::ValueID id)
     {
-        return adopt(*new IdentifierStyleValue(id));
+        return adopt_ref(*new IdentifierStyleValue(id));
     }
     virtual ~IdentifierStyleValue() override { }
 
@@ -384,7 +598,7 @@ class ImageStyleValue final
     : public StyleValue
     , public ImageResourceClient {
 public:
-    static NonnullRefPtr<ImageStyleValue> create(const URL& url, DOM::Document& document) { return adopt(*new ImageStyleValue(url, document)); }
+    static NonnullRefPtr<ImageStyleValue> create(const URL& url, DOM::Document& document) { return adopt_ref(*new ImageStyleValue(url, document)); }
     virtual ~ImageStyleValue() override { }
 
     String to_string() const override { return String::formatted("Image({})", m_url.to_string()); }
@@ -402,11 +616,25 @@ private:
     RefPtr<Gfx::Bitmap> m_bitmap;
 };
 
+class ValueListStyleValue final : public StyleValue {
+public:
+    static NonnullRefPtr<ValueListStyleValue> create(Vector<StyleComponentValueRule>&& values) { return adopt_ref(*new ValueListStyleValue(move(values))); }
+    virtual ~ValueListStyleValue() override { }
+
+    virtual String to_string() const override;
+
+    Vector<StyleComponentValueRule> const& values() const { return m_values; }
+
+private:
+    ValueListStyleValue(Vector<StyleComponentValueRule>&&);
+
+    Vector<StyleComponentValueRule> m_values;
+};
+
 inline CSS::ValueID StyleValue::to_identifier() const
 {
     if (is_identifier())
         return static_cast<const IdentifierStyleValue&>(*this).id();
     return CSS::ValueID::Invalid;
 }
-
 }

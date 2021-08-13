@@ -1,6 +1,5 @@
 {
-  "background": {
-  },
+  "background": {},
   "background-attachment": {
     "inherited": false,
     "initial": "scroll"
@@ -18,8 +17,20 @@
     "initial": "0% 0%"
   },
   "background-repeat": {
+    "longhands": [
+      "background-repeat-x",
+      "background-repeat-y"
+    ]
+  },
+  "background-repeat-x": {
     "inherited": false,
-    "initial": "repeat"
+    "initial": "repeat",
+    "pseudo": true
+  },
+  "background-repeat-y": {
+    "inherited": false,
+    "initial": "repeat",
+    "pseudo": true
   },
   "border": {
     "longhands": [
@@ -60,6 +71,14 @@
     "initial": "currentColor",
     "inherited": false
   },
+  "border-bottom-left-radius": {
+    "initial": 0,
+    "inherited": false
+  },
+  "border-bottom-right-radius": {
+    "initial": 0,
+    "inherited": false
+  },
   "border-bottom-style": {
     "initial": "none",
     "inherited": false
@@ -92,6 +111,14 @@
     "initial": "medium",
     "inherited": false
   },
+  "border-radius": {
+    "longhands": [
+      "border-top-left-radius",
+      "border-top-right-radius",
+      "border-bottom-left-radius",
+      "border-bottom-right-radius"
+    ]
+  },
   "border-right-color": {
     "initial": "currentColor",
     "inherited": false
@@ -120,6 +147,14 @@
     "initial": "currentColor",
     "inherited": false
   },
+  "border-top-left-radius": {
+    "initial": 0,
+    "inherited": false
+  },
+  "border-top-right-radius": {
+    "initial": 0,
+    "inherited": false
+  },
   "border-top-style": {
     "initial": "none",
     "inherited": false
@@ -139,6 +174,10 @@
   "bottom": {
     "inherited": false,
     "initial": "auto"
+  },
+  "box-shadow":{
+    "inherited": false,
+    "initial": "none"
   },
   "caption-side": {
     "inherited": true,
@@ -168,13 +207,50 @@
     "inherited": false,
     "initial": "inline"
   },
+  "flex": {
+    "longhands": [
+      "flex-grow",
+      "flex-shrink",
+      "flex-basis"
+    ]
+  },
+  "flex-basis": {
+    "inherited": false,
+    "initial": "content"
+  },
   "flex-direction": {
     "inherited": false,
     "initial": "row"
   },
+  "flex-flow": {
+    "longhands": [
+      "flex-direction",
+      "flex-wrap"
+    ]
+  },
+  "flex-grow": {
+    "inherited": false,
+    "initial": 0
+  },
+  "flex-shrink": {
+    "inherited": false,
+    "initial": 0
+  },
+  "flex-wrap": {
+    "inherited": false,
+    "initial": "nowrap"
+  },
   "float": {
     "inherited": false,
     "initial": "none"
+  },
+  "font": {
+    "longhands": [
+      "font-family",
+      "font-size",
+      "font-variant",
+      "font-weight"
+    ]
   },
   "font-family": {
     "inherited": true,
@@ -199,6 +275,10 @@
   "height": {
     "inherited": false,
     "initial": "auto"
+  },
+  "justify-content": {
+    "inherited": false,
+    "initial": "flex-start"
   },
   "left": {
     "inherited": false,
@@ -270,6 +350,10 @@
   "min-width": {
     "inherited": false,
     "initial": "0"
+  },
+  "opacity": {
+    "inherited": false,
+    "initial": 1
   },
   "overflow": {
     "longhands": [

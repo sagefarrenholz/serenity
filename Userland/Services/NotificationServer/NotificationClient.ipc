@@ -1,4 +1,5 @@
-endpoint NotificationClient = 92
+#include <LibGfx/ShareableBitmap.h>
+
+endpoint NotificationClient
 {
-    Dummy() =|
 }

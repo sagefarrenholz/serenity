@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibWeb/CSS/Length.h>
@@ -95,7 +75,7 @@ void InlineFormattingContext::run(Box&, LayoutMode layout_mode)
     containing_block().for_each_child([&](auto& child) {
         VERIFY(child.is_inline());
         if (is<Box>(child) && child.is_absolutely_positioned()) {
-            layout_absolutely_positioned_element(downcast<Box>(child));
+            layout_absolutely_positioned_element(verify_cast<Box>(child));
             return;
         }
 
@@ -174,7 +154,7 @@ void InlineFormattingContext::run(Box&, LayoutMode layout_mode)
                 // Shift subsequent sibling fragments to the right to adjust for change in width.
                 for (size_t j = i + 1; j < line_box.fragments().size(); ++j) {
                     auto offset = line_box.fragments()[j].offset();
-                    offset.move_by(diff, 0);
+                    offset.translate_by(diff, 0);
                     line_box.fragments()[j].set_offset(offset);
                 }
             }
@@ -201,14 +181,14 @@ void InlineFormattingContext::run(Box&, LayoutMode layout_mode)
 void InlineFormattingContext::dimension_box_on_line(Box& box, LayoutMode layout_mode)
 {
     if (is<ReplacedBox>(box)) {
-        auto& replaced = downcast<ReplacedBox>(box);
+        auto& replaced = verify_cast<ReplacedBox>(box);
         replaced.set_width(compute_width_for_replaced_element(replaced));
         replaced.set_height(compute_height_for_replaced_element(replaced));
         return;
     }
 
     if (box.is_inline_block()) {
-        auto& inline_block = const_cast<BlockBox&>(downcast<BlockBox>(box));
+        auto& inline_block = const_cast<BlockBox&>(verify_cast<BlockBox>(box));
 
         if (inline_block.computed_values().width().is_undefined_or_auto()) {
             auto result = calculate_shrink_to_fit_widths(inline_block);

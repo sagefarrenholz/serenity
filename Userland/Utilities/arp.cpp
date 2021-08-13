@@ -1,57 +1,171 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/ByteBuffer.h>
+#include <AK/Assertions.h>
+#include <AK/IPv4Address.h>
 #include <AK/JsonObject.h>
+#include <AK/MACAddress.h>
+#include <AK/QuickSort.h>
 #include <AK/String.h>
+#include <AK/Types.h>
+#include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
-#include <stdio.h>
+#include <net/route.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-int main()
+int main(int argc, char** argv)
 {
-    auto file = Core::File::construct("/proc/net/arp");
-    if (!file->open(Core::IODevice::ReadOnly)) {
-        fprintf(stderr, "Error: %s\n", file->error_string());
+    if (pledge("stdio rpath tty", nullptr) < 0) {
+        perror("pledge");
         return 1;
     }
 
-    printf("Address          HWaddress\n");
-    auto file_contents = file->read_all();
-    auto json = JsonValue::from_string(file_contents);
-    VERIFY(json.has_value());
-    json.value().as_array().for_each([](auto& value) {
-        auto if_object = value.as_object();
+    if (unveil("/proc/net/arp", "r") < 0) {
+        perror("unveil");
+        return 1;
+    }
 
-        auto ip_address = if_object.get("ip_address").to_string();
-        auto mac_address = if_object.get("mac_address").to_string();
+    if (unveil(nullptr, nullptr) < 0) {
+        perror("unveil");
+        return 1;
+    }
 
-        printf("%-15s  ", ip_address.characters());
-        printf("%-17s  ", mac_address.characters());
-        printf("\n");
-    });
+    static bool flag_set;
+    static bool flag_delete;
+    const char* value_ipv4_address = nullptr;
+    const char* value_hw_address = nullptr;
+
+    Core::ArgsParser args_parser;
+    args_parser.set_general_help("Display or modify the system ARP cache");
+    args_parser.add_option(flag_set, "Set an ARP table entry", "set", 's');
+    args_parser.add_option(flag_delete, "Delete an ARP table entry", "delete", 'd');
+    args_parser.add_positional_argument(value_ipv4_address, "IPv4 protocol address", "address", Core::ArgsParser::Required::No);
+    args_parser.add_positional_argument(value_hw_address, "Hardware address", "hwaddress", Core::ArgsParser::Required::No);
+    args_parser.parse(argc, argv);
+
+    enum class Alignment {
+        Left,
+        Right
+    };
+
+    struct Column {
+        String title;
+        Alignment alignment { Alignment::Left };
+        int width { 0 };
+        String buffer;
+    };
+
+    Vector<Column> columns;
+
+    int proto_address_column = -1;
+    int hw_address_column = -1;
+
+    auto add_column = [&](auto title, auto alignment, auto width) {
+        columns.append({ title, alignment, width, {} });
+        return columns.size() - 1;
+    };
+
+    proto_address_column = add_column("Address", Alignment::Left, 15);
+    hw_address_column = add_column("HWaddress", Alignment::Left, 15);
+
+    auto print_column = [](auto& column, auto& string) {
+        if (!column.width) {
+            out("{}", string);
+            return;
+        }
+        if (column.alignment == Alignment::Right) {
+            out("{:>{1}}  "sv, string, column.width);
+        } else {
+            out("{:<{1}}  "sv, string, column.width);
+        }
+    };
+
+    for (auto& column : columns)
+        print_column(column, column.title);
+    outln();
+
+    if (!flag_set && !flag_delete) {
+        auto file = Core::File::construct("/proc/net/arp");
+        if (!file->open(Core::OpenMode::ReadOnly)) {
+            warnln("Failed to open {}: {}", file->name(), file->error_string());
+            return 1;
+        }
+
+        auto file_contents = file->read_all();
+        auto json = JsonValue::from_string(file_contents);
+        VERIFY(json.has_value());
+
+        Vector<JsonValue> sorted_regions = json.value().as_array().values();
+        quick_sort(sorted_regions, [](auto& a, auto& b) {
+            return a.as_object().get("ip_address").to_string() < b.as_object().get("ip_address").to_string();
+        });
+
+        for (auto& value : sorted_regions) {
+            auto& if_object = value.as_object();
+
+            auto ip_address = if_object.get("ip_address").to_string();
+            auto mac_address = if_object.get("mac_address").to_string();
+
+            if (proto_address_column != -1)
+                columns[proto_address_column].buffer = ip_address;
+            if (hw_address_column != -1)
+                columns[hw_address_column].buffer = mac_address;
+
+            for (auto& column : columns)
+                print_column(column, column.buffer);
+            outln();
+        };
+    }
+
+    if (flag_set || flag_delete) {
+        if (!value_ipv4_address || !value_hw_address) {
+            warnln("No protocol address or hardware address specified.");
+            return 1;
+        }
+
+        auto address = IPv4Address::from_string(value_ipv4_address);
+        if (!address.has_value()) {
+            warnln("Invalid IPv4 protocol address: '{}'", value_ipv4_address);
+            return 1;
+        }
+
+        auto hw_address = MACAddress::from_string(value_hw_address);
+        if (!hw_address.has_value()) {
+            warnln("Invalid MACAddress: '{}'", value_hw_address);
+            return 1;
+        }
+
+        int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+        if (fd < 0) {
+            perror("socket");
+            return 1;
+        }
+
+        struct arpreq arp_req;
+        memset(&arp_req, 0, sizeof(arp_req));
+
+        arp_req.arp_pa.sa_family = AF_INET;
+        ((sockaddr_in&)arp_req.arp_pa).sin_addr.s_addr = address.value().to_in_addr_t();
+
+        *(MACAddress*)&arp_req.arp_ha.sa_data[0] = hw_address.value();
+
+        int rc;
+        if (flag_set)
+            rc = ioctl(fd, SIOCSARP, &arp_req);
+        if (flag_delete)
+            rc = ioctl(fd, SIOCDARP, &arp_req);
+
+        if (rc < 0) {
+            perror("ioctl");
+            return 1;
+        }
+    }
 
     return 0;
 }

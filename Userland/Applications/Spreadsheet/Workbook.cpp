@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Workbook.h"
@@ -29,18 +9,11 @@
 #include "ImportDialog.h"
 #include "JSIntegration.h"
 #include "Readers/CSV.h"
-#include "Writers/CSV.h"
 #include <AK/ByteBuffer.h>
-#include <AK/JsonArray.h>
-#include <AK/JsonObjectSerializer.h>
-#include <AK/Stream.h>
 #include <LibCore/File.h>
-#include <LibCore/FileStream.h>
 #include <LibCore/MimeData.h>
 #include <LibGUI/TextBox.h>
-#include <LibJS/Parser.h>
 #include <LibJS/Runtime/GlobalObject.h>
-#include <string.h>
 
 namespace Spreadsheet {
 
@@ -58,7 +31,7 @@ Workbook::Workbook(NonnullRefPtrVector<Sheet>&& sheets)
     , m_interpreter_scope(JS::VM::InterpreterExecutionScope(interpreter()))
 {
     m_workbook_object = interpreter().heap().allocate<WorkbookObject>(global_object(), *this);
-    global_object().put("workbook", workbook_object());
+    global_object().define_direct_property("workbook", workbook_object(), JS::default_attributes);
 }
 
 bool Workbook::set_filename(const String& filename)
@@ -72,7 +45,7 @@ bool Workbook::set_filename(const String& filename)
 
 Result<bool, String> Workbook::load(const StringView& filename)
 {
-    auto file_or_error = Core::File::open(filename, Core::IODevice::OpenMode::ReadOnly);
+    auto file_or_error = Core::File::open(filename, Core::OpenMode::ReadOnly);
     if (file_or_error.is_error()) {
         StringBuilder sb;
         sb.append("Failed to open ");
@@ -101,7 +74,7 @@ Result<bool, String> Workbook::save(const StringView& filename)
 {
     auto mime = Core::guess_mime_type_based_on_filename(filename);
     auto file = Core::File::construct(filename);
-    file->open(Core::IODevice::WriteOnly);
+    file->open(Core::OpenMode::WriteOnly);
     if (!file->is_open()) {
         StringBuilder sb;
         sb.append("Failed to open ");

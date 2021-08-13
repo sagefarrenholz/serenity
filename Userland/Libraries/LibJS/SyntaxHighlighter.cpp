@@ -1,32 +1,10 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
-#include <LibGUI/TextEditor.h>
-#include <LibGfx/Font.h>
 #include <LibGfx/Palette.h>
 #include <LibJS/Lexer.h>
 #include <LibJS/SyntaxHighlighter.h>
@@ -58,13 +36,13 @@ static Syntax::TextStyle style_for_token_type(const Gfx::Palette& palette, JS::T
     }
 }
 
-bool SyntaxHighlighter::is_identifier(void* token) const
+bool SyntaxHighlighter::is_identifier(u64 token) const
 {
-    auto js_token = static_cast<JS::TokenType>(reinterpret_cast<size_t>(token));
+    auto js_token = static_cast<JS::TokenType>(static_cast<size_t>(token));
     return js_token == JS::TokenType::Identifier;
 }
 
-bool SyntaxHighlighter::is_navigatable([[maybe_unused]] void* token) const
+bool SyntaxHighlighter::is_navigatable([[maybe_unused]] u64 token) const
 {
     return false;
 }
@@ -92,7 +70,7 @@ void SyntaxHighlighter::rehighlight(const Palette& palette)
             return;
 
         start = position;
-        for (size_t i = 0; i < str.length() - 1; ++i)
+        for (size_t i = 0; i < str.length(); ++i)
             advance_position(str[i]);
 
         GUI::TextDocumentSpan span;
@@ -103,9 +81,8 @@ void SyntaxHighlighter::rehighlight(const Palette& palette)
         span.attributes.color = style.color;
         span.attributes.bold = style.bold;
         span.is_skippable = is_trivia;
-        span.data = reinterpret_cast<void*>(static_cast<size_t>(type));
+        span.data = static_cast<u64>(type);
         spans.append(span);
-        advance_position(str[str.length() - 1]);
 
         dbgln_if(SYNTAX_HIGHLIGHTING_DEBUG, "{}{} @ '{}' {}:{} - {}:{}",
             token.name(),
@@ -132,20 +109,20 @@ void SyntaxHighlighter::rehighlight(const Palette& palette)
     m_client->do_update();
 }
 
-Vector<Syntax::Highlighter::MatchingTokenPair> SyntaxHighlighter::matching_token_pairs() const
+Vector<Syntax::Highlighter::MatchingTokenPair> SyntaxHighlighter::matching_token_pairs_impl() const
 {
     static Vector<Syntax::Highlighter::MatchingTokenPair> pairs;
     if (pairs.is_empty()) {
-        pairs.append({ reinterpret_cast<void*>(JS::TokenType::CurlyOpen), reinterpret_cast<void*>(JS::TokenType::CurlyClose) });
-        pairs.append({ reinterpret_cast<void*>(JS::TokenType::ParenOpen), reinterpret_cast<void*>(JS::TokenType::ParenClose) });
-        pairs.append({ reinterpret_cast<void*>(JS::TokenType::BracketOpen), reinterpret_cast<void*>(JS::TokenType::BracketClose) });
+        pairs.append({ static_cast<u64>(JS::TokenType::CurlyOpen), static_cast<u64>(JS::TokenType::CurlyClose) });
+        pairs.append({ static_cast<u64>(JS::TokenType::ParenOpen), static_cast<u64>(JS::TokenType::ParenClose) });
+        pairs.append({ static_cast<u64>(JS::TokenType::BracketOpen), static_cast<u64>(JS::TokenType::BracketClose) });
     }
     return pairs;
 }
 
-bool SyntaxHighlighter::token_types_equal(void* token1, void* token2) const
+bool SyntaxHighlighter::token_types_equal(u64 token1, u64 token2) const
 {
-    return static_cast<JS::TokenType>(reinterpret_cast<size_t>(token1)) == static_cast<JS::TokenType>(reinterpret_cast<size_t>(token2));
+    return static_cast<JS::TokenType>(token1) == static_cast<JS::TokenType>(token2);
 }
 
 SyntaxHighlighter::~SyntaxHighlighter()

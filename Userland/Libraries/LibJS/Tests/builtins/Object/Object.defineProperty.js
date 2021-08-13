@@ -166,11 +166,8 @@ describe("errors", () => {
         Object.defineProperty(o, "foo", { value: 1, writable: true, enumerable: true });
 
         expect(() => {
-            Object.defineProperty(o, "foo", { value: 2, writable: false, enumerable: true });
-        }).toThrowWithMessage(
-            TypeError,
-            "Cannot change attributes of non-configurable property 'foo'"
-        );
+            Object.defineProperty(o, "foo", { value: 2, writable: true, enumerable: false });
+        }).toThrowWithMessage(TypeError, "Object's [[DefineOwnProperty]] method returned false");
     });
 
     test("redefine non-configurable symbol property", () => {
@@ -179,11 +176,8 @@ describe("errors", () => {
         Object.defineProperty(o, s, { value: 1, writable: true, enumerable: true });
 
         expect(() => {
-            Object.defineProperty(o, s, { value: 2, writable: false, enumerable: true });
-        }).toThrowWithMessage(
-            TypeError,
-            "Cannot change attributes of non-configurable property 'Symbol(foo)'"
-        );
+            Object.defineProperty(o, s, { value: 2, writable: true, enumerable: false });
+        }).toThrowWithMessage(TypeError, "Object's [[DefineOwnProperty]] method returned false");
     });
 
     test("cannot define 'value' and 'get' in the same descriptor", () => {
@@ -234,9 +228,6 @@ describe("errors", () => {
                     return this.secret_foo + 2;
                 },
             });
-        }).toThrowWithMessage(
-            TypeError,
-            "Cannot change attributes of non-configurable property 'foo'"
-        );
+        }).toThrowWithMessage(TypeError, "Object's [[DefineOwnProperty]] method returned false");
     });
 });

@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Daniel Bertalan <dani@danielbertalan.dev>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -31,10 +12,30 @@
 #include <AK/String.h>
 #include <AK/Vector.h>
 #include <Kernel/API/KeyCode.h>
-#include <LibVT/Line.h>
+#include <LibVT/EscapeSequenceParser.h>
 #include <LibVT/Position.h>
 
+#ifndef KERNEL
+#    include <LibVT/Attribute.h>
+#    include <LibVT/Line.h>
+#else
+namespace Kernel {
+class VirtualConsole;
+}
+#    include <LibVT/Attribute.h>
+#endif
+
 namespace VT {
+
+enum CursorStyle {
+    None,
+    BlinkingBlock,
+    SteadyBlock,
+    BlinkingUnderline,
+    SteadyUnderline,
+    BlinkingBar,
+    SteadyBar
+};
 
 class TerminalClient {
 public:
@@ -44,40 +45,82 @@ public:
     virtual void set_window_title(const StringView&) = 0;
     virtual void set_window_progress(int value, int max) = 0;
     virtual void terminal_did_resize(u16 columns, u16 rows) = 0;
-    virtual void terminal_history_changed() = 0;
+    virtual void terminal_history_changed(int delta) = 0;
     virtual void emit(const u8*, size_t) = 0;
+    virtual void set_cursor_style(CursorStyle) = 0;
 };
 
-class Terminal {
+class Terminal : public EscapeSequenceExecutor {
 public:
+#ifndef KERNEL
     explicit Terminal(TerminalClient&);
-    ~Terminal();
+#else
+    explicit Terminal(Kernel::VirtualConsole&);
+#endif
+
+    virtual ~Terminal()
+    {
+    }
 
     bool m_need_full_flush { false };
 
+#ifndef KERNEL
     void invalidate_cursor();
+#else
+    virtual void invalidate_cursor() = 0;
+#endif
+
     void on_input(u8);
 
-    void clear();
-    void clear_including_history();
+    void set_cursor(unsigned row, unsigned column, bool skip_debug = false);
 
+    void clear_including_history()
+    {
+        clear_history();
+        clear();
+    }
+
+#ifndef KERNEL
+    void clear();
+    void clear_history();
+#else
+    virtual void clear() = 0;
+    virtual void clear_history() = 0;
+#endif
+
+#ifndef KERNEL
     void set_size(u16 columns, u16 rows);
-    u16 columns() const { return m_columns; }
+#else
+    virtual void set_size(u16 columns, u16 rows) = 0;
+#endif
+
+    u16 columns() const
+    {
+        return m_columns;
+    }
     u16 rows() const { return m_rows; }
 
-    u16 cursor_column() const { return m_cursor_column; }
-    u16 cursor_row() const { return m_cursor_row; }
+    u16 cursor_column() const { return m_current_state.cursor.column; }
+    u16 cursor_row() const { return m_current_state.cursor.row; }
 
+#ifndef KERNEL
     size_t line_count() const
     {
-        return m_history.size() + m_lines.size();
+        if (m_use_alternate_screen_buffer)
+            return m_alternate_screen_buffer.size();
+        else
+            return m_history.size() + m_normal_screen_buffer.size();
     }
 
     Line& line(size_t index)
     {
-        if (index < m_history.size())
-            return m_history[(m_history_start + index) % m_history.size()];
-        return m_lines[index - m_history.size()];
+        if (m_use_alternate_screen_buffer) {
+            return m_alternate_screen_buffer[index];
+        } else {
+            if (index < m_history.size())
+                return m_history[(m_history_start + index) % m_history.size()];
+            return m_normal_screen_buffer[index - m_history.size()];
+        }
     }
     const Line& line(size_t index) const
     {
@@ -86,21 +129,23 @@ public:
 
     Line& visible_line(size_t index)
     {
-        return m_lines[index];
+        return active_buffer()[index];
     }
+
     const Line& visible_line(size_t index) const
     {
-        return m_lines[index];
+        return active_buffer()[index];
     }
 
     size_t max_history_size() const { return m_max_history_lines; }
     void set_max_history_size(size_t value)
     {
         if (value == 0) {
+            auto previous_size = m_history.size();
             m_max_history_lines = 0;
             m_history_start = 0;
             m_history.clear();
-            m_client.terminal_history_changed();
+            m_client.terminal_history_changed(-previous_size);
             return;
         }
 
@@ -114,80 +159,138 @@ public:
             }
             m_history = move(new_history);
             m_history_start = 0;
-            m_client.terminal_history_changed();
+            m_client.terminal_history_changed(value - existing_line_count);
         }
         m_max_history_lines = value;
     }
-    size_t history_size() const { return m_history.size(); }
+    size_t history_size() const { return m_use_alternate_screen_buffer ? 0 : m_history.size(); }
+#endif
 
     void inject_string(const StringView&);
     void handle_key_press(KeyCode, u32, u8 flags);
 
+#ifndef KERNEL
     Attribute attribute_at(const Position&) const;
+#endif
 
-private:
-    typedef Vector<unsigned, 4> ParamVector;
+    bool needs_bracketed_paste() const
+    {
+        return m_needs_bracketed_paste;
+    };
 
-    void on_code_point(u32);
+    bool is_within_scroll_region(u16 line) const
+    {
+        return line >= m_scroll_region_top && line <= m_scroll_region_bottom;
+    }
 
-    void scroll_up();
-    void scroll_down();
-    void newline();
-    void set_cursor(unsigned row, unsigned column);
+protected:
+    // ^EscapeSequenceExecutor
+    virtual void emit_code_point(u32) override;
+    virtual void execute_control_code(u8) override;
+    virtual void execute_escape_sequence(Intermediates intermediates, bool ignore, u8 last_byte) override;
+    virtual void execute_csi_sequence(Parameters parameters, Intermediates intermediates, bool ignore, u8 last_byte) override;
+    virtual void execute_osc_sequence(OscParameters parameters, u8 last_byte) override;
+    virtual void dcs_hook(Parameters parameters, Intermediates intermediates, bool ignore, u8 last_byte) override;
+    virtual void receive_dcs_char(u8 byte) override;
+    virtual void execute_dcs_sequence() override;
+
+    struct BufferState {
+        Attribute attribute;
+        CursorPosition cursor;
+    };
+
+    void carriage_return();
+    inline void scroll_up(size_t count = 1);
+    inline void scroll_down(size_t count = 1);
+    void linefeed();
+#ifndef KERNEL
+    void scroll_up(u16 region_top, u16 region_bottom, size_t count);
+    void scroll_down(u16 region_top, u16 region_bottom, size_t count);
+    void scroll_left(u16 row, u16 column, size_t count);
+    void scroll_right(u16 row, u16 column, size_t count);
     void put_character_at(unsigned row, unsigned column, u32 ch);
-    void set_window_title(const String&);
+    void clear_in_line(u16 row, u16 first_column, u16 last_column);
+#else
+    virtual void scroll_up(u16 region_top, u16 region_bottom, size_t count) = 0;
+    virtual void scroll_down(u16 region_top, u16 region_bottom, size_t count) = 0;
+    virtual void scroll_left(u16 row, u16 column, size_t count) = 0;
+    virtual void scroll_right(u16 row, u16 column, size_t count) = 0;
+    virtual void put_character_at(unsigned row, unsigned column, u32 ch) = 0;
+    virtual void clear_in_line(u16 row, u16 first_column, u16 last_column) = 0;
+#endif
 
-    void unimplemented_escape();
-    void unimplemented_xterm_escape();
+    void unimplemented_control_code(u8);
+    void unimplemented_escape_sequence(Intermediates, u8 last_byte);
+    void unimplemented_csi_sequence(Parameters, Intermediates, u8 last_byte);
+    void unimplemented_osc_sequence(OscParameters, u8 last_byte);
 
     void emit_string(const StringView&);
 
-    void alter_mode(bool should_set, bool question_param, const ParamVector&);
+    void alter_ansi_mode(bool should_set, Parameters);
+    void alter_private_mode(bool should_set, Parameters);
 
     // CUU – Cursor Up
-    void CUU(const ParamVector&);
+    void CUU(Parameters);
 
     // CUD – Cursor Down
-    void CUD(const ParamVector&);
+    void CUD(Parameters);
 
     // CUF – Cursor Forward
-    void CUF(const ParamVector&);
+    void CUF(Parameters);
 
     // CUB – Cursor Backward
-    void CUB(const ParamVector&);
+    void CUB(Parameters);
+
+    // CNL - Cursor Next Line
+    void CNL(Parameters);
+
+    // CPL - Cursor Previous Line
+    void CPL(Parameters);
 
     // CUP - Cursor Position
-    void CUP(const ParamVector&);
+    void CUP(Parameters);
 
     // ED - Erase in Display
-    void ED(const ParamVector&);
+    void ED(Parameters);
 
     // EL - Erase in Line
-    void EL(const ParamVector&);
+    void EL(Parameters);
 
     // SGR – Select Graphic Rendition
-    void SGR(const ParamVector&);
+    void SGR(Parameters);
 
     // Save Current Cursor Position
-    void SCOSC(const ParamVector&);
+    void SCOSC();
 
     // Restore Saved Cursor Position
-    void SCORC(const ParamVector&);
+    void SCORC();
+
+    // Save Cursor (and other attributes)
+    void DECSC();
+
+    // Restore Cursor (and other attributes)
+    void DECRC();
 
     // DECSTBM – Set Top and Bottom Margins ("Scrolling Region")
-    void DECSTBM(const ParamVector&);
+    void DECSTBM(Parameters);
 
     // RM – Reset Mode
-    void RM(bool question_param, const ParamVector&);
+    void RM(Parameters);
+
+    // DECRST - DEC Private Mode Reset
+    void DECRST(Parameters);
 
     // SM – Set Mode
-    void SM(bool question_param, const ParamVector&);
+    void SM(Parameters);
+
+    // DECSET - Dec Private Mode Set
+    void DECSET(Parameters);
 
     // DA - Device Attributes
-    void DA(const ParamVector&);
+    void DA(Parameters);
 
     // HVP – Horizontal and Vertical Position
-    void HVP(const ParamVector&);
+    void HVP(Parameters);
 
     // NEL - Next Line
     void NEL();
@@ -198,44 +301,74 @@ private:
     // RI - Reverse Index (move up)
     void RI();
 
+    // DECBI - Back Index
+    void DECBI();
+
+    // DECFI - Forward Index
+    void DECFI();
+
     // DSR - Device Status Reports
-    void DSR(const ParamVector&);
+    void DSR(Parameters);
+
+    // DECSCUSR - Set Cursor Style
+    void DECSCUSR(Parameters);
 
     // ICH - Insert Character
-    void ICH(const ParamVector&);
+    void ICH(Parameters);
 
     // SU - Scroll Up (called "Pan Down" in VT510)
-    void SU(const ParamVector&);
+    void SU(Parameters);
 
     // SD - Scroll Down (called "Pan Up" in VT510)
-    void SD(const ParamVector&);
+    void SD(Parameters);
 
     // IL - Insert Line
-    void IL(const ParamVector&);
+    void IL(Parameters);
 
     // DCH - Delete Character
-    void DCH(const ParamVector&);
+    void DCH(Parameters);
 
     // DL - Delete Line
-    void DL(const ParamVector&);
+    void DL(Parameters);
 
     // CHA - Cursor Horizontal Absolute
-    void CHA(const ParamVector&);
+    void CHA(Parameters);
 
     // REP - Repeat
-    void REP(const ParamVector&);
+    void REP(Parameters);
 
-    // VPA - Vertical Line Position Absolute
-    void VPA(const ParamVector&);
+    // VPA - Line Position Absolute
+    void VPA(Parameters);
+
+    // VPR - Line Position Relative
+    void VPR(Parameters);
+
+    // HPA - Character Position Absolute
+    void HPA(Parameters);
+
+    // HPR - Character Position Relative
+    void HPR(Parameters);
 
     // ECH - Erase Character
-    void ECH(const ParamVector&);
+    void ECH(Parameters);
 
     // FIXME: Find the right names for these.
-    void XTERM_WM(const ParamVector&);
+    void XTERM_WM(Parameters);
 
+    // DECIC - Insert Column
+    void DECIC(Parameters);
+
+    // DECDC - Delete Column
+    void DECDC(Parameters);
+
+#ifndef KERNEL
     TerminalClient& m_client;
+#else
+    Kernel::VirtualConsole& m_client;
+#endif
 
+    EscapeSequenceParser m_parser;
+#ifndef KERNEL
     size_t m_history_start = 0;
     NonnullOwnPtrVector<Line> m_history;
     void add_line_to_history(NonnullOwnPtr<Line>&& line)
@@ -252,7 +385,13 @@ private:
         m_history_start = (m_history_start + 1) % m_history.size();
     }
 
-    NonnullOwnPtrVector<Line> m_lines;
+    NonnullOwnPtrVector<Line>& active_buffer() { return m_use_alternate_screen_buffer ? m_alternate_screen_buffer : m_normal_screen_buffer; };
+    const NonnullOwnPtrVector<Line>& active_buffer() const { return m_use_alternate_screen_buffer ? m_alternate_screen_buffer : m_normal_screen_buffer; };
+    NonnullOwnPtrVector<Line> m_normal_screen_buffer;
+    NonnullOwnPtrVector<Line> m_alternate_screen_buffer;
+#endif
+
+    bool m_use_alternate_screen_buffer { false };
 
     size_t m_scroll_region_top { 0 };
     size_t m_scroll_region_bottom { 0 };
@@ -260,44 +399,38 @@ private:
     u16 m_columns { 1 };
     u16 m_rows { 1 };
 
-    u16 m_cursor_row { 0 };
-    u16 m_cursor_column { 0 };
-    u16 m_saved_cursor_row { 0 };
-    u16 m_saved_cursor_column { 0 };
+    BufferState m_current_state;
+    BufferState m_normal_saved_state;
+    BufferState m_alternate_saved_state;
+
+    // Separate from *_saved_state: some escape sequences only save/restore the cursor position,
+    // while others impact the text attributes and other state too.
+    CursorPosition m_saved_cursor_position;
+
     bool m_swallow_current { false };
     bool m_stomp { false };
 
+    CursorStyle m_cursor_style { BlinkingBlock };
+    CursorStyle m_saved_cursor_style { BlinkingBlock };
+
+    bool m_needs_bracketed_paste { false };
+
     Attribute m_current_attribute;
+    Attribute m_saved_attribute;
 
+    String m_current_window_title;
+    Vector<String> m_title_stack;
+
+#ifndef KERNEL
     u32 m_next_href_id { 0 };
+#endif
 
-    void execute_escape_sequence(u8 final);
-    void execute_xterm_command();
-    void execute_hashtag(u8);
-
-    enum ParserState {
-        Normal,
-        GotEscape,
-        ExpectParameter,
-        ExpectIntermediate,
-        ExpectFinal,
-        ExpectHashtagDigit,
-        ExpectXtermParameter,
-        ExpectStringTerminator,
-        UTF8Needs3Bytes,
-        UTF8Needs2Bytes,
-        UTF8Needs1Byte,
-    };
-
-    ParserState m_parser_state { Normal };
-    u32 m_parser_code_point { 0 };
-    Vector<u8> m_parameters;
-    Vector<u8> m_intermediates;
-    Vector<u8> m_xterm_parameters;
     Vector<bool> m_horizontal_tabs;
-    u8 m_final { 0 };
     u32 m_last_code_point { 0 };
     size_t m_max_history_lines { 1024 };
+
+    Optional<u16> m_column_before_carriage_return;
+    bool m_controls_are_logically_generated { false };
 };
 
 }

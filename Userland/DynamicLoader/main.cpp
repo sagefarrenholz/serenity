@@ -1,33 +1,14 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibC/sys/internals.h>
 #include <LibC/unistd.h>
 #include <LibELF/AuxiliaryVector.h>
 #include <LibELF/DynamicLinker.h>
+#include <LibELF/Relocation.h>
 
 char* __static_environ[] = { nullptr }; // We don't get the environment without some libc workarounds..
 
@@ -55,26 +36,8 @@ static void perform_self_relocations(auxv_t* auxvp)
         }
     }
     VERIFY(found_base_address);
-    Elf32_Ehdr* header = (Elf32_Ehdr*)(base_address);
-    Elf32_Phdr* pheader = (Elf32_Phdr*)(base_address + header->e_phoff);
-    u32 dynamic_section_addr = 0;
-    for (size_t i = 0; i < (size_t)header->e_phnum; ++i, ++pheader) {
-        if (pheader->p_type != PT_DYNAMIC)
-            continue;
-        dynamic_section_addr = pheader->p_vaddr + base_address;
-    }
-    if (!dynamic_section_addr)
+    if (!ELF::perform_relative_relocations(base_address))
         exit(1);
-
-    auto dynamic_object = ELF::DynamicObject::create((VirtualAddress(base_address)), (VirtualAddress(dynamic_section_addr)));
-
-    dynamic_object->relocation_section().for_each_relocation([base_address](auto& reloc) {
-        if (reloc.type() != R_386_RELATIVE)
-            return IterationDecision::Continue;
-
-        *(u32*)reloc.address().as_ptr() += base_address;
-        return IterationDecision::Continue;
-    });
 }
 
 static void display_help()
@@ -95,8 +58,16 @@ extern "C" {
 
 // The compiler expects a previous declaration
 void _start(int, char**, char**);
+void _entry(int, char**, char**);
 
-void _start(int argc, char** argv, char** envp)
+NAKED void _start(int, char**, char**)
+{
+    asm(
+        "push $0\n"
+        "jmp _entry@plt\n");
+}
+
+void _entry(int argc, char** argv, char** envp)
 {
     char** env;
     for (env = envp; *env; ++env) {
@@ -121,7 +92,7 @@ void _start(int argc, char** argv, char** envp)
         }
     }
 
-    if (main_program_name == "/usr/lib/Loader.so") {
+    if (main_program_name == "/usr/lib/Loader.so"sv) {
         // We've been invoked directly as an executable rather than as the
         // ELF interpreter for some other binary. In the future we may want
         // to support launching a program directly from the dynamic loader

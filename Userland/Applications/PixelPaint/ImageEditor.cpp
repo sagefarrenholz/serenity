@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "ImageEditor.h"
@@ -31,51 +11,35 @@
 #include "Tool.h"
 #include <LibGUI/Command.h>
 #include <LibGUI/Painter.h>
+#include <LibGfx/DisjointRectSet.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/Rect.h>
 
 namespace PixelPaint {
 
-ImageEditor::ImageEditor()
-    : m_undo_stack(make<GUI::UndoStack>())
+ImageEditor::ImageEditor(NonnullRefPtr<Image> image)
+    : m_image(move(image))
+    , m_undo_stack(make<GUI::UndoStack>())
+    , m_selection(*this)
 {
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
+    m_undo_stack = make<GUI::UndoStack>();
+    m_undo_stack->push(make<ImageUndoCommand>(*m_image));
+    m_image->add_client(*this);
 }
 
 ImageEditor::~ImageEditor()
 {
-    if (m_image)
-        m_image->remove_client(*this);
-}
-
-void ImageEditor::set_image(RefPtr<Image> image)
-{
-    if (m_image)
-        m_image->remove_client(*this);
-
-    m_image = move(image);
-    m_active_layer = nullptr;
-    m_undo_stack = make<GUI::UndoStack>();
-    m_undo_stack->push(make<ImageUndoCommand>(*m_image));
-    update();
-    relayout();
-
-    if (m_image)
-        m_image->add_client(*this);
+    m_image->remove_client(*this);
 }
 
 void ImageEditor::did_complete_action()
 {
-    if (!m_image)
-        return;
-    m_undo_stack->finalize_current_combo();
     m_undo_stack->push(make<ImageUndoCommand>(*m_image));
 }
 
 bool ImageEditor::undo()
 {
-    if (!m_image)
-        return false;
     if (m_undo_stack->can_undo()) {
         m_undo_stack->undo();
         layers_did_change();
@@ -86,8 +50,6 @@ bool ImageEditor::undo()
 
 bool ImageEditor::redo()
 {
-    if (!m_image)
-        return false;
     if (m_undo_stack->can_redo()) {
         m_undo_stack->redo();
         layers_did_change();
@@ -104,24 +66,45 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
     painter.add_clip_rect(event.rect());
     painter.add_clip_rect(frame_inner_rect());
 
-    Gfx::StylePainter::paint_transparency_grid(painter, rect(), palette());
-
-    if (m_image) {
-        painter.draw_rect(m_editor_image_rect.inflated(2, 2), Color::Black);
-        m_image->paint_into(painter, m_editor_image_rect);
+    {
+        Gfx::DisjointRectSet background_rects;
+        background_rects.add(frame_inner_rect());
+        background_rects.shatter(m_editor_image_rect);
+        for (auto& rect : background_rects.rects())
+            painter.fill_rect(rect, palette().color(Gfx::ColorRole::Tray));
     }
+
+    Gfx::StylePainter::paint_transparency_grid(painter, m_editor_image_rect, palette());
+
+    painter.draw_rect(m_editor_image_rect.inflated(2, 2), Color::Black);
+    m_image->paint_into(painter, m_editor_image_rect);
 
     if (m_active_layer) {
         painter.draw_rect(enclosing_int_rect(image_rect_to_editor_rect(m_active_layer->relative_rect())).inflated(2, 2), Color::Black);
     }
+
+    if (m_show_guides) {
+        for (auto& guide : m_guides) {
+            if (guide.orientation() == Guide::Orientation::Horizontal) {
+                int y_coordinate = (int)image_position_to_editor_position({ 0.0f, guide.offset() }).y();
+                painter.draw_line({ 0, y_coordinate }, { rect().width(), y_coordinate }, Color::Cyan, 1, Gfx::Painter::LineStyle::Dashed, Color::LightGray);
+            } else if (guide.orientation() == Guide::Orientation::Vertical) {
+                int x_coordinate = (int)image_position_to_editor_position({ guide.offset(), 0.0f }).x();
+                painter.draw_line({ x_coordinate, 0 }, { x_coordinate, rect().height() }, Color::Cyan, 1, Gfx::Painter::LineStyle::Dashed, Color::LightGray);
+            }
+        }
+    }
+
+    if (!m_selection.is_empty())
+        m_selection.paint(painter);
 }
 
-Gfx::FloatRect ImageEditor::layer_rect_to_editor_rect(const Layer& layer, const Gfx::IntRect& layer_rect) const
+Gfx::FloatRect ImageEditor::layer_rect_to_editor_rect(Layer const& layer, Gfx::IntRect const& layer_rect) const
 {
     return image_rect_to_editor_rect(layer_rect.translated(layer.location()));
 }
 
-Gfx::FloatRect ImageEditor::image_rect_to_editor_rect(const Gfx::IntRect& image_rect) const
+Gfx::FloatRect ImageEditor::image_rect_to_editor_rect(Gfx::IntRect const& image_rect) const
 {
     Gfx::FloatRect editor_rect;
     editor_rect.set_location(image_position_to_editor_position(image_rect.location()));
@@ -130,7 +113,7 @@ Gfx::FloatRect ImageEditor::image_rect_to_editor_rect(const Gfx::IntRect& image_
     return editor_rect;
 }
 
-Gfx::FloatRect ImageEditor::editor_rect_to_image_rect(const Gfx::IntRect& editor_rect) const
+Gfx::FloatRect ImageEditor::editor_rect_to_image_rect(Gfx::IntRect const& editor_rect) const
 {
     Gfx::FloatRect image_rect;
     image_rect.set_location(editor_position_to_image_position(editor_rect.location()));
@@ -139,12 +122,12 @@ Gfx::FloatRect ImageEditor::editor_rect_to_image_rect(const Gfx::IntRect& editor
     return image_rect;
 }
 
-Gfx::FloatPoint ImageEditor::layer_position_to_editor_position(const Layer& layer, const Gfx::IntPoint& layer_position) const
+Gfx::FloatPoint ImageEditor::layer_position_to_editor_position(Layer const& layer, Gfx::IntPoint const& layer_position) const
 {
     return image_position_to_editor_position(layer_position.translated(layer.location()));
 }
 
-Gfx::FloatPoint ImageEditor::image_position_to_editor_position(const Gfx::IntPoint& image_position) const
+Gfx::FloatPoint ImageEditor::image_position_to_editor_position(Gfx::IntPoint const& image_position) const
 {
     Gfx::FloatPoint editor_position;
     editor_position.set_x(m_editor_image_rect.x() + ((float)image_position.x() * m_scale));
@@ -152,7 +135,7 @@ Gfx::FloatPoint ImageEditor::image_position_to_editor_position(const Gfx::IntPoi
     return editor_position;
 }
 
-Gfx::FloatPoint ImageEditor::editor_position_to_image_position(const Gfx::IntPoint& editor_position) const
+Gfx::FloatPoint ImageEditor::editor_position_to_image_position(Gfx::IntPoint const& editor_position) const
 {
     Gfx::FloatPoint image_position;
     image_position.set_x(((float)editor_position.x() - m_editor_image_rect.x()) / m_scale);
@@ -166,7 +149,7 @@ void ImageEditor::second_paint_event(GUI::PaintEvent& event)
         m_active_tool->on_second_paint(*m_active_layer, event);
 }
 
-GUI::MouseEvent ImageEditor::event_with_pan_and_scale_applied(const GUI::MouseEvent& event) const
+GUI::MouseEvent ImageEditor::event_with_pan_and_scale_applied(GUI::MouseEvent const& event) const
 {
     auto image_position = editor_position_to_image_position(event.position());
     return {
@@ -179,10 +162,10 @@ GUI::MouseEvent ImageEditor::event_with_pan_and_scale_applied(const GUI::MouseEv
     };
 }
 
-GUI::MouseEvent ImageEditor::event_adjusted_for_layer(const GUI::MouseEvent& event, const Layer& layer) const
+GUI::MouseEvent ImageEditor::event_adjusted_for_layer(GUI::MouseEvent const& event, Layer const& layer) const
 {
     auto image_position = editor_position_to_image_position(event.position());
-    image_position.move_by(-layer.location().x(), -layer.location().y());
+    image_position.translate_by(-layer.location().x(), -layer.location().y());
     return {
         static_cast<GUI::Event::Type>(event.type()),
         Gfx::IntPoint(image_position.x(), image_position.y()),
@@ -198,6 +181,7 @@ void ImageEditor::mousedown_event(GUI::MouseEvent& event)
     if (event.button() == GUI::MouseButton::Middle) {
         m_click_position = event.position();
         m_saved_pan_origin = m_pan_origin;
+        set_override_cursor(Gfx::StandardCursor::Drag);
         return;
     }
 
@@ -236,10 +220,16 @@ void ImageEditor::mousemove_event(GUI::MouseEvent& event)
     auto image_event = event_with_pan_and_scale_applied(event);
 
     m_active_tool->on_mousemove(*m_active_layer, layer_event, image_event);
+
+    if (on_image_mouse_position_change) {
+        on_image_mouse_position_change(image_event.position());
+    }
 }
 
 void ImageEditor::mouseup_event(GUI::MouseEvent& event)
 {
+    set_override_cursor(m_active_cursor);
+
     if (!m_active_layer || !m_active_tool)
         return;
     auto layer_event = event_adjusted_for_layer(event, *m_active_layer);
@@ -249,24 +239,8 @@ void ImageEditor::mouseup_event(GUI::MouseEvent& event)
 
 void ImageEditor::mousewheel_event(GUI::MouseEvent& event)
 {
-    auto old_scale = m_scale;
-
-    m_scale += -event.wheel_delta() * 0.1f;
-    if (m_scale < 0.1f)
-        m_scale = 0.1f;
-    if (m_scale > 100.0f)
-        m_scale = 100.0f;
-
-    auto focus_point = Gfx::FloatPoint(
-        m_pan_origin.x() - ((float)event.x() - (float)width() / 2.0) / old_scale,
-        m_pan_origin.y() - ((float)event.y() - (float)height() / 2.0) / old_scale);
-
-    m_pan_origin = Gfx::FloatPoint(
-        focus_point.x() - m_scale / old_scale * (focus_point.x() - m_pan_origin.x()),
-        focus_point.y() - m_scale / old_scale * (focus_point.y() - m_pan_origin.y()));
-
-    if (old_scale != m_scale)
-        relayout();
+    auto scale_delta = -event.wheel_delta() * 0.1f;
+    scale_centered_on_position(event.position(), scale_delta);
 }
 
 void ImageEditor::context_menu_event(GUI::ContextMenuEvent& event)
@@ -294,6 +268,19 @@ void ImageEditor::keyup_event(GUI::KeyEvent& event)
         m_active_tool->on_keyup(event);
 }
 
+void ImageEditor::enter_event(Core::Event&)
+{
+    set_override_cursor(m_active_cursor);
+}
+
+void ImageEditor::leave_event(Core::Event&)
+{
+    set_override_cursor(Gfx::StandardCursor::None);
+
+    if (on_leave)
+        on_leave();
+}
+
 void ImageEditor::set_active_layer(Layer* layer)
 {
     if (m_active_layer == layer)
@@ -301,6 +288,7 @@ void ImageEditor::set_active_layer(Layer* layer)
     m_active_layer = layer;
 
     if (m_active_layer) {
+        VERIFY(&m_active_layer->image() == m_image.ptr());
         size_t index = 0;
         for (; index < m_image->layer_count(); ++index) {
             if (&m_image->layer(index) == layer)
@@ -326,8 +314,10 @@ void ImageEditor::set_active_tool(Tool* tool)
 
     m_active_tool = tool;
 
-    if (m_active_tool)
+    if (m_active_tool) {
         m_active_tool->setup(*this);
+        m_active_cursor = m_active_tool->cursor();
+    }
 }
 
 void ImageEditor::layers_did_change()
@@ -344,7 +334,7 @@ Color ImageEditor::color_for(GUI::MouseButton button) const
     VERIFY_NOT_REACHED();
 }
 
-Color ImageEditor::color_for(const GUI::MouseEvent& event) const
+Color ImageEditor::color_for(GUI::MouseEvent const& event) const
 {
     if (event.buttons() & GUI::MouseButton::Left)
         return m_primary_color;
@@ -371,10 +361,8 @@ void ImageEditor::set_secondary_color(Color color)
         on_secondary_color_change(color);
 }
 
-Layer* ImageEditor::layer_at_editor_position(const Gfx::IntPoint& editor_position)
+Layer* ImageEditor::layer_at_editor_position(Gfx::IntPoint const& editor_position)
 {
-    if (!m_image)
-        return nullptr;
     auto image_position = editor_position_to_image_position(editor_position);
     for (ssize_t i = m_image->layer_count() - 1; i >= 0; --i) {
         auto& layer = m_image->layer(i);
@@ -386,15 +374,55 @@ Layer* ImageEditor::layer_at_editor_position(const Gfx::IntPoint& editor_positio
     return nullptr;
 }
 
+void ImageEditor::clamped_scale(float scale_delta)
+{
+    m_scale += scale_delta;
+    if (m_scale < 0.1f)
+        m_scale = 0.1f;
+    if (m_scale > 100.0f)
+        m_scale = 100.0f;
+}
+
+void ImageEditor::scale_centered_on_position(Gfx::IntPoint const& position, float scale_delta)
+{
+    auto old_scale = m_scale;
+    clamped_scale(scale_delta);
+
+    Gfx::FloatPoint focus_point {
+        m_pan_origin.x() - (position.x() - width() / 2.0f) / old_scale,
+        m_pan_origin.y() - (position.y() - height() / 2.0f) / old_scale
+    };
+
+    m_pan_origin = Gfx::FloatPoint(
+        focus_point.x() - m_scale / old_scale * (focus_point.x() - m_pan_origin.x()),
+        focus_point.y() - m_scale / old_scale * (focus_point.y() - m_pan_origin.y()));
+
+    if (old_scale != m_scale)
+        relayout();
+}
+
+void ImageEditor::scale_by(float scale_delta)
+{
+    if (scale_delta != 0) {
+        clamped_scale(scale_delta);
+        relayout();
+    }
+}
+
+void ImageEditor::reset_scale_and_position()
+{
+    if (m_scale != 1.0f)
+        m_scale = 1.0f;
+
+    m_pan_origin = Gfx::FloatPoint(0, 0);
+    relayout();
+}
+
 void ImageEditor::relayout()
 {
-    if (!image())
-        return;
-    auto& image = *this->image();
-
     Gfx::IntSize new_size;
-    new_size.set_width(image.size().width() * m_scale);
-    new_size.set_height(image.size().height() * m_scale);
+    new_size.set_width(image().size().width() * m_scale);
+    new_size.set_height(image().size().height() * m_scale);
     m_editor_image_rect.set_size(new_size);
 
     Gfx::IntPoint new_location;
@@ -405,14 +433,19 @@ void ImageEditor::relayout()
     update();
 }
 
-void ImageEditor::image_did_change()
+void ImageEditor::image_did_change(Gfx::IntRect const& modified_image_rect)
 {
-    update();
+    update(m_editor_image_rect.intersected(enclosing_int_rect(image_rect_to_editor_rect(modified_image_rect))));
+}
+
+void ImageEditor::image_did_change_title(String const& path)
+{
+    if (on_image_title_change)
+        on_image_title_change(path);
 }
 
 void ImageEditor::image_select_layer(Layer* layer)
 {
     set_active_layer(layer);
 }
-
 }

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -31,9 +11,11 @@
 #include <LibCore/ElapsedTimer.h>
 #include <LibCore/Notifier.h>
 #include <LibCore/Timer.h>
+#include <LibGUI/Clipboard.h>
 #include <LibGUI/Frame.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Rect.h>
+#include <LibVT/Color.h>
 #include <LibVT/Range.h>
 #include <LibVT/Terminal.h>
 
@@ -41,7 +23,8 @@ namespace VT {
 
 class TerminalWidget final
     : public GUI::Frame
-    , public VT::TerminalClient {
+    , public VT::TerminalClient
+    , public GUI::Clipboard::ClipboardClient {
     C_OBJECT(TerminalWidget);
 
 public:
@@ -58,8 +41,6 @@ public:
     void flush_dirty_lines();
 
     void apply_size_increments_to_window(GUI::Window&);
-
-    const Gfx::Font& bold_font() const { return *m_bold_font; }
 
     void set_opacity(u8);
     float opacity() { return m_opacity; };
@@ -102,13 +83,19 @@ public:
     void paste();
     void clear_including_history();
 
+    const StringView color_scheme_name() const { return m_color_scheme_name; }
+
     Function<void(const StringView&)> on_title_change;
     Function<void(const Gfx::IntSize&)> on_terminal_size_change;
     Function<void()> on_command_exit;
 
     GUI::Menu& context_menu() { return *m_context_menu; }
 
+    constexpr Gfx::Color terminal_color_to_rgb(VT::Color) const;
+
     void set_font_and_resize_to_fit(const Gfx::Font&);
+
+    void set_color_scheme(const StringView&);
 
 private:
     // ^GUI::Widget
@@ -134,10 +121,16 @@ private:
     virtual void set_window_title(const StringView&) override;
     virtual void set_window_progress(int value, int max) override;
     virtual void terminal_did_resize(u16 columns, u16 rows) override;
-    virtual void terminal_history_changed() override;
+    virtual void terminal_history_changed(int delta) override;
     virtual void emit(const u8*, size_t) override;
+    virtual void set_cursor_style(CursorStyle) override;
+
+    // ^GUI::Clipboard::ClipboardClient
+    virtual void clipboard_content_did_change(const String&) override { update_paste_action(); }
 
     void set_logical_focus(bool);
+
+    void send_non_user_input(const ReadonlyBytes&);
 
     Gfx::IntRect glyph_rect(u16 row, u16 column);
     Gfx::IntRect row_rect(u16 row);
@@ -173,6 +166,13 @@ private:
     // Snapshot of m_hovered_href when opening a context menu for a hyperlink.
     String m_context_menu_href;
 
+    unsigned m_colors[256];
+    Gfx::Color m_default_foreground_color;
+    Gfx::Color m_default_background_color;
+    bool m_show_bold_text_as_bright { true };
+
+    String m_color_scheme_name;
+
     BellMode m_bell_mode { BellMode::Visible };
     bool m_alt_key_held { false };
     bool m_rectangle_selection { false };
@@ -195,7 +195,7 @@ private:
     bool m_cursor_blink_state { true };
     bool m_automatic_size_policy { false };
 
-    RefPtr<Gfx::Font> m_bold_font;
+    VT::CursorStyle m_cursor_style { BlinkingBlock };
 
     enum class AutoScrollDirection {
         None,
@@ -210,7 +210,7 @@ private:
     RefPtr<Core::Timer> m_auto_scroll_timer;
     RefPtr<Core::ConfigFile> m_config;
 
-    RefPtr<GUI::ScrollBar> m_scrollbar;
+    RefPtr<GUI::Scrollbar> m_scrollbar;
 
     RefPtr<GUI::Action> m_copy_action;
     RefPtr<GUI::Action> m_paste_action;

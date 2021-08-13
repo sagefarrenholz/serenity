@@ -1,35 +1,14 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/HashTable.h>
-#include <AK/String.h>
+#include <AK/IntrusiveList.h>
 #include <AK/Types.h>
-#include <Kernel/Arch/x86/CPU.h>
+#include <Kernel/Arch/x86/RegisterState.h>
 
 namespace Kernel {
 
@@ -47,7 +26,9 @@ public:
     {
         VERIFY(!m_registered);
     }
-    virtual void handle_interrupt(const RegisterState& regs) = 0;
+    // Note: this method returns boolean value, to indicate if the handler handled
+    // the interrupt or not. This is useful for shared handlers mostly.
+    virtual bool handle_interrupt(const RegisterState& regs) = 0;
 
     void will_be_destroyed();
     bool is_registered() const { return m_registered; }
@@ -63,8 +44,8 @@ public:
     virtual bool is_sharing_with_others() const = 0;
 
     virtual HandlerType type() const = 0;
-    virtual const char* purpose() const = 0;
-    virtual const char* controller() const = 0;
+    virtual StringView purpose() const = 0;
+    virtual StringView controller() const = 0;
 
     virtual bool eoi() = 0;
     ALWAYS_INLINE void increment_invoking_counter()
@@ -83,5 +64,10 @@ private:
     u8 m_interrupt_number { 0 };
     bool m_disable_remap { false };
     bool m_registered { false };
+
+    IntrusiveListNode<GenericInterruptHandler> m_list_node;
+
+public:
+    using List = IntrusiveList<GenericInterruptHandler, RawPtr<GenericInterruptHandler>, &GenericInterruptHandler::m_list_node>;
 };
 }

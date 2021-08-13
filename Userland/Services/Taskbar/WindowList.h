@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -68,7 +48,15 @@ public:
     void set_modal(bool modal) { m_modal = modal; }
     bool is_modal() const { return m_modal; }
 
-    void set_progress(int progress)
+    void set_virtual_desktop(unsigned row, unsigned column)
+    {
+        m_virtual_desktop_row = row;
+        m_virtual_desktop_column = column;
+    }
+    unsigned virtual_desktop_row() const { return m_virtual_desktop_row; }
+    unsigned virtual_desktop_column() const { return m_virtual_desktop_column; }
+
+    void set_progress(Optional<int> progress)
     {
         if (m_progress == progress)
             return;
@@ -77,7 +65,7 @@ public:
             m_button->update();
     }
 
-    int progress() const { return m_progress; }
+    Optional<int> progress() const { return m_progress; }
 
     const Gfx::Bitmap* icon() const { return m_icon.ptr(); }
 
@@ -88,10 +76,12 @@ private:
     Gfx::IntRect m_rect;
     RefPtr<GUI::Button> m_button;
     RefPtr<Gfx::Bitmap> m_icon;
+    unsigned m_virtual_desktop_row { 0 };
+    unsigned m_virtual_desktop_column { 0 };
     bool m_active { false };
     bool m_minimized { false };
     bool m_modal { false };
-    int m_progress { -1 };
+    Optional<int> m_progress;
 };
 
 class WindowList {

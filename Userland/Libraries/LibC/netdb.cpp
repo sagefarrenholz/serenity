@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Assertions.h>
@@ -30,6 +10,7 @@
 #include <AK/String.h>
 #include <Kernel/Net/IPv4.h>
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -46,6 +27,11 @@ static in_addr_t* __gethostbyname_address_list_buffer[2];
 
 static hostent __gethostbyaddr_buffer;
 static in_addr_t* __gethostbyaddr_address_list_buffer[2];
+// XXX: IPCCompiler depends on LibC. Because of this, it cannot be compiled
+// before LibC is. However, the lookup magic can only be obtained from the
+// endpoint itself if IPCCompiler has compiled the IPC file, so this creates
+// a chicken-and-egg situation. Because of this, the LookupServer endpoint magic
+// is hardcoded here.
 static constexpr i32 lookup_server_endpoint_magic = 9001;
 
 // Get service entry buffers and file information for the getservent() family of functions.
@@ -206,7 +192,6 @@ static String gethostbyaddr_name_buffer;
 
 hostent* gethostbyaddr(const void* addr, socklen_t addr_size, int type)
 {
-
     if (type != AF_INET) {
         errno = EAFNOSUPPORT;
         return nullptr;
@@ -342,7 +327,7 @@ struct servent* getservent()
         return nullptr;
 
     __getserv_buffer.s_name = const_cast<char*>(__getserv_name_buffer.characters());
-    __getserv_buffer.s_port = __getserv_port_buffer;
+    __getserv_buffer.s_port = htons(__getserv_port_buffer);
     __getserv_buffer.s_proto = const_cast<char*>(__getserv_protocol_buffer.characters());
 
     __getserv_alias_list.clear_with_capacity();
@@ -362,6 +347,9 @@ struct servent* getservent()
 
 struct servent* getservbyname(const char* name, const char* protocol)
 {
+    if (name == nullptr)
+        return nullptr;
+
     bool previous_file_open_setting = keep_service_file_open;
     setservent(1);
     struct servent* current_service = nullptr;
@@ -445,14 +433,14 @@ static bool fill_getserv_buffers(const char* line, ssize_t read)
     // Services file entries should always at least contain
     // name and port/protocol, separated by tabs.
     if (split_line.size() < 2) {
-        fprintf(stderr, "getservent(): malformed services file\n");
+        warnln("getservent(): malformed services file");
         return false;
     }
     __getserv_name_buffer = split_line[0];
 
     auto port_protocol_split = String(split_line[1]).split('/');
     if (port_protocol_split.size() < 2) {
-        fprintf(stderr, "getservent(): malformed services file\n");
+        warnln("getservent(): malformed services file");
         return false;
     }
     auto number = port_protocol_split[0].to_int();
@@ -478,7 +466,7 @@ static bool fill_getserv_buffers(const char* line, ssize_t read)
             }
             auto alias = split_line[i].to_byte_buffer();
             alias.append("\0", sizeof(char));
-            __getserv_alias_list_buffer.append(alias);
+            __getserv_alias_list_buffer.append(move(alias));
         }
     }
 
@@ -627,7 +615,7 @@ static bool fill_getproto_buffers(const char* line, ssize_t read)
     // This indicates an incorrect file format. Protocols file entries should
     // always have at least a name and a protocol.
     if (split_line.size() < 2) {
-        fprintf(stderr, "getprotoent(): malformed protocols file\n");
+        warnln("getprotoent(): malformed protocols file");
         return false;
     }
     __getproto_name_buffer = split_line[0];
@@ -648,7 +636,7 @@ static bool fill_getproto_buffers(const char* line, ssize_t read)
                 break;
             auto alias = split_line[i].to_byte_buffer();
             alias.append("\0", sizeof(char));
-            __getproto_alias_list_buffer.append(alias);
+            __getproto_alias_list_buffer.append(move(alias));
         }
     }
 
@@ -657,20 +645,169 @@ static bool fill_getproto_buffers(const char* line, ssize_t read)
 
 int getaddrinfo(const char* __restrict node, const char* __restrict service, const struct addrinfo* __restrict hints, struct addrinfo** __restrict res)
 {
-    (void)node;
-    (void)service;
-    (void)hints;
-    (void)res;
-    VERIFY_NOT_REACHED();
+    dbgln("getaddrinfo: node={}, service={}, hints->ai_family={}", (const char*)node, (const char*)service, hints ? hints->ai_family : 0);
+
+    *res = nullptr;
+
+    if (hints && hints->ai_family != AF_INET && hints->ai_family != AF_UNSPEC)
+        return EAI_FAMILY;
+
+    if (!node) {
+        if (hints && hints->ai_flags & AI_PASSIVE)
+            node = "0.0.0.0";
+        else
+            node = "127.0.0.1";
+    }
+
+    auto host_ent = gethostbyname(node);
+    if (!host_ent)
+        return EAI_FAIL;
+
+    const char* proto = nullptr;
+    if (hints && hints->ai_socktype) {
+        switch (hints->ai_socktype) {
+        case SOCK_STREAM:
+            proto = "tcp";
+            break;
+        case SOCK_DGRAM:
+            proto = "udp";
+            break;
+        default:
+            return EAI_SOCKTYPE;
+        }
+    }
+
+    long port;
+    int socktype;
+    servent* svc_ent = nullptr;
+    if (!hints || (hints->ai_flags & AI_NUMERICSERV) == 0) {
+        svc_ent = getservbyname(service, proto);
+    }
+    if (!svc_ent) {
+        if (service) {
+            char* end;
+            port = htons(strtol(service, &end, 10));
+            if (*end)
+                return EAI_FAIL;
+        } else {
+            port = htons(0);
+        }
+
+        if (hints && hints->ai_socktype != 0)
+            socktype = hints->ai_socktype;
+        else
+            socktype = SOCK_STREAM;
+    } else {
+        port = svc_ent->s_port;
+        socktype = strcmp(svc_ent->s_proto, "tcp") ? SOCK_STREAM : SOCK_DGRAM;
+    }
+
+    addrinfo* first_info = nullptr;
+    addrinfo* prev_info = nullptr;
+
+    for (int host_index = 0; host_ent->h_addr_list[host_index]; host_index++) {
+        sockaddr_in* sin = new sockaddr_in;
+        sin->sin_family = AF_INET;
+        sin->sin_port = port;
+        memcpy(&sin->sin_addr.s_addr, host_ent->h_addr_list[host_index], host_ent->h_length);
+
+        addrinfo* info = new addrinfo;
+        info->ai_flags = 0;
+        info->ai_family = AF_INET;
+        info->ai_socktype = socktype;
+        info->ai_protocol = PF_INET;
+        info->ai_addrlen = sizeof(*sin);
+        info->ai_addr = reinterpret_cast<sockaddr*>(sin);
+
+        if (hints && hints->ai_flags & AI_CANONNAME)
+            info->ai_canonname = strdup(host_ent->h_name);
+        else
+            info->ai_canonname = nullptr;
+
+        info->ai_next = nullptr;
+
+        if (!first_info)
+            first_info = info;
+
+        if (prev_info)
+            prev_info->ai_next = info;
+
+        prev_info = info;
+    }
+
+    if (first_info) {
+        *res = first_info;
+        return 0;
+    } else
+        return EAI_NONAME;
 }
+
 void freeaddrinfo(struct addrinfo* res)
 {
-    (void)res;
-    VERIFY_NOT_REACHED();
+    if (res) {
+        delete reinterpret_cast<sockaddr_in*>(res->ai_addr);
+        free(res->ai_canonname);
+        freeaddrinfo(res->ai_next);
+        delete res;
+    }
 }
+
 const char* gai_strerror(int errcode)
 {
-    (void)errcode;
-    return "Not yet implemented";
+    switch (errcode) {
+    case EAI_ADDRFAMILY:
+        return "no address for this address family available";
+    case EAI_AGAIN:
+        return "name server returned temporary failure";
+    case EAI_BADFLAGS:
+        return "invalid flags";
+    case EAI_FAIL:
+        return "name server returned permanent failure";
+    case EAI_FAMILY:
+        return "unsupported address family";
+    case EAI_MEMORY:
+        return "out of memory";
+    case EAI_NODATA:
+        return "no address available";
+    case EAI_NONAME:
+        return "node or service is not known";
+    case EAI_SERVICE:
+        return "service not available";
+    case EAI_SOCKTYPE:
+        return "unsupported socket type";
+    case EAI_SYSTEM:
+        return "system error";
+    case EAI_OVERFLOW:
+        return "buffer too small";
+    default:
+        return "invalid error code";
+    }
+}
+
+int getnameinfo(const struct sockaddr* __restrict addr, socklen_t addrlen, char* __restrict host, socklen_t hostlen, char* __restrict serv, socklen_t servlen, int flags)
+{
+    if (addr->sa_family != AF_INET || addrlen < sizeof(sockaddr_in))
+        return EAI_FAMILY;
+
+    const sockaddr_in* sin = reinterpret_cast<const sockaddr_in*>(addr);
+
+    if (host && hostlen > 0) {
+        if (flags & NI_NAMEREQD)
+            dbgln("getnameinfo flag NI_NAMEREQD not implemented");
+
+        if (!inet_ntop(AF_INET, &sin->sin_addr, host, hostlen)) {
+            if (errno == ENOSPC)
+                return EAI_OVERFLOW;
+            else
+                return EAI_SYSTEM;
+        }
+    }
+
+    if (serv && servlen > 0) {
+        if (snprintf(serv, servlen, "%d", (int)ntohs(sin->sin_port)) > (int)servlen)
+            return EAI_OVERFLOW;
+    }
+
+    return 0;
 }
 }

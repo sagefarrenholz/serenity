@@ -4,7 +4,7 @@
 There are currently issues with running Serenity in VirtualBox. Please refer to the [open issue](https://github.com/SerenityOS/serenity/issues/2927) for a list of currently known issues. Anything that doesn't currently work will be noted in this document.
 
 ## Creating the disk image
-Before creating a disk image that will work in VirtualBox, you will need to create a GRUB image as described in the [Serenity installation guide](https://github.com/SerenityOS/serenity/blob/master/Documentation/INSTALL.md). Please skip the final step of that section, as that is only relevant for putting the image onto a real drive. You **cannot** use the same disk image created for QEMU. Using that image will halt immediately with the message ``FATAL: No bootable medium found! System halted.``
+Before creating a disk image that will work in VirtualBox, you will need to create a GRUB image as described in the [Serenity installation guide](BareMetalInstallation.md). Please skip the final step of that section, as that is only relevant for putting the image onto a real drive. You **cannot** use the same disk image created for QEMU. Using that image will halt immediately with the message ``FATAL: No bootable medium found! System halted.``
 
 There are a couple of ways to convert the disk image:
 
@@ -25,8 +25,8 @@ Note that if you are on Windows and you do not have QEMU or VirtualBox in your P
 
 1. Open the **Create Virtual Machine** dialog. Switch to **Expert Mode**.
 2. Feel free to give it any name and store it anywhere.
-3. Switch the **Type** to **Other** and the **Version** to **Other/Unknown**.
-4. Serenity requires at minimum 32 MB of memory. Set **Memory size** equal to or above 32 MB. The currently recommended size is 256 MB. Please note that Serenity is currently a 32-bit system, so anything above the ~3.5 GB mark will not be recognized.
+3. Switch the **Type** to **Other** and the **Version** to **Other/Unknown (64-bit)**.
+4. Serenity requires at minimum 256 MB of memory. Set **Memory size** equal to or above 256 MB. The currently recommended size is 1024 MB. Please note that Serenity is currently a 32-bit system, so anything above the ~3.5 GB mark will not be recognized.
 5. For **Hard disk**, select **Use an existing virtual hard disk file**. Click the folder icon next to the dropdown to open the **Hard Disk Selector**.
 6. Click **Add**. Browse to where you stored the converted disk image from the previous stage and add it. Click **Choose**.
 7. Finally click **Create**.
@@ -60,6 +60,12 @@ There are a couple of settings to check:
 Please note that at the time of writing, audio and networking do not work in VirtualBox.
 
 That is all you need to boot Serenity in VirtualBox! Read on for additional configuration you may want to use.
+
+## Blinking cursor after GRUB menu
+If you only see a blinking cursor after selecting an option in the GRUB menu, it is very likely you have encountered one of the errors listed in the [troubleshooting document.](Troubleshooting.md)
+
+- Check that you have enabled PAE/NX in the **Settings** > **System** > **Processor** tab.
+- If you are using a 64-bit disk image, check that **Version** is set to **Other/Unknown (64-bit)** instead of **Other/Unknown** in **Settings** > **General**.
 
 ## Additional configuration (optional)
 For serial debugging, go to **Serial Ports** and enable port 1. Feel free to set the **Port Mode** to anything if you know what you're doing. The recommended mode is **Raw File**. Set **Path/Address** to where you want to store the file. This must also include the file name.

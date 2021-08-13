@@ -1,31 +1,10 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Singleton.h>
-#include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <Kernel/FileSystem/DevPtsFS.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
@@ -35,7 +14,7 @@ namespace Kernel {
 
 NonnullRefPtr<DevPtsFS> DevPtsFS::create()
 {
-    return adopt(*new DevPtsFS);
+    return adopt_ref(*new DevPtsFS);
 }
 
 DevPtsFS::DevPtsFS()
@@ -46,11 +25,11 @@ DevPtsFS::~DevPtsFS()
 {
 }
 
-static AK::Singleton<HashTable<unsigned>> s_ptys;
+static Singleton<HashTable<unsigned>> s_ptys;
 
 bool DevPtsFS::initialize()
 {
-    m_root_inode = adopt(*new DevPtsFSInode(*this, 1, nullptr));
+    m_root_inode = adopt_ref(*new DevPtsFSInode(*this, 1, nullptr));
     m_root_inode->m_metadata.inode = { fsid(), 1 };
     m_root_inode->m_metadata.mode = 0040555;
     m_root_inode->m_metadata.uid = 0;
@@ -72,7 +51,7 @@ static InodeIndex pty_index_to_inode_index(unsigned pty_index)
     return pty_index + 2;
 }
 
-NonnullRefPtr<Inode> DevPtsFS::root_inode() const
+Inode& DevPtsFS::root_inode()
 {
     return *m_root_inode;
 }
@@ -86,7 +65,7 @@ RefPtr<Inode> DevPtsFS::get_inode(InodeIdentifier inode_id) const
     auto* device = Device::get_device(201, pty_index);
     VERIFY(device);
 
-    auto inode = adopt(*new DevPtsFSInode(const_cast<DevPtsFS&>(*this), inode_id.index(), static_cast<SlavePTY*>(device)));
+    auto inode = adopt_ref(*new DevPtsFSInode(const_cast<DevPtsFS&>(*this), inode_id.index(), static_cast<SlavePTY*>(device)));
     inode->m_metadata.inode = inode_id;
     inode->m_metadata.size = 0;
     inode->m_metadata.uid = device->uid();
@@ -120,12 +99,12 @@ DevPtsFSInode::~DevPtsFSInode()
 {
 }
 
-ssize_t DevPtsFSInode::read_bytes(off_t, ssize_t, UserOrKernelBuffer&, FileDescription*) const
+KResultOr<size_t> DevPtsFSInode::read_bytes(off_t, size_t, UserOrKernelBuffer&, FileDescription*) const
 {
     VERIFY_NOT_REACHED();
 }
 
-ssize_t DevPtsFSInode::write_bytes(off_t, ssize_t, const UserOrKernelBuffer&, FileDescription*)
+KResultOr<size_t> DevPtsFSInode::write_bytes(off_t, size_t, const UserOrKernelBuffer&, FileDescription*)
 {
     VERIFY_NOT_REACHED();
 }
@@ -140,7 +119,7 @@ InodeMetadata DevPtsFSInode::metadata() const
     return m_metadata;
 }
 
-KResult DevPtsFSInode::traverse_as_directory(Function<bool(const FS::DirectoryEntryView&)> callback) const
+KResult DevPtsFSInode::traverse_as_directory(Function<bool(FileSystem::DirectoryEntryView const&)> callback) const
 {
     if (identifier().index() > 1)
         return ENOTDIR;
@@ -155,13 +134,6 @@ KResult DevPtsFSInode::traverse_as_directory(Function<bool(const FS::DirectoryEn
     }
 
     return KSuccess;
-}
-
-KResultOr<size_t> DevPtsFSInode::directory_entry_count() const
-{
-    VERIFY(identifier().index() == 1);
-
-    return 2 + s_ptys->size();
 }
 
 RefPtr<Inode> DevPtsFSInode::lookup(StringView name)
@@ -190,7 +162,7 @@ KResult DevPtsFSInode::add_child(Inode&, const StringView&, mode_t)
     return EROFS;
 }
 
-KResultOr<NonnullRefPtr<Inode>> DevPtsFSInode::create_child(const String&, mode_t, dev_t, uid_t, gid_t)
+KResultOr<NonnullRefPtr<Inode>> DevPtsFSInode::create_child(StringView, mode_t, dev_t, uid_t, gid_t)
 {
     return EROFS;
 }
@@ -202,12 +174,12 @@ KResult DevPtsFSInode::remove_child(const StringView&)
 
 KResult DevPtsFSInode::chmod(mode_t)
 {
-    return EPERM;
+    return EROFS;
 }
 
 KResult DevPtsFSInode::chown(uid_t, gid_t)
 {
-    return EPERM;
+    return EROFS;
 }
 
 }

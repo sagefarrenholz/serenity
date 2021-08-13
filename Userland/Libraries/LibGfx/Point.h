@@ -1,45 +1,25 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Format.h>
+#include <AK/Math.h>
 #include <AK/StdLibExtras.h>
+#include <LibGfx/AffineTransform.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Orientation.h>
 #include <LibIPC/Forward.h>
-#include <math.h>
-#include <stdlib.h>
 
 namespace Gfx {
 
 template<typename T>
 class Point {
 public:
-    Point() { }
+    Point() = default;
 
     Point(T x, T y)
         : m_x(x)
@@ -55,91 +35,129 @@ public:
     }
 
     template<typename U>
-    explicit Point(const Point<U>& other)
+    explicit Point(Point<U> const& other)
         : m_x(other.x())
         , m_y(other.y())
     {
     }
 
-    T x() const { return m_x; }
-    T y() const { return m_y; }
+    [[nodiscard]] ALWAYS_INLINE T x() const { return m_x; }
+    [[nodiscard]] ALWAYS_INLINE T y() const { return m_y; }
 
-    void set_x(T x) { m_x = x; }
-    void set_y(T y) { m_y = y; }
+    ALWAYS_INLINE void set_x(T x) { m_x = x; }
+    ALWAYS_INLINE void set_y(T y) { m_y = y; }
 
-    void move_by(T dx, T dy)
+    [[nodiscard]] ALWAYS_INLINE bool is_null() const { return !m_x && !m_y; }
+    [[nodiscard]] ALWAYS_INLINE bool is_empty() const { return m_x <= 0 && m_y <= 0; }
+
+    void translate_by(T dx, T dy)
     {
         m_x += dx;
         m_y += dy;
     }
 
-    void move_by(const Point<T>& delta)
+    ALWAYS_INLINE void translate_by(T dboth) { translate_by(dboth, dboth); }
+    ALWAYS_INLINE void translate_by(Point<T> const& delta) { translate_by(delta.x(), delta.y()); }
+
+    void scale_by(T dx, T dy)
     {
-        move_by(delta.x(), delta.y());
+        m_x *= dx;
+        m_y *= dy;
     }
 
-    Point<T> translated(const Point<T>& delta) const
+    ALWAYS_INLINE void scale_by(T dboth) { scale_by(dboth, dboth); }
+    ALWAYS_INLINE void scale_by(Point<T> const& delta) { scale_by(delta.x(), delta.y()); }
+
+    void transform_by(AffineTransform const& transform) { *this = transform.map(*this); }
+
+    [[nodiscard]] Point<T> translated(Point<T> const& delta) const
     {
         Point<T> point = *this;
-        point.move_by(delta);
+        point.translate_by(delta);
         return point;
     }
 
-    Point<T> translated(T dx, T dy) const
+    [[nodiscard]] Point<T> translated(T dx, T dy) const
     {
         Point<T> point = *this;
-        point.move_by(dx, dy);
+        point.translate_by(dx, dy);
         return point;
     }
 
-    Point<T> translated(T dboth) const
+    [[nodiscard]] Point<T> translated(T dboth) const
     {
         Point<T> point = *this;
-        point.move_by(dboth, dboth);
+        point.translate_by(dboth, dboth);
         return point;
     }
 
-    void constrain(const Rect<T>&);
-    Point<T> constrained(const Rect<T>& rect) const
+    [[nodiscard]] Point<T> scaled(Point<T> const& delta) const
+    {
+        Point<T> point = *this;
+        point.scale_by(delta);
+        return point;
+    }
+
+    [[nodiscard]] Point<T> scaled(T sx, T sy) const
+    {
+        Point<T> point = *this;
+        point.scale_by(sx, sy);
+        return point;
+    }
+
+    [[nodiscard]] Point<T> transformed(AffineTransform const& transform) const
+    {
+        Point<T> point = *this;
+        point.transform_by(transform);
+        return point;
+    }
+
+    void constrain(Rect<T> const&);
+    [[nodiscard]] Point<T> constrained(Rect<T> const& rect) const
     {
         Point<T> point = *this;
         point.constrain(rect);
         return point;
     }
 
+    [[nodiscard]] Point<T> moved_left(T amount) const { return { x() - amount, y() }; }
+    [[nodiscard]] Point<T> moved_right(T amount) const { return { x() + amount, y() }; }
+    [[nodiscard]] Point<T> moved_up(T amount) const { return { x(), y() - amount }; }
+    [[nodiscard]] Point<T> moved_down(T amount) const { return { x(), y() + amount }; }
+
     template<class U>
-    bool operator==(const Point<U>& other) const
+    [[nodiscard]] bool operator==(Point<U> const& other) const
     {
         return x() == other.x() && y() == other.y();
     }
 
     template<class U>
-    bool operator!=(const Point<U>& other) const
+    [[nodiscard]] bool operator!=(Point<U> const& other) const
     {
         return !(*this == other);
     }
 
-    Point<T> operator+(const Point<T>& other) const { return { m_x + other.m_x, m_y + other.m_y }; }
+    [[nodiscard]] Point<T> operator+(Point<T> const& other) const { return { m_x + other.m_x, m_y + other.m_y }; }
 
-    Point<T>& operator+=(const Point<T>& other)
+    Point<T>& operator+=(Point<T> const& other)
     {
         m_x += other.m_x;
         m_y += other.m_y;
         return *this;
     }
 
-    Point<T> operator-() const { return { -m_x, -m_y }; }
+    [[nodiscard]] Point<T> operator-() const { return { -m_x, -m_y }; }
 
-    Point<T> operator-(const Point<T>& other) const { return { m_x - other.m_x, m_y - other.m_y }; }
+    [[nodiscard]] Point<T> operator-(Point<T> const& other) const { return { m_x - other.m_x, m_y - other.m_y }; }
 
-    Point<T>& operator-=(const Point<T>& other)
+    Point<T>& operator-=(Point<T> const& other)
     {
         m_x -= other.m_x;
         m_y -= other.m_y;
         return *this;
     }
 
-    Point<T> operator*(T factor) const { return { m_x * factor, m_y * factor }; }
+    [[nodiscard]] Point<T> operator*(T factor) const { return { m_x * factor, m_y * factor }; }
 
     Point<T>& operator*=(T factor)
     {
@@ -148,7 +166,7 @@ public:
         return *this;
     }
 
-    Point<T> operator/(T factor) const { return { m_x / factor, m_y / factor }; }
+    [[nodiscard]] Point<T> operator/(T factor) const { return { m_x / factor, m_y / factor }; }
 
     Point<T>& operator/=(T factor)
     {
@@ -157,9 +175,7 @@ public:
         return *this;
     }
 
-    bool is_null() const { return !m_x && !m_y; }
-
-    T primary_offset_for_orientation(Orientation orientation) const
+    [[nodiscard]] T primary_offset_for_orientation(Orientation orientation) const
     {
         return orientation == Orientation::Vertical ? y() : x();
     }
@@ -173,7 +189,7 @@ public:
         }
     }
 
-    T secondary_offset_for_orientation(Orientation orientation) const
+    [[nodiscard]] T secondary_offset_for_orientation(Orientation orientation) const
     {
         return orientation == Orientation::Vertical ? x() : y();
     }
@@ -187,41 +203,41 @@ public:
         }
     }
 
-    T dx_relative_to(const Point<T>& other) const
+    [[nodiscard]] T dx_relative_to(Point<T> const& other) const
     {
         return x() - other.x();
     }
 
-    T dy_relative_to(const Point<T>& other) const
+    [[nodiscard]] T dy_relative_to(Point<T> const& other) const
     {
         return y() - other.y();
     }
 
     // Returns pixels moved from other in either direction
-    T pixels_moved(const Point<T>& other) const
+    [[nodiscard]] T pixels_moved(Point<T> const& other) const
     {
-        return max(abs(dx_relative_to(other)), abs(dy_relative_to(other)));
+        return max(AK::abs(dx_relative_to(other)), AK::abs(dy_relative_to(other)));
     }
 
-    float distance_from(const Point<T>& other) const
+    [[nodiscard]] float distance_from(Point<T> const& other) const
     {
         if (*this == other)
             return 0;
-        return sqrtf(powf(m_x - other.m_x, 2.0f) + powf(m_y - other.m_y, 2.0f));
+        return AK::hypot<float>(m_x - other.m_x, m_y - other.m_y);
     }
 
-    Point absolute_relative_distance_to(const Point& other) const
+    [[nodiscard]] Point absolute_relative_distance_to(Point const& other) const
     {
-        return { abs(dx_relative_to(other)), abs(dy_relative_to(other)) };
+        return { AK::abs(dx_relative_to(other)), AK::abs(dy_relative_to(other)) };
     }
 
     template<typename U>
-    Point<U> to_type() const
+    [[nodiscard]] Point<U> to_type() const
     {
         return Point<U>(*this);
     }
 
-    String to_string() const;
+    [[nodiscard]] String to_string() const;
 
 private:
     T m_x { 0 };
@@ -237,7 +253,7 @@ namespace AK {
 
 template<typename T>
 struct Formatter<Gfx::Point<T>> : Formatter<StringView> {
-    void format(FormatBuilder& builder, const Gfx::Point<T>& value)
+    void format(FormatBuilder& builder, Gfx::Point<T> const& value)
     {
         Formatter<StringView>::format(builder, value.to_string());
     }
@@ -247,7 +263,7 @@ struct Formatter<Gfx::Point<T>> : Formatter<StringView> {
 
 namespace IPC {
 
-bool encode(Encoder&, const Gfx::IntPoint&);
+bool encode(Encoder&, Gfx::IntPoint const&);
 bool decode(Decoder&, Gfx::IntPoint&);
 
 }

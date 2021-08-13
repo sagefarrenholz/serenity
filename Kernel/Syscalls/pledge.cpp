@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/StringView.h>
@@ -29,8 +9,9 @@
 
 namespace Kernel {
 
-KResultOr<int> Process::sys$pledge(Userspace<const Syscall::SC_pledge_params*> user_params)
+KResultOr<FlatPtr> Process::sys$pledge(Userspace<const Syscall::SC_pledge_params*> user_params)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     Syscall::SC_pledge_params params;
     if (!copy_from_user(&params, user_params))
         return EFAULT;
@@ -38,25 +19,27 @@ KResultOr<int> Process::sys$pledge(Userspace<const Syscall::SC_pledge_params*> u
     if (params.promises.length > 1024 || params.execpromises.length > 1024)
         return E2BIG;
 
-    String promises;
+    OwnPtr<KString> promises;
     if (params.promises.characters) {
-        promises = copy_string_from_user(params.promises);
-        if (promises.is_null())
-            return EFAULT;
+        auto promises_or_error = try_copy_kstring_from_user(params.promises);
+        if (promises_or_error.is_error())
+            return promises_or_error.error();
+        promises = promises_or_error.release_value();
     }
 
-    String execpromises;
+    OwnPtr<KString> execpromises;
     if (params.execpromises.characters) {
-        execpromises = copy_string_from_user(params.execpromises);
-        if (execpromises.is_null())
-            return EFAULT;
+        auto execpromises_or_error = try_copy_kstring_from_user(params.execpromises);
+        if (execpromises_or_error.is_error())
+            return execpromises_or_error.error();
+        execpromises = execpromises_or_error.release_value();
     }
 
-    auto parse_pledge = [&](auto& pledge_spec, u32& mask) {
+    auto parse_pledge = [&](auto pledge_spec, u32& mask) {
         auto parts = pledge_spec.split_view(' ');
         for (auto& part : parts) {
 #define __ENUMERATE_PLEDGE_PROMISE(x)   \
-    if (part == #x) {                   \
+    if (part == StringView { #x }) {    \
         mask |= (1u << (u32)Pledge::x); \
         continue;                       \
     }
@@ -69,25 +52,35 @@ KResultOr<int> Process::sys$pledge(Userspace<const Syscall::SC_pledge_params*> u
 
     ProtectedDataMutationScope scope { *this };
 
-    if (!promises.is_null()) {
-        u32 new_promises = 0;
-        if (!parse_pledge(promises, new_promises))
+    u32 new_promises = 0;
+    if (promises) {
+        if (!parse_pledge(promises->view(), new_promises))
             return EINVAL;
-        if (m_promises && (!new_promises || new_promises & ~m_promises))
+        if (m_protected_values.has_promises && (new_promises & ~m_protected_values.promises))
             return EPERM;
-
-        m_has_promises = true;
-        m_promises = new_promises;
     }
 
-    if (!execpromises.is_null()) {
-        u32 new_execpromises = 0;
-        if (!parse_pledge(execpromises, new_execpromises))
+    u32 new_execpromises = 0;
+    if (execpromises) {
+        if (!parse_pledge(execpromises->view(), new_execpromises))
             return EINVAL;
-        if (m_execpromises && (!new_execpromises || new_execpromises & ~m_execpromises))
+        if (m_protected_values.has_execpromises && (new_execpromises & ~m_protected_values.execpromises))
             return EPERM;
-        m_has_execpromises = true;
-        m_execpromises = new_execpromises;
+    }
+
+    // Only apply promises after all validation has occurred, this ensures
+    // we don't introduce logic bugs like applying the promises, and then
+    // erroring out when parsing the exec promises later. Such bugs silently
+    // leave the caller in an unexpected state.
+
+    if (promises) {
+        m_protected_values.has_promises = true;
+        m_protected_values.promises = new_promises;
+    }
+
+    if (execpromises) {
+        m_protected_values.has_execpromises = true;
+        m_protected_values.execpromises = new_execpromises;
     }
 
     return 0;

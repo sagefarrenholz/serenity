@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
@@ -186,7 +166,7 @@ struct BMPLoadingContext {
 
 static RefPtr<Bitmap> load_bmp_impl(const u8*, size_t);
 
-RefPtr<Gfx::Bitmap> load_bmp(const StringView& path)
+RefPtr<Gfx::Bitmap> load_bmp(String const& path)
 {
     auto file_or_error = MappedFile::map(path);
     if (file_or_error.is_error())
@@ -205,9 +185,9 @@ RefPtr<Gfx::Bitmap> load_bmp_from_memory(const u8* data, size_t length)
     return bitmap;
 }
 
-class Streamer {
+class InputStreamer {
 public:
-    Streamer(const u8* data, size_t size)
+    InputStreamer(const u8* data, size_t size)
         : m_data_ptr(data)
         , m_size_remaining(size)
     {
@@ -431,7 +411,7 @@ static bool check_for_invalid_bitmask_combinations(BMPLoadingContext& context)
     return true;
 }
 
-static bool set_dib_bitmasks(BMPLoadingContext& context, Streamer& streamer)
+static bool set_dib_bitmasks(BMPLoadingContext& context, InputStreamer& streamer)
 {
     if (!check_for_invalid_bitmask_combinations(context))
         return false;
@@ -444,9 +424,9 @@ static bool set_dib_bitmasks(BMPLoadingContext& context, Streamer& streamer)
     auto& type = context.dib_type;
 
     if (type > DIBType::OSV2 && bpp == 16 && compression == Compression::RGB) {
-        context.dib.info.masks.append({ 0x7c00, 0x03e0, 0x001f });
-        context.dib.info.mask_shifts.append({ 7, 2, -3 });
-        context.dib.info.mask_sizes.append({ 5, 5, 5 });
+        context.dib.info.masks.extend({ 0x7c00, 0x03e0, 0x001f });
+        context.dib.info.mask_shifts.extend({ 7, 2, -3 });
+        context.dib.info.mask_sizes.extend({ 5, 5, 5 });
     } else if (type == DIBType::Info && (compression == Compression::BITFIELDS || compression == Compression::ALPHABITFIELDS)) {
         // Consume the extra BITFIELDS bytes
         auto number_of_mask_fields = compression == Compression::ALPHABITFIELDS ? 4 : 3;
@@ -476,7 +456,7 @@ static bool decode_bmp_header(BMPLoadingContext& context)
         return false;
     }
 
-    Streamer streamer(context.file_bytes, bmp_header_size);
+    InputStreamer streamer(context.file_bytes, bmp_header_size);
 
     u16 header = streamer.read_u16();
     if (header != 0x4d42) {
@@ -510,7 +490,7 @@ static bool decode_bmp_header(BMPLoadingContext& context)
     return true;
 }
 
-static bool decode_bmp_core_dib(BMPLoadingContext& context, Streamer& streamer)
+static bool decode_bmp_core_dib(BMPLoadingContext& context, InputStreamer& streamer)
 {
     auto& core = context.dib.core;
 
@@ -571,7 +551,7 @@ ALWAYS_INLINE static bool is_supported_compression_format(BMPLoadingContext& con
         || compression == Compression::RLE4 || (compression == Compression::RLE24 && context.dib_type <= DIBType::OSV2);
 }
 
-static bool decode_bmp_osv2_dib(BMPLoadingContext& context, Streamer& streamer, bool short_variant = false)
+static bool decode_bmp_osv2_dib(BMPLoadingContext& context, InputStreamer& streamer, bool short_variant = false)
 {
     auto& core = context.dib.core;
 
@@ -656,7 +636,7 @@ static bool decode_bmp_osv2_dib(BMPLoadingContext& context, Streamer& streamer, 
     return true;
 }
 
-static bool decode_bmp_info_dib(BMPLoadingContext& context, Streamer& streamer)
+static bool decode_bmp_info_dib(BMPLoadingContext& context, InputStreamer& streamer)
 {
     if (!decode_bmp_core_dib(context, streamer))
         return false;
@@ -696,7 +676,7 @@ static bool decode_bmp_info_dib(BMPLoadingContext& context, Streamer& streamer)
     return true;
 }
 
-static bool decode_bmp_v2_dib(BMPLoadingContext& context, Streamer& streamer)
+static bool decode_bmp_v2_dib(BMPLoadingContext& context, InputStreamer& streamer)
 {
     if (!decode_bmp_info_dib(context, streamer))
         return false;
@@ -714,7 +694,7 @@ static bool decode_bmp_v2_dib(BMPLoadingContext& context, Streamer& streamer)
     return true;
 }
 
-static bool decode_bmp_v3_dib(BMPLoadingContext& context, Streamer& streamer)
+static bool decode_bmp_v3_dib(BMPLoadingContext& context, InputStreamer& streamer)
 {
     if (!decode_bmp_v2_dib(context, streamer))
         return false;
@@ -739,7 +719,7 @@ static bool decode_bmp_v3_dib(BMPLoadingContext& context, Streamer& streamer)
     return true;
 }
 
-static bool decode_bmp_v4_dib(BMPLoadingContext& context, Streamer& streamer)
+static bool decode_bmp_v4_dib(BMPLoadingContext& context, InputStreamer& streamer)
 {
     if (!decode_bmp_v3_dib(context, streamer))
         return false;
@@ -762,7 +742,7 @@ static bool decode_bmp_v4_dib(BMPLoadingContext& context, Streamer& streamer)
     return true;
 }
 
-static bool decode_bmp_v5_dib(BMPLoadingContext& context, Streamer& streamer)
+static bool decode_bmp_v5_dib(BMPLoadingContext& context, InputStreamer& streamer)
 {
     if (!decode_bmp_v4_dib(context, streamer))
         return false;
@@ -795,7 +775,7 @@ static bool decode_bmp_dib(BMPLoadingContext& context)
     if (context.file_size < bmp_header_size + 4)
         return false;
 
-    Streamer streamer(context.file_bytes + bmp_header_size, 4);
+    InputStreamer streamer(context.file_bytes + bmp_header_size, 4);
     u32 dib_size = streamer.read_u32();
 
     if (context.file_size < bmp_header_size + dib_size)
@@ -805,7 +785,7 @@ static bool decode_bmp_dib(BMPLoadingContext& context)
         return false;
     }
 
-    streamer = Streamer(context.file_bytes + bmp_header_size + 4, context.data_offset - bmp_header_size - 4);
+    streamer = InputStreamer(context.file_bytes + bmp_header_size + 4, context.data_offset - bmp_header_size - 4);
 
     dbgln_if(BMP_DEBUG, "BMP dib size: {}", dib_size);
 
@@ -908,7 +888,7 @@ static bool decode_bmp_color_table(BMPLoadingContext& context)
         }
     }
 
-    Streamer streamer(context.file_bytes + bmp_header_size + context.dib_size(), size_of_color_table);
+    InputStreamer streamer(context.file_bytes + bmp_header_size + context.dib_size(), size_of_color_table);
     for (u32 i = 0; !streamer.at_end() && i < max_colors; ++i) {
         if (bytes_per_color == 4) {
             if (!streamer.has_u32())
@@ -942,7 +922,7 @@ static bool uncompress_bmp_rle_data(BMPLoadingContext& context, ByteBuffer& buff
         return false;
     }
 
-    Streamer streamer(context.file_bytes + context.data_offset, context.file_size - context.data_offset);
+    InputStreamer streamer(context.file_bytes + context.data_offset, context.file_size - context.data_offset);
 
     auto compression = context.dib.info.compression;
 
@@ -1205,7 +1185,7 @@ static bool decode_bmp_pixel_data(BMPLoadingContext& context)
 
     const u32 width = abs(context.dib.core.width);
     const u32 height = abs(context.dib.core.height);
-    context.bitmap = Bitmap::create_purgeable(format, { static_cast<int>(width), static_cast<int>(height) });
+    context.bitmap = Bitmap::try_create(format, { static_cast<int>(width), static_cast<int>(height) });
     if (!context.bitmap) {
         dbgln("BMP appears to have overly large dimensions");
         return false;
@@ -1221,7 +1201,7 @@ static bool decode_bmp_pixel_data(BMPLoadingContext& context)
         bytes = rle_buffer.bytes();
     }
 
-    Streamer streamer(bytes.data(), bytes.size());
+    InputStreamer streamer(bytes.data(), bytes.size());
 
     auto process_row = [&](u32 row) -> bool {
         u32 space_remaining_before_consuming_row = streamer.remaining();
@@ -1387,11 +1367,11 @@ void BMPImageDecoderPlugin::set_volatile()
         m_context->bitmap->set_volatile();
 }
 
-bool BMPImageDecoderPlugin::set_nonvolatile()
+bool BMPImageDecoderPlugin::set_nonvolatile(bool& was_purged)
 {
     if (!m_context->bitmap)
         return false;
-    return m_context->bitmap->set_nonvolatile();
+    return m_context->bitmap->set_nonvolatile(was_purged);
 }
 
 bool BMPImageDecoderPlugin::sniff()
@@ -1417,7 +1397,8 @@ size_t BMPImageDecoderPlugin::frame_count()
 ImageFrameDescriptor BMPImageDecoderPlugin::frame(size_t i)
 {
     if (i > 0)
-        return { bitmap(), 0 };
-    return {};
+        return {};
+    return { bitmap(), 0 };
 }
+
 }

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/StringBuilder.h>
@@ -116,32 +96,35 @@ void MultiView::set_model_column(int column)
     m_columns_view->set_model_column(column);
 }
 
-void MultiView::set_column_hidden(int column_index, bool hidden)
+void MultiView::set_column_visible(int column_index, bool visible)
 {
-    m_table_view->set_column_hidden(column_index, hidden);
+    m_table_view->set_column_visible(column_index, visible);
 }
 
 void MultiView::build_actions()
 {
-    m_view_as_table_action = Action::create_checkable(
-        "Table view", Gfx::Bitmap::load_from_file("/res/icons/16x16/table-view.png"), [this](auto&) {
-            set_view_mode(ViewMode::Table);
-        });
-
     m_view_as_icons_action = Action::create_checkable(
-        "Icon view", Gfx::Bitmap::load_from_file("/res/icons/16x16/icon-view.png"), [this](auto&) {
+        "Icon view", { Mod_Ctrl, KeyCode::Key_1 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/icon-view.png"), [this](auto&) {
             set_view_mode(ViewMode::Icon);
-        });
+        },
+        this);
+
+    m_view_as_table_action = Action::create_checkable(
+        "Table view", { Mod_Ctrl, KeyCode::Key_2 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/table-view.png"), [this](auto&) {
+            set_view_mode(ViewMode::Table);
+        },
+        this);
 
     m_view_as_columns_action = Action::create_checkable(
-        "Columns view", Gfx::Bitmap::load_from_file("/res/icons/16x16/columns-view.png"), [this](auto&) {
+        "Columns view", { Mod_Ctrl, KeyCode::Key_3 }, Gfx::Bitmap::try_load_from_file("/res/icons/16x16/columns-view.png"), [this](auto&) {
             set_view_mode(ViewMode::Columns);
-        });
+        },
+        this);
 
     m_view_type_action_group = make<ActionGroup>();
     m_view_type_action_group->set_exclusive(true);
-    m_view_type_action_group->add_action(*m_view_as_table_action);
     m_view_type_action_group->add_action(*m_view_as_icons_action);
+    m_view_type_action_group->add_action(*m_view_as_table_action);
     m_view_type_action_group->add_action(*m_view_as_columns_action);
 }
 

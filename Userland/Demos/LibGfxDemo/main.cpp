@@ -1,31 +1,14 @@
 /*
- * Copyright (c) 2020, Linus Groh <mail@linusgroh.de>
- * All rights reserved.
+ * Copyright (c) 2020, Linus Groh <linusg@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Icon.h>
+#include <LibGUI/Menu.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
@@ -53,7 +36,7 @@ private:
 
 Canvas::Canvas()
 {
-    m_bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, { WIDTH, HEIGHT });
+    m_bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::BGRx8888, { WIDTH, HEIGHT });
     draw();
 }
 
@@ -64,7 +47,8 @@ Canvas::~Canvas()
 void Canvas::paint_event(GUI::PaintEvent& event)
 {
     GUI::Painter painter(*this);
-    painter.draw_scaled_bitmap(event.rect(), *m_bitmap, m_bitmap->rect());
+    painter.add_clip_rect(event.rect());
+    painter.draw_scaled_bitmap(rect(), *m_bitmap, m_bitmap->rect());
 }
 
 void Canvas::draw()
@@ -124,7 +108,7 @@ void Canvas::draw()
     painter.draw_line({ 740, 140 }, { 640, 240 }, Color::Red, 5, Gfx::Painter::LineStyle::Solid);
     painter.draw_line({ 690, 140 }, { 640, 240 }, Color::Blue, 10, Gfx::Painter::LineStyle::Solid);
 
-    auto bg = Gfx::Bitmap::load_from_file("/res/html/misc/90s-bg.png");
+    auto bg = Gfx::Bitmap::try_load_from_file("/res/html/misc/90s-bg.png");
     painter.draw_tiled_bitmap({ 20, 260, 480, 320 }, *bg);
 
     painter.draw_line({ 40, 480 }, { 20, 260 }, Color::Red);
@@ -141,11 +125,11 @@ void Canvas::draw()
     path.quadratic_bezier_curve_to({ 320, 500 }, { 220, 400 });
     path.line_to({ 300, 440 });
     path.line_to({ 90, 460 });
-    path.quadratic_bezier_curve_to({ 260, 500 }, { 200, 540 });
+    path.elliptical_arc_to({ 260, 540 }, { 40, 30 }, 0, true, false);
     path.close();
     painter.fill_path(path, Color::Yellow, Gfx::Painter::WindingRule::EvenOdd);
 
-    auto buggie = Gfx::Bitmap::load_from_file("/res/graphics/buggie.png");
+    auto buggie = Gfx::Bitmap::try_load_from_file("/res/graphics/buggie.png");
     painter.blit({ 280, 280 }, *buggie, buggie->rect(), 0.5);
     painter.draw_scaled_bitmap({ 360, 280, buggie->rect().width() * 2, buggie->rect().height() * 2 }, *buggie, buggie->rect());
 
@@ -157,15 +141,17 @@ void Canvas::draw()
     painter.draw_text({ 520, 260, 240, 80 }, "CenterRight", Gfx::TextAlignment::CenterRight, Color::White);
     painter.draw_text({ 520, 260, 240, 80 }, "TopLeft", Gfx::TextAlignment::TopLeft, Color::White);
     painter.draw_text({ 520, 260, 240, 80 }, "TopRight", Gfx::TextAlignment::TopRight, Color::White);
+    painter.draw_text({ 520, 260, 240, 80 }, "BottomLeft", Gfx::TextAlignment::BottomLeft, Color::White);
+    painter.draw_text({ 520, 260, 240, 80 }, "BottomRight", Gfx::TextAlignment::BottomRight, Color::White);
 
     painter.draw_rect({ 520, 360, 240, 30 }, Color::DarkGray);
     painter.draw_text({ 520, 360, 240, 30 }, "Emojis! 🙂😂🐞🦄", Gfx::TextAlignment::Center, Color::White);
 
     painter.draw_rect({ 520, 410, 240, 80 }, Color::DarkGray);
     painter.draw_text({ 520, 415, 240, 20 }, "Normal text", Gfx::FontDatabase::default_font(), Gfx::TextAlignment::CenterLeft, Color::Red);
-    painter.draw_text({ 520, 430, 240, 20 }, "Bold text", Gfx::FontDatabase::default_bold_font(), Gfx::TextAlignment::CenterLeft, Color::Green);
+    painter.draw_text({ 520, 430, 240, 20 }, "Bold text", Gfx::FontDatabase::default_font().bold_variant(), Gfx::TextAlignment::CenterLeft, Color::Green);
     painter.draw_text({ 520, 450, 240, 20 }, "Normal text (fixed width)", Gfx::FontDatabase::default_fixed_width_font(), Gfx::TextAlignment::CenterLeft, Color::Blue);
-    painter.draw_text({ 520, 465, 240, 20 }, "Bold text (fixed width)", Gfx::FontDatabase::default_bold_fixed_width_font(), Gfx::TextAlignment::CenterLeft, Color::Yellow);
+    painter.draw_text({ 520, 465, 240, 20 }, "Bold text (fixed width)", Gfx::FontDatabase::default_fixed_width_font().bold_variant(), Gfx::TextAlignment::CenterLeft, Color::Yellow);
 
     auto font = Gfx::BitmapFont::load_from_file("/res/fonts/PebbletonBold14.font");
     painter.draw_rect({ 520, 510, 240, 30 }, Color::DarkGray);
@@ -220,6 +206,9 @@ int main(int argc, char** argv)
     window->set_title("LibGfx Demo");
     window->set_resizable(false);
     window->resize(WIDTH, HEIGHT);
+
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
 
     auto app_icon = GUI::Icon::default_icon("app-libgfx-demo");
     window->set_icon(app_icon.bitmap_for_size(16));

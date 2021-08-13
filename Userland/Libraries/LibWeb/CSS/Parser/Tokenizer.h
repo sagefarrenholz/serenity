@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020-2021, SerenityOS developers
- * All rights reserved.
+ * Copyright (c) 2020-2021, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -90,27 +70,28 @@ public:
 
     [[nodiscard]] Vector<Token> parse();
 
-private:
-    [[nodiscard]] Optional<u32> next_codepoint();
-    [[nodiscard]] Optional<u32> peek_codepoint(size_t offset = 0) const;
-    [[nodiscard]] Optional<U32Twin> peek_twin() const;
-    [[nodiscard]] Optional<U32Triplet> peek_triplet() const;
+    [[nodiscard]] static Token create_eof_token();
 
-    [[nodiscard]] static Token create_new_token(Token::TokenType);
-    [[nodiscard]] static Token create_value_token(Token::TokenType, String value);
-    [[nodiscard]] static Token create_value_token(Token::TokenType, u32 value);
+private:
+    [[nodiscard]] u32 next_code_point();
+    [[nodiscard]] u32 peek_code_point(size_t offset = 0) const;
+    [[nodiscard]] U32Twin peek_twin() const;
+    [[nodiscard]] U32Triplet peek_triplet() const;
+
+    [[nodiscard]] static Token create_new_token(Token::Type);
+    [[nodiscard]] static Token create_value_token(Token::Type, String value);
+    [[nodiscard]] static Token create_value_token(Token::Type, u32 value);
     [[nodiscard]] Token consume_a_token();
-    [[nodiscard]] Token consume_string_token(u32 ending_codepoint);
+    [[nodiscard]] Token consume_string_token(u32 ending_code_point);
     [[nodiscard]] Token consume_a_numeric_token();
     [[nodiscard]] Token consume_an_ident_like_token();
     [[nodiscard]] CSSNumber consume_a_number();
     [[nodiscard]] String consume_a_name();
-    [[nodiscard]] u32 consume_escaped_codepoint();
+    [[nodiscard]] u32 consume_escaped_code_point();
     [[nodiscard]] Token consume_a_url_token();
     void consume_the_remnants_of_a_bad_url();
     void consume_comments();
-    void reconsume_current_input_codepoint();
-    [[nodiscard]] bool is_valid_escape_sequence();
+    void reconsume_current_input_code_point();
     [[nodiscard]] static bool is_valid_escape_sequence(U32Twin);
     [[nodiscard]] bool would_start_an_identifier();
     [[nodiscard]] bool would_start_an_identifier(U32Triplet);
@@ -119,7 +100,7 @@ private:
 
     String m_decoded_input;
     Utf8View m_utf8_view;
-    AK::Utf8CodepointIterator m_utf8_iterator;
-    AK::Utf8CodepointIterator m_prev_utf8_iterator;
+    AK::Utf8CodePointIterator m_utf8_iterator;
+    AK::Utf8CodePointIterator m_prev_utf8_iterator;
 };
 }

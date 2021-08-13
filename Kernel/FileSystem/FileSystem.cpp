@@ -1,104 +1,74 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Assertions.h>
 #include <AK/HashMap.h>
 #include <AK/Singleton.h>
-#include <AK/StringBuilder.h>
 #include <AK/StringView.h>
+#include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/FileSystem/FileSystem.h>
 #include <Kernel/FileSystem/Inode.h>
+#include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Net/LocalSocket.h>
-#include <Kernel/VM/MemoryManager.h>
-#include <LibC/errno_numbers.h>
 
 namespace Kernel {
 
 static u32 s_lastFileSystemID;
-static AK::Singleton<HashMap<u32, FS*>> s_fs_map;
+static Singleton<HashMap<u32, FileSystem*>> s_file_system_map;
 
-static HashMap<u32, FS*>& all_fses()
+static HashMap<u32, FileSystem*>& all_file_systems()
 {
-    return *s_fs_map;
+    return *s_file_system_map;
 }
 
-FS::FS()
+FileSystem::FileSystem()
     : m_fsid(++s_lastFileSystemID)
 {
-    all_fses().set(m_fsid, this);
+    s_file_system_map->set(m_fsid, this);
 }
 
-FS::~FS()
+FileSystem::~FileSystem()
 {
-    all_fses().remove(m_fsid);
+    s_file_system_map->remove(m_fsid);
 }
 
-FS* FS::from_fsid(u32 id)
+FileSystem* FileSystem::from_fsid(u32 id)
 {
-    auto it = all_fses().find(id);
-    if (it != all_fses().end())
+    auto it = all_file_systems().find(id);
+    if (it != all_file_systems().end())
         return (*it).value;
     return nullptr;
 }
 
-FS::DirectoryEntryView::DirectoryEntryView(const StringView& n, InodeIdentifier i, u8 ft)
+FileSystem::DirectoryEntryView::DirectoryEntryView(const StringView& n, InodeIdentifier i, u8 ft)
     : name(n)
     , inode(i)
     , file_type(ft)
 {
 }
 
-void FS::sync()
+void FileSystem::sync()
 {
     Inode::sync();
 
-    NonnullRefPtrVector<FS, 32> fses;
+    NonnullRefPtrVector<FileSystem, 32> file_systems;
     {
         InterruptDisabler disabler;
-        for (auto& it : all_fses())
-            fses.append(*it.value);
+        for (auto& it : all_file_systems())
+            file_systems.append(*it.value);
     }
 
-    for (auto& fs : fses)
+    for (auto& fs : file_systems)
         fs.flush_writes();
 }
 
-void FS::lock_all()
+void FileSystem::lock_all()
 {
-    for (auto& it : all_fses()) {
+    for (auto& it : all_file_systems()) {
         it.value->m_lock.lock();
     }
-}
-
-void FS::set_block_size(size_t block_size)
-{
-    VERIFY(block_size > 0);
-    if (block_size == m_block_size)
-        return;
-    m_block_size = block_size;
 }
 
 }

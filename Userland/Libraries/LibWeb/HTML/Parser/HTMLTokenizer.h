@@ -1,32 +1,13 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Queue.h>
+#include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <AK/Types.h>
 #include <AK/Utf8View.h>
@@ -119,7 +100,7 @@ namespace Web::HTML {
 
 class HTMLTokenizer {
 public:
-    explicit HTMLTokenizer(const StringView& input, const String& encoding);
+    explicit HTMLTokenizer(StringView const& input, String const& encoding);
 
     enum class State {
 #define __ENUMERATE_TOKENIZER_STATE(state) state,
@@ -130,6 +111,10 @@ public:
     Optional<HTMLToken> next_token();
 
     void switch_to(Badge<HTMLDocumentParser>, State new_state);
+    void switch_to(State new_state)
+    {
+        m_state = new_state;
+    }
 
     void set_blocked(bool b) { m_blocked = b; }
     bool is_blocked() const { return m_blocked; }
@@ -137,13 +122,15 @@ public:
     String source() const { return m_decoded_input; }
 
 private:
+    void skip(size_t count);
     Optional<u32> next_code_point();
     Optional<u32> peek_code_point(size_t offset) const;
-    bool consume_next_if_match(const StringView&, CaseSensitivity = CaseSensitivity::CaseSensitive);
+    bool consume_next_if_match(StringView const&, CaseSensitivity = CaseSensitivity::CaseSensitive);
     void create_new_token(HTMLToken::Type);
     bool current_end_tag_token_is_appropriate() const;
+    String consume_current_builder();
 
-    static const char* state_name(State state)
+    static char const* state_name(State state)
     {
         switch (state) {
 #define __ENUMERATE_TOKENIZER_STATE(state) \
@@ -161,6 +148,9 @@ private:
 
     bool consumed_as_part_of_an_attribute() const;
 
+    void restore_to(Utf8CodePointIterator const& new_iterator);
+    HTMLToken::Position nth_last_position(size_t n = 0);
+
     State m_state { State::Data };
     State m_return_state { State::Data };
 
@@ -168,15 +158,14 @@ private:
 
     String m_decoded_input;
 
-    StringView m_input;
-
     Utf8View m_utf8_view;
-    Utf8CodepointIterator m_utf8_iterator;
-    Utf8CodepointIterator m_prev_utf8_iterator;
+    Utf8CodePointIterator m_utf8_iterator;
+    Utf8CodePointIterator m_prev_utf8_iterator;
 
     HTMLToken m_current_token;
+    StringBuilder m_current_builder;
 
-    HTMLToken m_last_emitted_start_tag;
+    Optional<String> m_last_emitted_start_tag_name;
 
     bool m_has_emitted_eof { false };
 
@@ -185,6 +174,8 @@ private:
     u32 m_character_reference_code { 0 };
 
     bool m_blocked { false };
+
+    Vector<HTMLToken::Position> m_source_positions;
 };
 
 }

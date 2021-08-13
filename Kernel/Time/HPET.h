@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Liav A. <liavalb@hotmail.co.il>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -30,8 +10,8 @@
 #include <AK/OwnPtr.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
+#include <Kernel/Memory/Region.h>
 #include <Kernel/PhysicalAddress.h>
-#include <Kernel/VM/Region.h>
 
 namespace Kernel {
 
@@ -76,6 +56,7 @@ private:
     void global_enable();
 
     bool is_periodic_capable(u8 comparator_number) const;
+    bool is_64bit_capable(u8 comparator_number) const;
     void set_comparators_to_optimal_interrupt_state(size_t timers_count);
 
     u64 nanoseconds_to_raw_ticks() const;
@@ -84,16 +65,17 @@ private:
     explicit HPET(PhysicalAddress acpi_hpet);
     PhysicalAddress m_physical_acpi_hpet_table;
     PhysicalAddress m_physical_acpi_hpet_registers;
-    OwnPtr<Region> m_hpet_mmio_region;
+    OwnPtr<Memory::Region> m_hpet_mmio_region;
 
     u64 m_main_counter_last_read { 0 };
     u64 m_main_counter_drift { 0 };
+    u32 m_32bit_main_counter_wraps { 0 };
 
     u16 m_vendor_id;
     u16 m_minimum_tick;
     u64 m_frequency;
     u8 m_revision_id;
-    bool counter_is_64_bit_capable : 1;
+    bool m_main_counter_64bits : 1;
     bool legacy_replacement_route_capable : 1;
 
     NonnullRefPtrVector<HPETComparator> m_comparators;

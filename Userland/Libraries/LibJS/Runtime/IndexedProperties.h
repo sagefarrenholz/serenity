@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -50,13 +30,12 @@ public:
     virtual void put(u32 index, Value value, PropertyAttributes attributes = default_attributes) = 0;
     virtual void remove(u32 index) = 0;
 
-    virtual void insert(u32 index, Value value, PropertyAttributes attributes = default_attributes) = 0;
     virtual ValueAndAttributes take_first() = 0;
     virtual ValueAndAttributes take_last() = 0;
 
     virtual size_t size() const = 0;
     virtual size_t array_like_size() const = 0;
-    virtual void set_array_like_size(size_t new_size) = 0;
+    virtual bool set_array_like_size(size_t new_size) = 0;
 
     virtual bool is_simple_storage() const { return false; }
 };
@@ -71,13 +50,12 @@ public:
     virtual void put(u32 index, Value value, PropertyAttributes attributes = default_attributes) override;
     virtual void remove(u32 index) override;
 
-    virtual void insert(u32 index, Value value, PropertyAttributes attributes = default_attributes) override;
     virtual ValueAndAttributes take_first() override;
     virtual ValueAndAttributes take_last() override;
 
     virtual size_t size() const override { return m_packed_elements.size(); }
     virtual size_t array_like_size() const override { return m_array_size; }
-    virtual void set_array_like_size(size_t new_size) override;
+    virtual bool set_array_like_size(size_t new_size) override;
 
     virtual bool is_simple_storage() const override { return true; }
     const Vector<Value>& elements() const { return m_packed_elements; }
@@ -100,13 +78,12 @@ public:
     virtual void put(u32 index, Value value, PropertyAttributes attributes = default_attributes) override;
     virtual void remove(u32 index) override;
 
-    virtual void insert(u32 index, Value value, PropertyAttributes attributes = default_attributes) override;
     virtual ValueAndAttributes take_first() override;
     virtual ValueAndAttributes take_last() override;
 
     virtual size_t size() const override { return m_sparse_elements.size(); }
     virtual size_t array_like_size() const override { return m_array_size; }
-    virtual void set_array_like_size(size_t new_size) override;
+    virtual bool set_array_like_size(size_t new_size) override;
 
     const HashMap<u32, ValueAndAttributes>& sparse_elements() const { return m_sparse_elements; }
 
@@ -124,7 +101,6 @@ public:
     bool operator!=(const IndexedPropertyIterator&) const;
 
     u32 index() const { return m_index; };
-    ValueAndAttributes value_and_attributes(Object* this_object, bool evaluate_accessors = true);
 
 private:
     void skip_empty_indices();
@@ -144,23 +120,23 @@ public:
     }
 
     bool has_index(u32 index) const { return m_storage->has_index(index); }
-    Optional<ValueAndAttributes> get(Object* this_object, u32 index, bool evaluate_accessors = true) const;
-    void put(Object* this_object, u32 index, Value value, PropertyAttributes attributes = default_attributes, bool evaluate_accessors = true);
-    bool remove(u32 index);
+    Optional<ValueAndAttributes> get(u32 index) const;
+    void put(u32 index, Value value, PropertyAttributes attributes = default_attributes);
+    void remove(u32 index);
 
-    void insert(u32 index, Value value, PropertyAttributes attributes = default_attributes);
     ValueAndAttributes take_first(Object* this_object);
     ValueAndAttributes take_last(Object* this_object);
 
-    void append(Value value, PropertyAttributes attributes = default_attributes) { put(nullptr, array_like_size(), value, attributes, false); }
-    void append_all(Object* this_object, const IndexedProperties& properties, bool evaluate_accessors = true);
+    void append(Value value, PropertyAttributes attributes = default_attributes) { put(array_like_size(), value, attributes); }
 
     IndexedPropertyIterator begin(bool skip_empty = true) const { return IndexedPropertyIterator(*this, 0, skip_empty); };
     IndexedPropertyIterator end() const { return IndexedPropertyIterator(*this, array_like_size(), false); };
 
     bool is_empty() const { return array_like_size() == 0; }
     size_t array_like_size() const { return m_storage->array_like_size(); }
-    void set_array_like_size(size_t);
+    bool set_array_like_size(size_t);
+
+    size_t real_size() const;
 
     Vector<u32> indices() const;
 

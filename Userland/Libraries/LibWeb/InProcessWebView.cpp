@@ -1,50 +1,26 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/URL.h>
-#include <LibCore/File.h>
 #include <LibCore/MimeData.h>
-#include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
-#include <LibGUI/Clipboard.h>
 #include <LibGUI/InputBox.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/ScrollBar.h>
+#include <LibGUI/Scrollbar.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/ShareableBitmap.h>
 #include <LibWeb/HTML/HTMLAnchorElement.h>
 #include <LibWeb/HTML/Parser/HTMLDocumentParser.h>
 #include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Layout/InitialContainingBlockBox.h>
-#include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Page/BrowsingContext.h>
 #include <LibWeb/Page/EventHandler.h>
-#include <LibWeb/Page/Frame.h>
 #include <LibWeb/Painting/PaintContext.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 
@@ -58,14 +34,6 @@ InProcessWebView::InProcessWebView()
     set_should_hide_unnecessary_scrollbars(true);
     set_background_role(ColorRole::Base);
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
-
-    m_copy_action = GUI::CommonActions::make_copy_action([this](auto&) {
-        GUI::Clipboard::the().set_plain_text(selected_text());
-    });
-
-    m_select_all_action = GUI::CommonActions::make_select_all_action([this](auto&) {
-        select_all();
-    });
 }
 
 InProcessWebView::~InProcessWebView()
@@ -74,42 +42,13 @@ InProcessWebView::~InProcessWebView()
 
 void InProcessWebView::select_all()
 {
-    auto* layout_root = this->layout_root();
-    if (!layout_root)
-        return;
-
-    const Layout::Node* first_layout_node = layout_root;
-
-    for (;;) {
-        auto* next = first_layout_node->next_in_pre_order();
-        if (!next)
-            break;
-        first_layout_node = next;
-        if (is<Layout::TextNode>(*first_layout_node))
-            break;
-    }
-
-    const Layout::Node* last_layout_node = first_layout_node;
-
-    for (const Layout::Node* layout_node = first_layout_node; layout_node; layout_node = layout_node->next_in_pre_order()) {
-        if (is<Layout::TextNode>(*layout_node))
-            last_layout_node = layout_node;
-    }
-
-    VERIFY(first_layout_node);
-    VERIFY(last_layout_node);
-
-    int last_layout_node_index_in_node = 0;
-    if (is<Layout::TextNode>(*last_layout_node))
-        last_layout_node_index_in_node = downcast<Layout::TextNode>(*last_layout_node).text_for_rendering().length() - 1;
-
-    layout_root->set_selection({ { first_layout_node, 0 }, { last_layout_node, last_layout_node_index_in_node } });
+    page().focused_context().select_all();
     update();
 }
 
 String InProcessWebView::selected_text() const
 {
-    return page().focused_frame().selected_text();
+    return page().focused_context().selected_text();
 }
 
 void InProcessWebView::page_did_layout()
@@ -124,7 +63,7 @@ void InProcessWebView::page_did_change_title(const String& title)
         on_title_change(title);
 }
 
-void InProcessWebView::page_did_set_document_in_main_frame(DOM::Document* document)
+void InProcessWebView::page_did_set_document_in_top_level_browsing_context(DOM::Document* document)
 {
     if (on_set_document)
         on_set_document(document);
@@ -230,22 +169,22 @@ void InProcessWebView::layout_and_sync_size()
     bool had_vertical_scrollbar = vertical_scrollbar().is_visible();
     bool had_horizontal_scrollbar = horizontal_scrollbar().is_visible();
 
-    page().main_frame().set_size(available_size());
+    page().top_level_browsing_context().set_size(available_size());
     set_content_size(layout_root()->size().to_type<int>());
 
     // NOTE: If layout caused us to gain or lose scrollbars, we have to lay out again
     //       since the scrollbars now take up some of the available space.
     if (had_vertical_scrollbar != vertical_scrollbar().is_visible() || had_horizontal_scrollbar != horizontal_scrollbar().is_visible()) {
-        page().main_frame().set_size(available_size());
+        page().top_level_browsing_context().set_size(available_size());
         set_content_size(layout_root()->size().to_type<int>());
     }
 
-    page().main_frame().set_viewport_scroll_offset({ horizontal_scrollbar().value(), vertical_scrollbar().value() });
+    page().top_level_browsing_context().set_viewport_scroll_offset({ horizontal_scrollbar().value(), vertical_scrollbar().value() });
 }
 
 void InProcessWebView::resize_event(GUI::ResizeEvent& event)
 {
-    GUI::ScrollableWidget::resize_event(event);
+    GUI::AbstractScrollableWidget::resize_event(event);
     layout_and_sync_size();
 }
 
@@ -274,25 +213,25 @@ void InProcessWebView::paint_event(GUI::PaintEvent& event)
 void InProcessWebView::mousemove_event(GUI::MouseEvent& event)
 {
     page().handle_mousemove(to_content_position(event.position()), event.buttons(), event.modifiers());
-    GUI::ScrollableWidget::mousemove_event(event);
+    GUI::AbstractScrollableWidget::mousemove_event(event);
 }
 
 void InProcessWebView::mousedown_event(GUI::MouseEvent& event)
 {
     page().handle_mousedown(to_content_position(event.position()), event.button(), event.modifiers());
-    GUI::ScrollableWidget::mousedown_event(event);
+    GUI::AbstractScrollableWidget::mousedown_event(event);
 }
 
 void InProcessWebView::mouseup_event(GUI::MouseEvent& event)
 {
     page().handle_mouseup(to_content_position(event.position()), event.button(), event.modifiers());
-    GUI::ScrollableWidget::mouseup_event(event);
+    GUI::AbstractScrollableWidget::mouseup_event(event);
 }
 
 void InProcessWebView::mousewheel_event(GUI::MouseEvent& event)
 {
     page().handle_mousewheel(to_content_position(event.position()), event.button(), event.modifiers(), event.wheel_delta());
-    GUI::ScrollableWidget::mousewheel_event(event);
+    GUI::AbstractScrollableWidget::mousewheel_event(event);
 }
 
 void InProcessWebView::keydown_event(GUI::KeyEvent& event)
@@ -327,7 +266,7 @@ void InProcessWebView::keydown_event(GUI::KeyEvent& event)
             break;
         default:
             if (!page_accepted_event) {
-                ScrollableWidget::keydown_event(event);
+                AbstractScrollableWidget::keydown_event(event);
                 return;
             }
             break;
@@ -339,9 +278,9 @@ void InProcessWebView::keydown_event(GUI::KeyEvent& event)
 
 URL InProcessWebView::url() const
 {
-    if (!page().main_frame().document())
+    if (!page().top_level_browsing_context().document())
         return {};
-    return page().main_frame().document()->url();
+    return page().top_level_browsing_context().document()->url();
 }
 
 void InProcessWebView::reload()
@@ -351,13 +290,13 @@ void InProcessWebView::reload()
 
 void InProcessWebView::load_html(const StringView& html, const URL& url)
 {
-    page().main_frame().loader().load_html(html, url);
+    page().top_level_browsing_context().loader().load_html(html, url);
 }
 
 bool InProcessWebView::load(const URL& url)
 {
     set_override_cursor(Gfx::StandardCursor::None);
-    return page().main_frame().loader().load(url, FrameLoader::Type::Navigation);
+    return page().top_level_browsing_context().loader().load(url, FrameLoader::Type::Navigation);
 }
 
 const Layout::InitialContainingBlockBox* InProcessWebView::layout_root() const
@@ -380,27 +319,27 @@ void InProcessWebView::page_did_request_scroll_into_view(const Gfx::IntRect& rec
 
 void InProcessWebView::load_empty_document()
 {
-    page().main_frame().set_document(nullptr);
+    page().top_level_browsing_context().set_document(nullptr);
 }
 
 DOM::Document* InProcessWebView::document()
 {
-    return page().main_frame().document();
+    return page().top_level_browsing_context().document();
 }
 
 const DOM::Document* InProcessWebView::document() const
 {
-    return page().main_frame().document();
+    return page().top_level_browsing_context().document();
 }
 
 void InProcessWebView::set_document(DOM::Document* document)
 {
-    page().main_frame().set_document(document);
+    page().top_level_browsing_context().set_document(document);
 }
 
 void InProcessWebView::did_scroll()
 {
-    page().main_frame().set_viewport_scroll_offset({ horizontal_scrollbar().value(), vertical_scrollbar().value() });
+    page().top_level_browsing_context().set_viewport_scroll_offset({ horizontal_scrollbar().value(), vertical_scrollbar().value() });
 }
 
 void InProcessWebView::drop_event(GUI::DropEvent& event)
@@ -411,7 +350,7 @@ void InProcessWebView::drop_event(GUI::DropEvent& event)
             return;
         }
     }
-    ScrollableWidget::drop_event(event);
+    AbstractScrollableWidget::drop_event(event);
 }
 
 void InProcessWebView::page_did_request_alert(const String& message)
@@ -431,6 +370,19 @@ String InProcessWebView::page_did_request_prompt(const String& message, const St
     if (GUI::InputBox::show(window(), value, message, "Prompt") == GUI::InputBox::ExecOK)
         return value;
     return {};
+}
+
+String InProcessWebView::page_did_request_cookie(const URL& url, Cookie::Source source)
+{
+    if (on_get_cookie)
+        return on_get_cookie(url, source);
+    return {};
+}
+
+void InProcessWebView::page_did_set_cookie(const URL& url, const Cookie::ParsedCookie& cookie, Cookie::Source source)
+{
+    if (on_set_cookie)
+        on_set_cookie(url, cookie, source);
 }
 
 }

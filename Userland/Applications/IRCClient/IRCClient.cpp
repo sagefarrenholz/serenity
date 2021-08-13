@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "IRCClient.h"
@@ -253,16 +233,16 @@ void IRCClient::send_whois(const String& nick)
 
 void IRCClient::handle(const Message& msg)
 {
-#if IRC_DEBUG
-    outln("IRCClient::execute: prefix='{}', command='{}', arguments={}",
-        msg.prefix,
-        msg.command,
-        msg.arguments.size());
+    if constexpr (IRC_DEBUG) {
+        outln("IRCClient::execute: prefix='{}', command='{}', arguments={}",
+            msg.prefix,
+            msg.command,
+            msg.arguments.size());
 
-    size_t index = 0;
-    for (auto& arg : msg.arguments)
-        outln("    [{}]: {}", index++, arg);
-#endif
+        size_t index = 0;
+        for (auto& arg : msg.arguments)
+            outln("    [{}]: {}", index++, arg);
+    }
 
     auto numeric = msg.command.to_uint();
 
@@ -484,13 +464,11 @@ void IRCClient::handle_privmsg_or_notice(const Message& msg, PrivmsgOrNotice typ
 
     bool is_ctcp = has_ctcp_payload(msg.arguments[1]);
 
-#if IRC_DEBUG
-    outln("handle_privmsg_or_notice: type='{}'{}, sender_nick='{}', target='{}'",
+    outln_if(IRC_DEBUG, "handle_privmsg_or_notice: type='{}'{}, sender_nick='{}', target='{}'",
         type == PrivmsgOrNotice::Privmsg ? "privmsg" : "notice",
         is_ctcp ? " (ctcp)" : "",
         sender_nick,
         target);
-#endif
 
     if (sender_nick.is_empty())
         return;
@@ -538,9 +516,9 @@ void IRCClient::handle_privmsg_or_notice(const Message& msg, PrivmsgOrNotice typ
     // Otherwise, put them in the server window. This seems to match other clients.
     IRCQuery* query = nullptr;
     if (is_ctcp || type == PrivmsgOrNotice::Notice) {
-        query = query_with_name(sender_nick);
+        query = query_with_name(target);
     } else {
-        query = &ensure_query(sender_nick);
+        query = &ensure_query(target);
     }
     if (query) {
         if (insert_as_raw_message)
@@ -839,7 +817,7 @@ void IRCClient::register_subwindow(IRCWindow& subwindow)
         subwindow.set_log_buffer(*m_log);
     }
     m_windows.append(&subwindow);
-    m_client_window_list_model->update();
+    m_client_window_list_model->invalidate();
 }
 
 void IRCClient::unregister_subwindow(IRCWindow& subwindow)
@@ -853,7 +831,7 @@ void IRCClient::unregister_subwindow(IRCWindow& subwindow)
             break;
         }
     }
-    m_client_window_list_model->update();
+    m_client_window_list_model->invalidate();
 }
 
 void IRCClient::handle_user_command(const String& input)
@@ -1101,7 +1079,7 @@ void IRCClient::handle_kick_user_action(const String& channel, const String& nic
 void IRCClient::handle_close_query_action(const String& nick)
 {
     m_queries.remove(nick);
-    m_client_window_list_model->update();
+    m_client_window_list_model->invalidate();
 }
 
 void IRCClient::handle_join_action(const String& channel)

@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Image.h"
@@ -30,16 +10,36 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonObjectSerializer.h>
 #include <AK/JsonValue.h>
+#include <AK/LexicalPath.h>
+#include <AK/MappedFile.h>
 #include <AK/StringBuilder.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/BMPWriter.h>
-#include <LibGfx/ImageDecoder.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/PNGWriter.h>
+#include <LibImageDecoderClient/Client.h>
 #include <stdio.h>
 
 namespace PixelPaint {
 
-RefPtr<Image> Image::create_with_size(const Gfx::IntSize& size)
+static RefPtr<Gfx::Bitmap> try_decode_bitmap(ByteBuffer const& bitmap_data)
+{
+    // Spawn a new ImageDecoder service process and connect to it.
+    auto client = ImageDecoderClient::Client::construct();
+
+    // FIXME: Find a way to avoid the memory copying here.
+    auto decoded_image_or_error = client->decode_image(bitmap_data);
+    if (!decoded_image_or_error.has_value())
+        return nullptr;
+
+    // FIXME: Support multi-frame images?
+    auto decoded_image = decoded_image_or_error.release_value();
+    if (decoded_image.frames.is_empty())
+        return nullptr;
+    return move(decoded_image.frames[0].bitmap);
+}
+
+RefPtr<Image> Image::try_create_with_size(Gfx::IntSize const& size)
 {
     if (size.is_empty())
         return nullptr;
@@ -47,15 +47,16 @@ RefPtr<Image> Image::create_with_size(const Gfx::IntSize& size)
     if (size.width() > 16384 || size.height() > 16384)
         return nullptr;
 
-    return adopt(*new Image(size));
+    return adopt_ref(*new Image(size));
 }
 
-Image::Image(const Gfx::IntSize& size)
-    : m_size(size)
+Image::Image(Gfx::IntSize const& size)
+    : m_title("Untitled")
+    , m_size(size)
 {
 }
 
-void Image::paint_into(GUI::Painter& painter, const Gfx::IntRect& dest_rect)
+void Image::paint_into(GUI::Painter& painter, Gfx::IntRect const& dest_rect) const
 {
     float scale = (float)dest_rect.width() / (float)rect().width();
     Gfx::PainterStateSaver saver(painter);
@@ -69,47 +70,134 @@ void Image::paint_into(GUI::Painter& painter, const Gfx::IntRect& dest_rect)
     }
 }
 
-RefPtr<Image> Image::create_from_file(const String& file_path)
+RefPtr<Image> Image::try_create_from_bitmap(NonnullRefPtr<Gfx::Bitmap> bitmap)
 {
-    auto file = fopen(file_path.characters(), "r");
-    fseek(file, 0L, SEEK_END);
-    auto length = ftell(file);
-    rewind(file);
-
-    auto buffer = ByteBuffer::create_uninitialized(length);
-    fread(buffer.data(), sizeof(u8), length, file);
-    fclose(file);
-
-    auto json_or_error = JsonValue::from_string(String::copy(buffer));
-    if (!json_or_error.has_value())
+    auto image = try_create_with_size({ bitmap->width(), bitmap->height() });
+    if (!image)
         return nullptr;
 
-    auto json = json_or_error.value().as_object();
-    auto image = create_with_size({ json.get("width").to_i32(), json.get("height").to_i32() });
-    json.get("layers").as_array().for_each([&](JsonValue json_layer) {
-        auto json_layer_object = json_layer.as_object();
-        auto width = json_layer_object.get("width").to_i32();
-        auto height = json_layer_object.get("height").to_i32();
-        auto name = json_layer_object.get("name").as_string();
-        auto layer = Layer::create_with_size(*image, { width, height }, name);
-        layer->set_location({ json_layer_object.get("locationx").to_i32(), json_layer_object.get("locationy").to_i32() });
-        layer->set_opacity_percent(json_layer_object.get("opacity_percent").to_i32());
-        layer->set_visible(json_layer_object.get("visible").as_bool());
-        layer->set_selected(json_layer_object.get("selected").as_bool());
+    auto layer = Layer::try_create_with_bitmap(*image, *bitmap, "Background");
+    if (!layer)
+        return nullptr;
 
-        auto bitmap_base64_encoded = json_layer_object.get("bitmap").as_string();
-        auto bitmap_data = decode_base64(bitmap_base64_encoded);
-        auto image_decoder = Gfx::ImageDecoder::create(bitmap_data);
-        layer->set_bitmap(*image_decoder->bitmap());
-        image->add_layer(*layer);
-    });
-
+    image->add_layer(layer.release_nonnull());
     return image;
 }
 
-void Image::save(const String& file_path) const
+Result<NonnullRefPtr<Image>, String> Image::try_create_from_pixel_paint_fd(int fd, String const& file_path)
 {
-    // Build json file
+    auto file = Core::File::construct();
+    file->open(fd, Core::OpenMode::ReadOnly, Core::File::ShouldCloseFileDescriptor::No);
+    if (file->has_error())
+        return String { file->error_string() };
+
+    return try_create_from_pixel_paint_file(file, file_path);
+}
+
+Result<NonnullRefPtr<Image>, String> Image::try_create_from_pixel_paint_path(String const& file_path)
+{
+    auto file_or_error = Core::File::open(file_path, Core::OpenMode::ReadOnly);
+    if (file_or_error.is_error())
+        return file_or_error.error();
+
+    return try_create_from_pixel_paint_file(*file_or_error.value(), file_path);
+}
+
+Result<NonnullRefPtr<Image>, String> Image::try_create_from_pixel_paint_file(Core::File& file, String const& file_path)
+{
+    auto contents = file.read_all();
+
+    auto json_or_error = JsonValue::from_string(contents);
+    if (!json_or_error.has_value())
+        return String { "Not a valid PP file"sv };
+
+    auto& json = json_or_error.value().as_object();
+    auto image = try_create_with_size({ json.get("width").to_i32(), json.get("height").to_i32() });
+    if (!image)
+        return String { "Image memory allocation failed" };
+
+    auto layers_value = json.get("layers");
+    for (auto& layer_value : layers_value.as_array().values()) {
+        auto& layer_object = layer_value.as_object();
+        auto name = layer_object.get("name").as_string();
+
+        auto bitmap_base64_encoded = layer_object.get("bitmap").as_string();
+        auto bitmap_data = decode_base64(bitmap_base64_encoded);
+
+        auto bitmap = try_decode_bitmap(bitmap_data);
+        if (!bitmap)
+            return String { "Layer bitmap decode failed"sv };
+
+        auto layer = Layer::try_create_with_bitmap(*image, bitmap.release_nonnull(), name);
+        if (!layer)
+            return String { "Layer allocation failed"sv };
+
+        auto width = layer_object.get("width").to_i32();
+        auto height = layer_object.get("height").to_i32();
+
+        if (width != layer->size().width() || height != layer->size().height())
+            return String { "Decoded layer bitmap has wrong size"sv };
+
+        image->add_layer(*layer);
+
+        layer->set_location({ layer_object.get("locationx").to_i32(), layer_object.get("locationy").to_i32() });
+        layer->set_opacity_percent(layer_object.get("opacity_percent").to_i32());
+        layer->set_visible(layer_object.get("visible").as_bool());
+        layer->set_selected(layer_object.get("selected").as_bool());
+    }
+
+    image->set_path(file_path);
+    return image.release_nonnull();
+}
+
+Result<NonnullRefPtr<Image>, String> Image::try_create_from_fd_and_close(int fd, String const& file_path)
+{
+    auto image_or_error = try_create_from_pixel_paint_fd(fd, file_path);
+    if (!image_or_error.is_error()) {
+        close(fd);
+        return image_or_error.release_value();
+    }
+
+    auto file_or_error = MappedFile::map_from_fd_and_close(fd, file_path);
+    if (file_or_error.is_error())
+        return String::formatted("Unable to mmap file {}", file_or_error.error().string());
+
+    auto& mapped_file = *file_or_error.value();
+    // FIXME: Find a way to avoid the memory copy here.
+    auto bitmap = try_decode_bitmap(ByteBuffer::copy(mapped_file.bytes()));
+    if (!bitmap)
+        return String { "Unable to decode image"sv };
+    auto image = Image::try_create_from_bitmap(bitmap.release_nonnull());
+    if (!image)
+        return String { "Unable to allocate Image"sv };
+    image->set_path(file_path);
+    return image.release_nonnull();
+}
+
+Result<NonnullRefPtr<Image>, String> Image::try_create_from_path(String const& file_path)
+{
+    auto image_or_error = try_create_from_pixel_paint_path(file_path);
+    if (!image_or_error.is_error())
+        return image_or_error.release_value();
+
+    auto file_or_error = MappedFile::map(file_path);
+    if (file_or_error.is_error())
+        return String { "Unable to mmap file"sv };
+
+    auto& mapped_file = *file_or_error.value();
+    // FIXME: Find a way to avoid the memory copy here.
+    auto bitmap = try_decode_bitmap(ByteBuffer::copy(mapped_file.bytes()));
+    if (!bitmap)
+        return String { "Unable to decode image"sv };
+    auto image = Image::try_create_from_bitmap(bitmap.release_nonnull());
+    if (!image)
+        return String { "Unable to allocate Image"sv };
+    image->set_path(file_path);
+    return image.release_nonnull();
+}
+
+Result<void, String> Image::write_to_fd_and_close(int fd) const
+{
     StringBuilder builder;
     JsonObjectSerializer json(builder);
     json.add("width", m_size.width());
@@ -132,37 +220,97 @@ void Image::save(const String& file_path) const
     }
     json.finish();
 
-    // Write json to disk
-    auto file = fopen(file_path.characters(), "w");
-    auto byte_buffer = builder.to_byte_buffer();
-    fwrite(byte_buffer.data(), sizeof(u8), byte_buffer.size(), file);
-    fclose(file);
+    auto file = Core::File::construct();
+    file->open(fd, Core::OpenMode::WriteOnly | Core::OpenMode::Truncate, Core::File::ShouldCloseFileDescriptor::Yes);
+    if (file->has_error())
+        return String { file->error_string() };
+
+    if (!file->write(builder.string_view()))
+        return String { file->error_string() };
+    return {};
 }
 
-void Image::export_bmp(const String& file_path)
+Result<void, String> Image::write_to_file(const String& file_path) const
 {
-    auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, m_size);
+    StringBuilder builder;
+    JsonObjectSerializer json(builder);
+    json.add("width", m_size.width());
+    json.add("height", m_size.height());
+    {
+        auto json_layers = json.add_array("layers");
+        for (const auto& layer : m_layers) {
+            Gfx::BMPWriter bmp_dumber;
+            auto json_layer = json_layers.add_object();
+            json_layer.add("width", layer.size().width());
+            json_layer.add("height", layer.size().height());
+            json_layer.add("name", layer.name());
+            json_layer.add("locationx", layer.location().x());
+            json_layer.add("locationy", layer.location().y());
+            json_layer.add("opacity_percent", layer.opacity_percent());
+            json_layer.add("visible", layer.is_visible());
+            json_layer.add("selected", layer.is_selected());
+            json_layer.add("bitmap", encode_base64(bmp_dumber.dump(layer.bitmap())));
+        }
+    }
+    json.finish();
+
+    auto file_or_error = Core::File::open(file_path, (Core::OpenMode)(Core::OpenMode::WriteOnly | Core::OpenMode::Truncate));
+    if (file_or_error.is_error())
+        return file_or_error.error();
+
+    if (!file_or_error.value()->write(builder.string_view()))
+        return String { file_or_error.value()->error_string() };
+    return {};
+}
+
+RefPtr<Gfx::Bitmap> Image::try_compose_bitmap(Gfx::BitmapFormat format) const
+{
+    auto bitmap = Gfx::Bitmap::try_create(format, m_size);
+    if (!bitmap)
+        return nullptr;
     GUI::Painter painter(*bitmap);
     paint_into(painter, { 0, 0, m_size.width(), m_size.height() });
+    return bitmap;
+}
+
+Result<void, String> Image::export_bmp_to_fd_and_close(int fd, bool preserve_alpha_channel)
+{
+    auto file = Core::File::construct();
+    file->open(fd, Core::OpenMode::WriteOnly | Core::OpenMode::Truncate, Core::File::ShouldCloseFileDescriptor::Yes);
+    if (file->has_error())
+        return String { file->error_string() };
+
+    auto bitmap_format = preserve_alpha_channel ? Gfx::BitmapFormat::BGRA8888 : Gfx::BitmapFormat::BGRx8888;
+    auto bitmap = try_compose_bitmap(bitmap_format);
+    if (!bitmap)
+        return String { "Failed to allocate bitmap for encoding"sv };
 
     Gfx::BMPWriter dumper;
-    auto bmp = dumper.dump(bitmap);
-    auto file = fopen(file_path.characters(), "wb");
-    fwrite(bmp.data(), sizeof(u8), bmp.size(), file);
-    fclose(file);
+    auto encoded_data = dumper.dump(bitmap);
+
+    if (!file->write(encoded_data.data(), encoded_data.size()))
+        return String { "Failed to write encoded BMP data to file"sv };
+
+    return {};
 }
 
-void Image::export_png(const String& file_path)
+Result<void, String> Image::export_png_to_fd_and_close(int fd, bool preserve_alpha_channel)
 {
-    auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, m_size);
-    GUI::Painter painter(*bitmap);
-    paint_into(painter, { 0, 0, m_size.width(), m_size.height() });
+    auto file = Core::File::construct();
+    file->open(fd, Core::OpenMode::WriteOnly | Core::OpenMode::Truncate, Core::File::ShouldCloseFileDescriptor::Yes);
+    if (file->has_error())
+        return String { file->error_string() };
 
-    Gfx::PNGWriter png_writer;
-    auto png = png_writer.write(bitmap);
-    auto file = fopen(file_path.characters(), "wb");
-    fwrite(png.data(), sizeof(u8), png.size(), file);
-    fclose(file);
+    auto bitmap_format = preserve_alpha_channel ? Gfx::BitmapFormat::BGRA8888 : Gfx::BitmapFormat::BGRx8888;
+    auto bitmap = try_compose_bitmap(bitmap_format);
+    if (!bitmap)
+        return String { "Failed to allocate bitmap for encoding"sv };
+
+    auto encoded_data = Gfx::PNGWriter::encode(*bitmap);
+    if (!file->write(encoded_data.data(), encoded_data.size()))
+        return String { "Failed to write encoded PNG data to file"sv };
+
+    return {};
 }
 
 void Image::add_layer(NonnullRefPtr<Layer> layer)
@@ -180,18 +328,25 @@ void Image::add_layer(NonnullRefPtr<Layer> layer)
 
 RefPtr<Image> Image::take_snapshot() const
 {
-    auto snapshot = create_with_size(m_size);
-    for (const auto& layer : m_layers)
-        snapshot->add_layer(*Layer::create_snapshot(*snapshot, layer));
+    auto snapshot = try_create_with_size(m_size);
+    if (!snapshot)
+        return nullptr;
+    for (const auto& layer : m_layers) {
+        auto layer_snapshot = Layer::try_create_snapshot(*snapshot, layer);
+        if (!layer_snapshot)
+            return nullptr;
+        snapshot->add_layer(layer_snapshot.release_nonnull());
+    }
     return snapshot;
 }
 
-void Image::restore_snapshot(const Image& snapshot)
+void Image::restore_snapshot(Image const& snapshot)
 {
     m_layers.clear();
     select_layer(nullptr);
     for (const auto& snapshot_layer : snapshot.m_layers) {
-        auto layer = Layer::create_snapshot(*this, snapshot_layer);
+        auto layer = Layer::try_create_snapshot(*this, snapshot_layer);
+        VERIFY(layer);
         if (layer->is_selected())
             select_layer(layer.ptr());
         add_layer(*layer);
@@ -200,7 +355,7 @@ void Image::restore_snapshot(const Image& snapshot)
     did_modify_layer_stack();
 }
 
-size_t Image::index_of(const Layer& layer) const
+size_t Image::index_of(Layer const& layer) const
 {
     for (size_t i = 0; i < m_layers.size(); ++i) {
         if (&m_layers.at(i) == &layer)
@@ -282,6 +437,52 @@ void Image::remove_layer(Layer& layer)
     did_modify_layer_stack();
 }
 
+void Image::flatten_all_layers()
+{
+    if (m_layers.size() < 2)
+        return;
+
+    auto& bottom_layer = m_layers.at(0);
+
+    GUI::Painter painter(bottom_layer.bitmap());
+    paint_into(painter, { 0, 0, m_size.width(), m_size.height() });
+
+    for (size_t index = m_layers.size() - 1; index > 0; index--) {
+        auto& layer = m_layers.at(index);
+        remove_layer(layer);
+    }
+    bottom_layer.set_name("Background");
+    select_layer(&bottom_layer);
+}
+
+void Image::merge_visible_layers()
+{
+    if (m_layers.size() < 2)
+        return;
+
+    size_t index = 0;
+
+    while (index < m_layers.size()) {
+        if (m_layers.at(index).is_visible()) {
+            auto& bottom_layer = m_layers.at(index);
+            GUI::Painter painter(bottom_layer.bitmap());
+            paint_into(painter, { 0, 0, m_size.width(), m_size.height() });
+            select_layer(&bottom_layer);
+            index++;
+            break;
+        }
+        index++;
+    }
+    while (index < m_layers.size()) {
+        if (m_layers.at(index).is_visible()) {
+            auto& layer = m_layers.at(index);
+            remove_layer(layer);
+        } else {
+            index++;
+        }
+    }
+}
+
 void Image::select_layer(Layer* layer)
 {
     for (auto* client : m_clients)
@@ -300,28 +501,29 @@ void Image::remove_client(ImageClient& client)
     m_clients.remove(&client);
 }
 
-void Image::layer_did_modify_bitmap(Badge<Layer>, const Layer& layer)
+void Image::layer_did_modify_bitmap(Badge<Layer>, Layer const& layer, Gfx::IntRect const& modified_layer_rect)
 {
     auto layer_index = index_of(layer);
     for (auto* client : m_clients)
-        client->image_did_modify_layer(layer_index);
+        client->image_did_modify_layer_bitmap(layer_index);
+
+    did_change(modified_layer_rect.translated(layer.location()));
+}
+
+void Image::layer_did_modify_properties(Badge<Layer>, Layer const& layer)
+{
+    auto layer_index = index_of(layer);
+    for (auto* client : m_clients)
+        client->image_did_modify_layer_properties(layer_index);
 
     did_change();
 }
 
-void Image::layer_did_modify_properties(Badge<Layer>, const Layer& layer)
+void Image::did_change(Gfx::IntRect const& a_modified_rect)
 {
-    auto layer_index = index_of(layer);
+    auto modified_rect = a_modified_rect.is_empty() ? this->rect() : a_modified_rect;
     for (auto* client : m_clients)
-        client->image_did_modify_layer(layer_index);
-
-    did_change();
-}
-
-void Image::did_change()
-{
-    for (auto* client : m_clients)
-        client->image_did_change();
+        client->image_did_change(modified_rect);
 }
 
 ImageUndoCommand::ImageUndoCommand(Image& image)
@@ -338,6 +540,19 @@ void ImageUndoCommand::undo()
 void ImageUndoCommand::redo()
 {
     undo();
+}
+
+void Image::set_title(String title)
+{
+    m_title = move(title);
+    for (auto* client : m_clients)
+        client->image_did_change_title(m_title);
+}
+
+void Image::set_path(String path)
+{
+    m_path = move(path);
+    set_title(LexicalPath::basename(m_path));
 }
 
 }

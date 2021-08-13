@@ -1,33 +1,13 @@
 /*
  * Copyright (c) 2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/ColumnsView.h>
 #include <LibGUI/Model.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/ScrollBar.h>
+#include <LibGUI/Scrollbar.h>
 #include <LibGfx/CharacterBitmap.h>
 #include <LibGfx/Palette.h>
 
@@ -138,7 +118,8 @@ void ColumnsView::paint_event(PaintEvent& event)
                     } else if (m_hovered_index.is_valid() && m_hovered_index.parent() == index.parent() && m_hovered_index.row() == index.row()) {
                         painter.blit_brightened(icon_rect.location(), *bitmap, bitmap->rect());
                     } else {
-                        painter.blit(icon_rect.location(), *bitmap, bitmap->rect());
+                        auto opacity = index.data(ModelRole::IconOpacity).as_float_or(1.0f);
+                        painter.blit(icon_rect.location(), *bitmap, bitmap->rect(), opacity);
                     }
                 }
             }
@@ -278,7 +259,6 @@ void ColumnsView::model_did_update(unsigned flags)
     AbstractView::model_did_update(flags);
 
     // FIXME: Don't drop the columns on minor updates.
-    dbgln("Model was updated; dropping columns :(");
     m_columns.clear();
     m_columns.append({ {}, 0 });
 
@@ -315,12 +295,12 @@ void ColumnsView::move_cursor(CursorMovement movement, SelectionUpdate selection
         break;
     case CursorMovement::Right:
         new_index = model.index(0, m_model_column, cursor_index());
-        if (model.is_valid(new_index)) {
-            if (model.is_valid(cursor_index()))
+        if (model.is_within_range(new_index)) {
+            if (model.is_within_range(cursor_index()))
                 push_column(cursor_index());
             update();
-            break;
         }
+        break;
     default:
         break;
     }
@@ -342,6 +322,14 @@ Gfx::IntRect ColumnsView::content_rect(const ModelIndex& index) const
     }
 
     return {};
+}
+
+Gfx::IntRect ColumnsView::paint_invalidation_rect(ModelIndex const& index) const
+{
+    auto rect = content_rect(index);
+    rect.translate_by(-icon_size(), 0);
+    rect.set_width(rect.width() + icon_size());
+    return rect;
 }
 
 }

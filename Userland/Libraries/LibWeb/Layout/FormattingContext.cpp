@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibWeb/Dump.h>
@@ -60,6 +40,14 @@ bool FormattingContext::creates_block_formatting_context(const Box& box)
     if (is<TableCellBox>(box))
         return true;
 
+    CSS::Overflow overflow_x = box.computed_values().overflow_x();
+    if ((overflow_x != CSS::Overflow::Visible) && (overflow_x != CSS::Overflow::Clip))
+        return true;
+
+    CSS::Overflow overflow_y = box.computed_values().overflow_y();
+    if ((overflow_y != CSS::Overflow::Visible) && (overflow_y != CSS::Overflow::Clip))
+        return true;
+
     // FIXME: inline-flex as well
     if (box.parent() && box.parent()->computed_values().display() == CSS::Display::Flex) {
         // FIXME: Flex items (direct children of the element with display: flex or inline-flex) if they are neither flex nor grid nor table containers themselves.
@@ -69,7 +57,6 @@ bool FormattingContext::creates_block_formatting_context(const Box& box)
 
     // FIXME: table-caption
     // FIXME: anonymous table cells
-    // FIXME: Block elements where overflow has a value other than visible and clip.
     // FIXME: display: flow-root
     // FIXME: Elements with contain: layout, content, or paint.
     // FIXME: grid
@@ -173,6 +160,63 @@ static Gfx::FloatSize solve_replaced_size_constraint(float w, float h, const Rep
     return { w, h };
 }
 
+static float compute_auto_height_for_block_level_element(const Box& box)
+{
+    Optional<float> top;
+    Optional<float> bottom;
+
+    if (box.children_are_inline()) {
+        // If it only has inline-level children, the height is the distance between
+        // the top of the topmost line box and the bottom of the bottommost line box.
+        if (!box.line_boxes().is_empty()) {
+            for (auto& fragment : box.line_boxes().first().fragments()) {
+                if (!top.has_value() || fragment.offset().y() < top.value())
+                    top = fragment.offset().y();
+            }
+            for (auto& fragment : box.line_boxes().last().fragments()) {
+                if (!bottom.has_value() || (fragment.offset().y() + fragment.height()) > bottom.value())
+                    bottom = fragment.offset().y() + fragment.height();
+            }
+        }
+    } else {
+        // If it has block-level children, the height is the distance between
+        // the top margin-edge of the topmost block-level child box
+        // and the bottom margin-edge of the bottommost block-level child box.
+        box.for_each_child_of_type<Box>([&](Layout::Box& child_box) {
+            if (child_box.is_absolutely_positioned())
+                return IterationDecision::Continue;
+            if ((box.computed_values().overflow_y() == CSS::Overflow::Visible) && child_box.is_floating())
+                return IterationDecision::Continue;
+
+            float child_box_top = child_box.effective_offset().y() - child_box.box_model().margin_box().top;
+            float child_box_bottom = child_box.effective_offset().y() + child_box.height() + child_box.box_model().margin_box().bottom;
+
+            if (!top.has_value() || child_box_top < top.value())
+                top = child_box_top;
+
+            if (!bottom.has_value() || child_box_bottom > bottom.value())
+                bottom = child_box_bottom;
+
+            return IterationDecision::Continue;
+        });
+        // In addition, if the element has any floating descendants
+        // whose bottom margin edge is below the element's bottom content edge,
+        // then the height is increased to include those edges.
+        box.for_each_child_of_type<Box>([&](Layout::Box& child_box) {
+            if (!child_box.is_floating())
+                return IterationDecision::Continue;
+
+            float child_box_bottom = child_box.effective_offset().y() + child_box.height();
+
+            if (!bottom.has_value() || child_box_bottom > bottom.value())
+                bottom = child_box_bottom;
+
+            return IterationDecision::Continue;
+        });
+    }
+    return bottom.value_or(0) - top.value_or(0);
+}
+
 float FormattingContext::tentative_width_for_replaced_element(const ReplacedBox& box, const CSS::Length& width)
 {
     auto& containing_block = *box.containing_block();
@@ -210,7 +254,7 @@ float FormattingContext::tentative_width_for_replaced_element(const ReplacedBox&
 void FormattingContext::compute_width_for_absolutely_positioned_element(Box& box)
 {
     if (is<ReplacedBox>(box))
-        compute_width_for_absolutely_positioned_replaced_element(downcast<ReplacedBox>(box));
+        compute_width_for_absolutely_positioned_replaced_element(verify_cast<ReplacedBox>(box));
     else
         compute_width_for_absolutely_positioned_non_replaced_element(box);
 }
@@ -218,7 +262,7 @@ void FormattingContext::compute_width_for_absolutely_positioned_element(Box& box
 void FormattingContext::compute_height_for_absolutely_positioned_element(Box& box)
 {
     if (is<ReplacedBox>(box))
-        compute_height_for_absolutely_positioned_replaced_element(downcast<ReplacedBox>(box));
+        compute_height_for_absolutely_positioned_replaced_element(verify_cast<ReplacedBox>(box));
     else
         compute_height_for_absolutely_positioned_non_replaced_element(box);
 }
@@ -460,6 +504,8 @@ void FormattingContext::compute_height_for_absolutely_positioned_non_replaced_el
     auto& computed_values = box.computed_values();
     auto& containing_block = *box.containing_block();
 
+    CSS::Length specified_top = computed_values.offset().top.resolved_or_auto(box, containing_block.height());
+    CSS::Length specified_bottom = computed_values.offset().bottom.resolved_or_auto(box, containing_block.height());
     CSS::Length specified_height;
 
     if (computed_values.height().is_percentage() && !containing_block.computed_values().height().is_absolute()) {
@@ -469,6 +515,7 @@ void FormattingContext::compute_height_for_absolutely_positioned_non_replaced_el
     }
 
     auto specified_max_height = computed_values.max_height().resolved_or_auto(box, containing_block.height());
+    auto specified_min_height = computed_values.min_height().resolved_or_auto(box, containing_block.height());
 
     box.box_model().margin.top = computed_values.margin().top.resolved_or_zero(box, containing_block.width()).to_px(box);
     box.box_model().margin.bottom = computed_values.margin().bottom.resolved_or_zero(box, containing_block.width()).to_px(box);
@@ -477,17 +524,36 @@ void FormattingContext::compute_height_for_absolutely_positioned_non_replaced_el
     box.box_model().padding.top = computed_values.padding().top.resolved_or_zero(box, containing_block.width()).to_px(box);
     box.box_model().padding.bottom = computed_values.padding().bottom.resolved_or_zero(box, containing_block.width()).to_px(box);
 
+    if (specified_height.is_auto() && !specified_top.is_auto() && specified_bottom.is_auto()) {
+        const auto& margin = box.box_model().margin;
+        const auto& padding = box.box_model().padding;
+        const auto& border = box.box_model().border;
+
+        specified_height = CSS::Length(compute_auto_height_for_block_level_element(box), CSS::Length::Type::Px);
+        box.box_model().offset.bottom = containing_block.height() - specified_height.to_px(box) - specified_top.to_px(box) - margin.top - padding.top - border.top - margin.bottom - padding.bottom - border.bottom;
+    }
+
+    else if (specified_height.is_auto() && !specified_top.is_auto() && !specified_bottom.is_auto()) {
+        const auto& margin = box.box_model().margin;
+        const auto& padding = box.box_model().padding;
+        const auto& border = box.box_model().border;
+
+        specified_height = CSS::Length(containing_block.height() - specified_top.to_px(box) - margin.top - padding.top - border.top - specified_bottom.to_px(box) - margin.bottom - padding.bottom - border.bottom, CSS::Length::Type::Px);
+    }
+
     if (!specified_height.is_auto()) {
         float used_height = specified_height.to_px(box);
         if (!specified_max_height.is_auto())
             used_height = min(used_height, specified_max_height.to_px(box));
+        if (!specified_min_height.is_auto())
+            used_height = max(used_height, specified_min_height.to_px(box));
         box.set_height(used_height);
     }
 }
 
 void FormattingContext::layout_absolutely_positioned_element(Box& box)
 {
-    auto& containing_block = context_box();
+    auto& containing_block = *box.containing_block();
     auto& box_model = box.box_model();
 
     auto specified_width = box.computed_values().width().resolved_or_auto(box, containing_block.width());
@@ -553,8 +619,9 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
 void FormattingContext::compute_height_for_absolutely_positioned_replaced_element(ReplacedBox& box)
 {
-    // FIXME: Implement this.
-    return compute_height_for_absolutely_positioned_non_replaced_element(box);
+    // 10.6.5 Absolutely positioned, replaced elements
+    // The used value of 'height' is determined as for inline replaced elements.
+    box.set_height(compute_height_for_replaced_element(box));
 }
 
 }

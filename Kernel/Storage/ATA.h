@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -97,3 +77,125 @@
 #define ATA_CTL_DEVADDRESS 0x01
 
 #define ATA_CAP_LBA 0x200
+
+#include <AK/Types.h>
+
+namespace Kernel {
+struct [[gnu::packed]] ATAIdentifyBlock {
+    u16 general_configuration;
+    u16 obsolete;
+    u16 specific_configuration;
+
+    u16 obsolete2;
+    u16 retired[2];
+    u16 obsolete3;
+
+    u16 reserved_for_cfa[2];
+    u16 retired2;
+    u16 serial_number[10];
+
+    u16 retired3[2];
+    u16 obsolete4;
+
+    u16 firmware_revision[4];
+    u16 model_number[20];
+
+    u16 maximum_logical_sectors_per_drq;
+    u16 trusted_computing_features;
+    u16 capabilities[2];
+    u16 obsolete5[2];
+    u16 validity_flags;
+    u16 obsolete6[5];
+
+    u16 security_features;
+
+    u32 max_28_bit_addressable_logical_sector;
+    u16 obsolete7;
+    u16 dma_modes;
+    u16 pio_modes;
+
+    u16 minimum_multiword_dma_transfer_cycle;
+    u16 recommended_multiword_dma_transfer_cycle;
+
+    u16 minimum_multiword_pio_transfer_cycle_without_flow_control;
+    u16 minimum_multiword_pio_transfer_cycle_with_flow_control;
+
+    u16 additional_supported;
+    u16 reserved3[5];
+    u16 queue_depth;
+
+    u16 serial_ata_capabilities;
+    u16 serial_ata_additional_capabilities;
+    u16 serial_ata_features_supported;
+    u16 serial_ata_features_enabled;
+    u16 major_version_number;
+    u16 minor_version_number;
+    u16 commands_and_feature_sets_supported[3];
+    u16 commands_and_feature_sets_supported_or_enabled[3];
+    u16 ultra_dma_modes;
+
+    u16 timing_for_security_features[2];
+    u16 apm_level;
+    u16 master_password_id;
+
+    u16 hardware_reset_results;
+    u16 obsolete8;
+
+    u16 stream_minimum_request_time;
+    u16 streaming_transfer_time_for_dma;
+    u16 streaming_access_latency;
+    u16 streaming_performance_granularity[2];
+
+    u64 user_addressable_logical_sectors_count;
+
+    u16 streaming_transfer_time_for_pio;
+    u16 max_512_byte_blocks_per_data_set_management_command;
+    u16 physical_sector_size_to_logical_sector_size;
+    u16 inter_seek_delay_for_acoustic_testing;
+    u16 world_wide_name[4];
+    u16 reserved4[4];
+    u16 obsolete9;
+
+    u32 logical_sector_size;
+
+    u16 commands_and_feature_sets_supported2;
+    u16 commands_and_feature_sets_supported_or_enabled2;
+
+    u16 reserved_for_expanded_supported_and_enabled_settings[6];
+    u16 obsolete10;
+
+    u16 security_status;
+    u16 vendor_specific[31];
+    u16 reserved_for_cfa2[8];
+    u16 device_nominal_form_factor;
+    u16 data_set_management_command_support;
+    u16 additional_product_id[4];
+    u16 reserved5[2];
+    u16 current_media_serial_number[30];
+    u16 sct_command_transport;
+    u16 reserved6[2];
+
+    u16 logical_sectors_alignment_within_physical_sector;
+
+    u32 write_read_verify_sector_mode_3_count;
+    u32 write_read_verify_sector_mode_2_count;
+
+    u16 obsolete11[3];
+    u16 nominal_media_rotation_rate;
+    u16 reserved7;
+    u16 obsolete12;
+    u16 write_read_verify_feature_set_current_mode;
+    u16 reserved8;
+    u16 transport_major_version_number;
+    u16 transport_minor_version_number;
+    u16 reserved9[6];
+
+    u64 extended_user_addressable_logical_sectors_count;
+
+    u16 minimum_512_byte_data_blocks_per_download_microcode_operation;
+    u16 max_512_byte_data_blocks_per_download_microcode_operation;
+
+    u16 reserved10[19];
+    u16 integrity;
+};
+};

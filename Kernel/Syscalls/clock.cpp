@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Time.h>
@@ -30,22 +10,42 @@
 
 namespace Kernel {
 
-KResultOr<int> Process::sys$clock_gettime(clockid_t clock_id, Userspace<timespec*> user_ts)
+KResultOr<FlatPtr> Process::sys$map_time_page()
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     REQUIRE_PROMISE(stdio);
 
-    auto time = TimeManagement::the().current_time(clock_id);
-    if (time.is_error())
-        return time.error();
+    auto& vmobject = TimeManagement::the().time_page_vmobject();
 
-    auto ts = time.value().to_timespec();
+    auto range = address_space().page_directory().range_allocator().allocate_randomized(PAGE_SIZE, PAGE_SIZE);
+    if (!range.has_value())
+        return ENOMEM;
+
+    auto region_or_error = address_space().allocate_region_with_vmobject(range.value(), vmobject, 0, "Kernel time page"sv, PROT_READ, true);
+    if (region_or_error.is_error())
+        return region_or_error.error();
+
+    return region_or_error.value()->vaddr().get();
+}
+
+KResultOr<FlatPtr> Process::sys$clock_gettime(clockid_t clock_id, Userspace<timespec*> user_ts)
+{
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
+    REQUIRE_PROMISE(stdio);
+
+    if (!TimeManagement::is_valid_clock_id(clock_id))
+        return EINVAL;
+
+    auto ts = TimeManagement::the().current_time(clock_id).to_timespec();
     if (!copy_to_user(user_ts, &ts))
         return EFAULT;
+
     return 0;
 }
 
-KResultOr<int> Process::sys$clock_settime(clockid_t clock_id, Userspace<const timespec*> user_ts)
+KResultOr<FlatPtr> Process::sys$clock_settime(clockid_t clock_id, Userspace<const timespec*> user_ts)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     REQUIRE_PROMISE(settime);
 
     if (!is_superuser())
@@ -65,8 +65,9 @@ KResultOr<int> Process::sys$clock_settime(clockid_t clock_id, Userspace<const ti
     return 0;
 }
 
-KResultOr<int> Process::sys$clock_nanosleep(Userspace<const Syscall::SC_clock_nanosleep_params*> user_params)
+KResultOr<FlatPtr> Process::sys$clock_nanosleep(Userspace<const Syscall::SC_clock_nanosleep_params*> user_params)
 {
+    VERIFY_NO_PROCESS_BIG_LOCK(this);
     REQUIRE_PROMISE(stdio);
 
     Syscall::SC_clock_nanosleep_params params;
@@ -107,8 +108,9 @@ KResultOr<int> Process::sys$clock_nanosleep(Userspace<const Syscall::SC_clock_na
     return 0;
 }
 
-KResultOr<int> Process::sys$adjtime(Userspace<const timeval*> user_delta, Userspace<timeval*> user_old_delta)
+KResultOr<FlatPtr> Process::sys$adjtime(Userspace<const timeval*> user_delta, Userspace<timeval*> user_old_delta)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this);
     if (user_old_delta) {
         timespec old_delta_ts = TimeManagement::the().remaining_epoch_time_adjustment();
         timeval old_delta;
@@ -129,15 +131,6 @@ KResultOr<int> Process::sys$adjtime(Userspace<const timeval*> user_delta, Usersp
         TimeManagement::the().set_remaining_epoch_time_adjustment(delta->to_timespec());
     }
 
-    return 0;
-}
-
-KResultOr<int> Process::sys$gettimeofday(Userspace<timeval*> user_tv)
-{
-    REQUIRE_PROMISE(stdio);
-    auto tv = kgettimeofday().to_timeval();
-    if (!copy_to_user(user_tv, &tv))
-        return EFAULT;
     return 0;
 }
 

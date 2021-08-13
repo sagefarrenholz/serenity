@@ -11,14 +11,17 @@ describe("[[Call]] trap normal behavior", () => {
     test("correct arguments supplied to trap", () => {
         const f = (a, b) => a + b;
         const handler = {
-            apply(target, this_, arguments) {
+            apply(target, this_, arguments_) {
                 expect(target).toBe(f);
-                expect(this_).toBe(handler);
-                if (arguments[2]) return arguments[0] * arguments[1];
-                return f(...arguments);
+                // FIXME: `this_` is currently `handler`
+                // expect(this_).toBeUndefined();
+                if (arguments_[2]) {
+                    return arguments_[0] * arguments_[1];
+                }
+                return f(...arguments_);
             },
         };
-        p = new Proxy(f, handler);
+        let p = new Proxy(f, handler);
 
         expect(p(2, 4)).toBe(6);
         expect(p(2, 4, true)).toBe(8);

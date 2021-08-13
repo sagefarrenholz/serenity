@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 /* Fire.cpp - a (classic) graphics demo for Serenity, by pd.
@@ -43,11 +23,14 @@
 */
 
 #include <LibCore/ElapsedTimer.h>
+#include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
+#include <LibGUI/Frame.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/Label.h>
+#include <LibGUI/Menu.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Bitmap.h>
 #include <stdio.h>
@@ -56,7 +39,7 @@
 #include <unistd.h>
 
 #define FIRE_WIDTH 320
-#define FIRE_HEIGHT 168
+#define FIRE_HEIGHT 200
 #define FIRE_MAX 29
 
 static const Color s_palette[] = {
@@ -72,8 +55,9 @@ static const Color s_palette[] = {
     Color(0xCF, 0xCF, 0x6F), Color(0xEF, 0xEF, 0xC7), Color(0xFF, 0xFF, 0xFF)
 };
 
-class Fire : public GUI::Widget {
-    C_OBJECT(Fire)
+class Fire : public GUI::Frame {
+    C_OBJECT(Fire);
+
 public:
     virtual ~Fire() override;
     void set_stat_label(RefPtr<GUI::Label> l) { stats = l; };
@@ -97,7 +81,7 @@ private:
 
 Fire::Fire()
 {
-    bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::Indexed8, { 320, 200 });
+    bitmap = Gfx::Bitmap::try_create(Gfx::BitmapFormat::Indexed8, { FIRE_WIDTH, FIRE_HEIGHT });
 
     /* Initialize fire palette */
     for (int i = 0; i < 30; i++)
@@ -130,14 +114,13 @@ Fire::~Fire()
 
 void Fire::paint_event(GUI::PaintEvent& event)
 {
+    GUI::Frame::paint_event(event);
     Core::ElapsedTimer timer;
     timer.start();
 
     GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
-
-    /* Blit it! */
-    painter.draw_scaled_bitmap(event.rect(), *bitmap, bitmap->rect());
+    painter.draw_scaled_bitmap(frame_inner_rect(), *bitmap, bitmap->rect());
 
     timeAvg += timer.elapsed();
     cycles++;
@@ -152,7 +135,7 @@ void Fire::timer_event(Core::TimerEvent&)
 
     /* Paint our palettized buffer to screen */
     for (int px = 0 + phase; px < FIRE_WIDTH; px += 2) {
-        for (int py = 1; py < 200; py++) {
+        for (int py = 1; py < FIRE_HEIGHT; py++) {
             int rnd = rand() % 3;
 
             /* Calculate new pixel value, don't go below 0 */
@@ -236,7 +219,10 @@ int main(int argc, char** argv)
     window->set_double_buffering_enabled(false);
     window->set_title("Fire");
     window->set_resizable(false);
-    window->resize(640, 400);
+    window->resize(FIRE_WIDTH * 2 + 4, FIRE_HEIGHT * 2 + 4);
+
+    auto& file_menu = window->add_menu("&File");
+    file_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
 
     auto& fire = window->set_main_widget<Fire>();
 

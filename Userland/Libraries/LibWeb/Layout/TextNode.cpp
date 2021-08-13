@@ -1,38 +1,18 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/CharacterTypes.h>
 #include <AK/StringBuilder.h>
-#include <AK/Utf8View.h>
 #include <LibGfx/Painter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Layout/BlockBox.h>
 #include <LibWeb/Layout/InlineFormattingContext.h>
+#include <LibWeb/Layout/Label.h>
 #include <LibWeb/Layout/TextNode.h>
-#include <LibWeb/Page/Frame.h>
-#include <ctype.h>
+#include <LibWeb/Page/BrowsingContext.h>
 
 namespace Web::Layout {
 
@@ -49,10 +29,45 @@ TextNode::~TextNode()
 static bool is_all_whitespace(const StringView& string)
 {
     for (size_t i = 0; i < string.length(); ++i) {
-        if (!isspace(string[i]))
+        if (!is_ascii_space(string[i]))
             return false;
     }
     return true;
+}
+
+void TextNode::paint_text_decoration(Gfx::Painter& painter, LineBoxFragment const& fragment) const
+{
+    Gfx::IntPoint line_start_point {};
+    Gfx::IntPoint line_end_point {};
+
+    auto& font = fragment.layout_node().font();
+    auto fragment_box = enclosing_int_rect(fragment.absolute_rect());
+    auto glyph_height = font.glyph_height();
+    auto baseline = fragment_box.height() / 2 - (glyph_height + 4) / 2 + glyph_height;
+
+    switch (computed_values().text_decoration_line()) {
+    case CSS::TextDecorationLine::None:
+        return;
+    case CSS::TextDecorationLine::Underline:
+        line_start_point = fragment_box.top_left().translated(0, baseline + 2);
+        line_end_point = fragment_box.top_right().translated(0, baseline + 2);
+        break;
+    case CSS::TextDecorationLine::Overline:
+        line_start_point = fragment_box.top_left().translated(0, baseline - glyph_height);
+        line_end_point = fragment_box.top_right().translated(0, baseline - glyph_height);
+        break;
+    case CSS::TextDecorationLine::LineThrough: {
+        auto x_height = font.x_height();
+        line_start_point = fragment_box.top_left().translated(0, baseline - x_height / 2);
+        line_end_point = fragment_box.top_right().translated(0, baseline - x_height / 2);
+        break;
+    } break;
+    case CSS::TextDecorationLine::Blink:
+        // Conforming user agents may simply not blink the text
+        return;
+    }
+
+    painter.draw_line(line_start_point, line_end_point, computed_values().color());
 }
 
 void TextNode::paint_fragment(PaintContext& context, const LineBoxFragment& fragment, PaintPhase phase) const
@@ -69,8 +84,7 @@ void TextNode::paint_fragment(PaintContext& context, const LineBoxFragment& frag
         if (document().inspected_node() == &dom_node())
             context.painter().draw_rect(enclosing_int_rect(fragment.absolute_rect()), Color::Magenta);
 
-        if (computed_values().text_decoration_line() == CSS::TextDecorationLine::Underline)
-            painter.draw_line(enclosing_int_rect(fragment.absolute_rect()).bottom_left().translated(0, 1), enclosing_int_rect(fragment.absolute_rect()).bottom_right().translated(0, 1), computed_values().color());
+        paint_text_decoration(painter, fragment);
 
         // FIXME: text-transform should be done already in layout, since uppercase glyphs may be wider than lowercase, etc.
         auto text = m_text_for_rendering;
@@ -96,16 +110,17 @@ void TextNode::paint_fragment(PaintContext& context, const LineBoxFragment& frag
 
 void TextNode::paint_cursor_if_needed(PaintContext& context, const LineBoxFragment& fragment) const
 {
-    if (!frame().is_focused_frame())
+    if (!browsing_context().is_focused_context())
         return;
 
-    if (!frame().cursor_blink_state())
+    if (!browsing_context().cursor_blink_state())
         return;
 
-    if (frame().cursor_position().node() != &dom_node())
+    if (browsing_context().cursor_position().node() != &dom_node())
         return;
 
-    if (!(frame().cursor_position().offset() >= (unsigned)fragment.start() && frame().cursor_position().offset() < (unsigned)(fragment.start() + fragment.length())))
+    // NOTE: This checks if the cursor is before the start or after the end of the fragment. If it is at the end, after all text, it should still be painted.
+    if (browsing_context().cursor_position().offset() < (unsigned)fragment.start() || browsing_context().cursor_position().offset() > (unsigned)(fragment.start() + fragment.length()))
         return;
 
     if (!fragment.layout_node().dom_node() || !fragment.layout_node().dom_node()->is_editable())
@@ -113,7 +128,7 @@ void TextNode::paint_cursor_if_needed(PaintContext& context, const LineBoxFragme
 
     auto fragment_rect = fragment.absolute_rect();
 
-    float cursor_x = fragment_rect.x() + font().width(fragment.text().substring_view(0, frame().cursor_position().offset() - fragment.start()));
+    float cursor_x = fragment_rect.x() + font().width(fragment.text().substring_view(0, browsing_context().cursor_position().offset() - fragment.start()));
     float cursor_top = fragment_rect.top();
     float cursor_height = fragment_rect.height();
     Gfx::IntRect cursor_rect(cursor_x, cursor_top, 1, cursor_height);
@@ -121,57 +136,64 @@ void TextNode::paint_cursor_if_needed(PaintContext& context, const LineBoxFragme
     context.painter().draw_rect(cursor_rect, computed_values().color());
 }
 
-template<typename Callback>
-void TextNode::for_each_chunk(Callback callback, LayoutMode layout_mode, bool do_wrap_lines, bool do_wrap_breaks) const
+// NOTE: This collapes whitespace into a single ASCII space if collapse is true. If previous_is_empty_or_ends_in_whitespace, it also strips leading whitespace.
+void TextNode::compute_text_for_rendering(bool collapse, bool previous_is_empty_or_ends_in_whitespace)
 {
-    Utf8View view(m_text_for_rendering);
-    if (view.is_empty())
+    auto& data = dom_node().data();
+    if (!collapse || data.is_empty()) {
+        m_text_for_rendering = data;
         return;
+    }
 
-    auto start_of_chunk = view.begin();
-
-    auto commit_chunk = [&](auto it, bool has_breaking_newline, bool must_commit = false) {
-        if (layout_mode == LayoutMode::OnlyRequiredLineBreaks && !must_commit)
-            return;
-
-        int start = view.byte_offset_of(start_of_chunk);
-        int length = view.byte_offset_of(it) - view.byte_offset_of(start_of_chunk);
-
-        if (has_breaking_newline || length > 0) {
-            auto chunk_view = view.substring_view(start, length);
-            callback(chunk_view, start, length, has_breaking_newline, is_all_whitespace(chunk_view.as_string()));
+    // NOTE: A couple fast returns to avoid unnecessarily allocating a StringBuilder.
+    if (data.length() == 1) {
+        if (is_ascii_space(data[0])) {
+            if (previous_is_empty_or_ends_in_whitespace)
+                m_text_for_rendering = String::empty();
+            else {
+                static String s_single_space_string = " ";
+                m_text_for_rendering = s_single_space_string;
+            }
+        } else {
+            m_text_for_rendering = data;
         }
+        return;
+    }
 
-        start_of_chunk = it;
+    bool contains_space = false;
+    for (auto& c : data) {
+        if (is_ascii_space(c)) {
+            contains_space = true;
+            break;
+        }
+    }
+    if (!contains_space) {
+        m_text_for_rendering = data;
+        return;
+    }
+
+    StringBuilder builder(data.length());
+    size_t index = 0;
+
+    auto skip_over_whitespace = [&index, &data] {
+        while (index < data.length() && is_ascii_space(data[index]))
+            ++index;
     };
 
-    bool last_was_space = isspace(*view.begin());
-    bool last_was_newline = false;
-    for (auto it = view.begin(); it != view.end();) {
-        if (layout_mode == LayoutMode::AllPossibleLineBreaks) {
-            commit_chunk(it, false);
+    if (previous_is_empty_or_ends_in_whitespace)
+        skip_over_whitespace();
+    while (index < data.length()) {
+        if (is_ascii_space(data[index])) {
+            builder.append(' ');
+            ++index;
+            skip_over_whitespace();
+        } else {
+            builder.append(data[index]);
+            ++index;
         }
-        if (last_was_newline) {
-            last_was_newline = false;
-            commit_chunk(it, true);
-        }
-        if (do_wrap_breaks && *it == '\n') {
-            last_was_newline = true;
-            commit_chunk(it, false);
-        }
-        if (do_wrap_lines) {
-            bool is_space = isspace(*it);
-            if (is_space != last_was_space) {
-                last_was_space = is_space;
-                commit_chunk(it, false);
-            }
-        }
-        ++it;
     }
-    if (last_was_newline)
-        commit_chunk(view.end(), true);
-    if (start_of_chunk != view.end())
-        commit_chunk(view.end(), false, true);
+
+    m_text_for_rendering = builder.to_string();
 }
 
 void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, LayoutMode layout_mode, bool do_collapse, bool do_wrap_lines, bool do_wrap_breaks)
@@ -184,53 +206,14 @@ void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, Layou
     containing_block.ensure_last_line_box();
     float available_width = context.available_width_at_line(line_boxes.size() - 1) - line_boxes.last().width();
 
-    // Collapse whitespace into single spaces
-    if (do_collapse) {
-        auto utf8_view = Utf8View(dom_node().data());
-        StringBuilder builder(dom_node().data().length());
-        auto it = utf8_view.begin();
-        auto skip_over_whitespace = [&] {
-            auto prev = it;
-            while (it != utf8_view.end() && isspace(*it)) {
-                prev = it;
-                ++it;
-            }
-            it = prev;
-        };
-        if (line_boxes.last().is_empty_or_ends_in_whitespace())
-            skip_over_whitespace();
-        for (; it != utf8_view.end(); ++it) {
-            if (!isspace(*it)) {
-                builder.append(utf8_view.as_string().characters_without_null_termination() + utf8_view.byte_offset_of(it), it.code_point_length_in_bytes());
-            } else {
-                builder.append(' ');
-                skip_over_whitespace();
-            }
-        }
-        m_text_for_rendering = builder.to_string();
-    } else {
-        m_text_for_rendering = dom_node().data();
-    }
+    compute_text_for_rendering(do_collapse, line_boxes.last().is_empty_or_ends_in_whitespace());
+    ChunkIterator iterator(m_text_for_rendering, layout_mode, do_wrap_lines, do_wrap_breaks);
 
-    // do_wrap_lines  => chunks_are_words
-    // !do_wrap_lines => chunks_are_lines
-    struct Chunk {
-        Utf8View view;
-        int start { 0 };
-        int length { 0 };
-        bool is_break { false };
-        bool is_all_whitespace { false };
-    };
-    Vector<Chunk, 128> chunks;
-
-    for_each_chunk(
-        [&](const Utf8View& view, int start, int length, bool is_break, bool is_all_whitespace) {
-            chunks.append({ Utf8View(view), start, length, is_break, is_all_whitespace });
-        },
-        layout_mode, do_wrap_lines, do_wrap_breaks);
-
-    for (size_t i = 0; i < chunks.size(); ++i) {
-        auto& chunk = chunks[i];
+    for (;;) {
+        auto chunk_opt = iterator.next();
+        if (!chunk_opt.has_value())
+            break;
+        auto& chunk = chunk_opt.value();
 
         // Collapse entire fragment into non-existence if previous fragment on line ended in whitespace.
         if (do_collapse && line_boxes.last().is_empty_or_ends_in_whitespace() && chunk.is_all_whitespace)
@@ -238,7 +221,7 @@ void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, Layou
 
         float chunk_width;
         if (do_wrap_lines) {
-            if (do_collapse && isspace(*chunk.view.begin()) && line_boxes.last().is_empty_or_ends_in_whitespace()) {
+            if (do_collapse && is_ascii_space(*chunk.view.begin()) && line_boxes.last().is_empty_or_ends_in_whitespace()) {
                 // This is a non-empty chunk that starts with collapsible whitespace.
                 // We are at either at the start of a new line, or after something that ended in whitespace,
                 // so we don't need to contribute our own whitespace to the line. Skip over it instead!
@@ -263,18 +246,14 @@ void TextNode::split_into_lines_by_rules(InlineFormattingContext& context, Layou
         line_boxes.last().add_fragment(*this, chunk.start, chunk.length, chunk_width, font.glyph_height());
         available_width -= chunk_width;
 
-        if (do_wrap_lines) {
-            if (available_width < 0) {
-                containing_block.add_line_box();
-                available_width = context.available_width_at_line(line_boxes.size() - 1);
-            }
+        if (do_wrap_lines && available_width < 0) {
+            containing_block.add_line_box();
+            available_width = context.available_width_at_line(line_boxes.size() - 1);
         }
 
-        if (do_wrap_breaks) {
-            if (chunk.is_break) {
-                containing_block.add_line_box();
-                available_width = context.available_width_at_line(line_boxes.size() - 1);
-            }
+        if (do_wrap_breaks && chunk.has_breaking_newline) {
+            containing_block.add_line_box();
+            available_width = context.available_width_at_line(line_boxes.size() - 1);
         }
     }
 }
@@ -304,6 +283,114 @@ void TextNode::split_into_lines(InlineFormattingContext& context, LayoutMode lay
     }
 
     split_into_lines_by_rules(context, layout_mode, do_collapse, do_wrap_lines, do_wrap_breaks);
+}
+
+bool TextNode::wants_mouse_events() const
+{
+    return parent() && is<Label>(parent());
+}
+
+void TextNode::handle_mousedown(Badge<EventHandler>, const Gfx::IntPoint& position, unsigned button, unsigned)
+{
+    if (!parent() || !is<Label>(*parent()))
+        return;
+    verify_cast<Label>(*parent()).handle_mousedown_on_label({}, position, button);
+    browsing_context().event_handler().set_mouse_event_tracking_layout_node(this);
+}
+
+void TextNode::handle_mouseup(Badge<EventHandler>, const Gfx::IntPoint& position, unsigned button, unsigned)
+{
+    if (!parent() || !is<Label>(*parent()))
+        return;
+
+    // NOTE: Changing the state of the DOM node may run arbitrary JS, which could disappear this node.
+    NonnullRefPtr protect = *this;
+
+    verify_cast<Label>(*parent()).handle_mouseup_on_label({}, position, button);
+    browsing_context().event_handler().set_mouse_event_tracking_layout_node(nullptr);
+}
+
+void TextNode::handle_mousemove(Badge<EventHandler>, const Gfx::IntPoint& position, unsigned button, unsigned)
+{
+    if (!parent() || !is<Label>(*parent()))
+        return;
+    verify_cast<Label>(*parent()).handle_mousemove_on_label({}, position, button);
+}
+
+TextNode::ChunkIterator::ChunkIterator(StringView const& text, LayoutMode layout_mode, bool wrap_lines, bool wrap_breaks)
+    : m_layout_mode(layout_mode)
+    , m_wrap_lines(wrap_lines)
+    , m_wrap_breaks(wrap_breaks)
+    , m_utf8_view(text)
+    , m_start_of_chunk(m_utf8_view.begin())
+    , m_iterator(m_utf8_view.begin())
+{
+    m_last_was_space = !text.is_empty() && is_ascii_space(*m_utf8_view.begin());
+}
+
+Optional<TextNode::Chunk> TextNode::ChunkIterator::next()
+{
+    while (m_iterator != m_utf8_view.end()) {
+        auto guard = ScopeGuard([&] { ++m_iterator; });
+        if (m_layout_mode == LayoutMode::AllPossibleLineBreaks) {
+            if (auto result = try_commit_chunk(m_iterator, false); result.has_value())
+                return result.release_value();
+        }
+        if (m_last_was_newline) {
+            m_last_was_newline = false;
+            if (auto result = try_commit_chunk(m_iterator, true); result.has_value())
+                return result.release_value();
+        }
+        if (m_wrap_breaks && *m_iterator == '\n') {
+            m_last_was_newline = true;
+            if (auto result = try_commit_chunk(m_iterator, false); result.has_value())
+                return result.release_value();
+        }
+        if (m_wrap_lines) {
+            bool is_space = is_ascii_space(*m_iterator);
+            if (is_space != m_last_was_space) {
+                m_last_was_space = is_space;
+                if (auto result = try_commit_chunk(m_iterator, false); result.has_value())
+                    return result.release_value();
+            }
+        }
+    }
+
+    if (m_last_was_newline) {
+        m_last_was_newline = false;
+        if (auto result = try_commit_chunk(m_utf8_view.end(), true); result.has_value())
+            return result.release_value();
+    }
+    if (m_start_of_chunk != m_utf8_view.end()) {
+        if (auto result = try_commit_chunk(m_utf8_view.end(), false, true); result.has_value())
+            return result.release_value();
+    }
+
+    return {};
+}
+
+Optional<TextNode::Chunk> TextNode::ChunkIterator::try_commit_chunk(Utf8View::Iterator const& it, bool has_breaking_newline, bool must_commit)
+{
+    if (m_layout_mode == LayoutMode::OnlyRequiredLineBreaks && !must_commit)
+        return {};
+
+    auto start = m_utf8_view.byte_offset_of(m_start_of_chunk);
+    auto length = m_utf8_view.byte_offset_of(it) - m_utf8_view.byte_offset_of(m_start_of_chunk);
+
+    if (has_breaking_newline || length > 0) {
+        auto chunk_view = m_utf8_view.substring_view(start, length);
+        m_start_of_chunk = it;
+        return Chunk {
+            .view = chunk_view,
+            .start = start,
+            .length = length,
+            .has_breaking_newline = has_breaking_newline,
+            .is_all_whitespace = is_all_whitespace(chunk_view.as_string()),
+        };
+    }
+
+    m_start_of_chunk = it;
+    return {};
 }
 
 }

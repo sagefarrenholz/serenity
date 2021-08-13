@@ -1,31 +1,10 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGfx/Painter.h>
-#include <LibWeb/CSS/StyleResolver.h>
 #include <LibWeb/Dump.h>
 #include <LibWeb/Layout/BlockBox.h>
 #include <LibWeb/Layout/InitialContainingBlockBox.h>
@@ -108,11 +87,11 @@ HitTestResult BlockBox::hit_test(const Gfx::IntPoint& position, HitTestType type
     HitTestResult last_good_candidate;
     for (auto& line_box : m_line_boxes) {
         for (auto& fragment : line_box.fragments()) {
-            if (is<Box>(fragment.layout_node()) && downcast<Box>(fragment.layout_node()).stacking_context())
+            if (is<Box>(fragment.layout_node()) && verify_cast<Box>(fragment.layout_node()).stacking_context())
                 continue;
             if (enclosing_int_rect(fragment.absolute_rect()).contains(position)) {
                 if (is<BlockBox>(fragment.layout_node()))
-                    return downcast<BlockBox>(fragment.layout_node()).hit_test(position, type);
+                    return verify_cast<BlockBox>(fragment.layout_node()).hit_test(position, type);
                 return { fragment.layout_node(), fragment.text_index_at(position.x()) };
             }
             if (fragment.absolute_rect().top() <= position.y())
@@ -162,7 +141,7 @@ bool BlockBox::handle_mousewheel(Badge<EventHandler>, const Gfx::IntPoint&, unsi
     if (!is_scrollable())
         return false;
     auto new_offset = m_scroll_offset;
-    new_offset.move_by(0, wheel_delta);
+    new_offset.translate_by(0, wheel_delta);
     set_scroll_offset(new_offset);
 
     return true;

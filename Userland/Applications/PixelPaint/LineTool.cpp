@@ -1,50 +1,33 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "LineTool.h"
 #include "ImageEditor.h"
 #include "Layer.h"
+#include <AK/Math.h>
 #include <LibGUI/Action.h>
+#include <LibGUI/BoxLayout.h>
+#include <LibGUI/Label.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Painter.h>
-#include <math.h>
+#include <LibGUI/ValueSlider.h>
 
 namespace PixelPaint {
 
-static Gfx::IntPoint constrain_line_angle(const Gfx::IntPoint& start_pos, const Gfx::IntPoint& end_pos, float angle_increment)
+static Gfx::IntPoint constrain_line_angle(Gfx::IntPoint const& start_pos, Gfx::IntPoint const& end_pos, float angle_increment)
 {
-    float current_angle = atan2(end_pos.y() - start_pos.y(), end_pos.x() - start_pos.x()) + M_PI * 2.;
+    float current_angle = AK::atan2<float>(end_pos.y() - start_pos.y(), end_pos.x() - start_pos.x()) + float { M_PI * 2 };
 
-    float constrained_angle = ((int)((current_angle + angle_increment / 2.) / angle_increment)) * angle_increment;
+    float constrained_angle = ((int)((current_angle + angle_increment / 2) / angle_increment)) * angle_increment;
 
     auto diff = end_pos - start_pos;
-    float line_length = sqrt(diff.x() * diff.x() + diff.y() * diff.y());
+    float line_length = AK::hypot<float>(diff.x(), diff.y());
 
-    return { start_pos.x() + (int)(cos(constrained_angle) * line_length),
-        start_pos.y() + (int)(sin(constrained_angle) * line_length) };
+    return { start_pos.x() + (int)(AK::cos(constrained_angle) * line_length),
+        start_pos.y() + (int)(AK::sin(constrained_angle) * line_length) };
 }
 
 LineTool::LineTool()
@@ -77,7 +60,7 @@ void LineTool::on_mouseup(Layer& layer, GUI::MouseEvent& event, GUI::MouseEvent&
         GUI::Painter painter(layer.bitmap());
         painter.draw_line(m_line_start_position, m_line_end_position, m_editor->color_for(m_drawing_button), m_thickness);
         m_drawing_button = GUI::MouseButton::None;
-        layer.did_modify_bitmap(*m_editor->image());
+        layer.did_modify_bitmap();
         m_editor->did_complete_action();
     }
 }
@@ -87,16 +70,16 @@ void LineTool::on_mousemove(Layer&, GUI::MouseEvent& layer_event, GUI::MouseEven
     if (m_drawing_button == GUI::MouseButton::None)
         return;
 
-    if (!m_constrain_angle) {
-        m_line_end_position = layer_event.position();
-    } else {
-        const float ANGLE_STEP = M_PI / 8.0f;
+    if (layer_event.shift()) {
+        constexpr auto ANGLE_STEP = M_PI / 8;
         m_line_end_position = constrain_line_angle(m_line_start_position, layer_event.position(), ANGLE_STEP);
+    } else {
+        m_line_end_position = layer_event.position();
     }
     m_editor->update();
 }
 
-void LineTool::on_second_paint(const Layer& layer, GUI::PaintEvent& event)
+void LineTool::on_second_paint(Layer const& layer, GUI::PaintEvent& event)
 {
     if (m_drawing_button == GUI::MouseButton::None)
         return;
@@ -115,42 +98,32 @@ void LineTool::on_keydown(GUI::KeyEvent& event)
         m_editor->update();
         event.accept();
     }
-
-    if (event.key() == Key_Shift) {
-        m_constrain_angle = true;
-        m_editor->update();
-        event.accept();
-    }
 }
 
-void LineTool::on_keyup(GUI::KeyEvent& event)
+GUI::Widget* LineTool::get_properties_widget()
 {
-    if (event.key() == Key_Shift) {
-        m_constrain_angle = false;
-        m_editor->update();
-        event.accept();
-    }
-}
+    if (!m_properties_widget) {
+        m_properties_widget = GUI::Widget::construct();
+        m_properties_widget->set_layout<GUI::VerticalBoxLayout>();
 
-void LineTool::on_tool_button_contextmenu(GUI::ContextMenuEvent& event)
-{
-    if (!m_context_menu) {
-        m_context_menu = GUI::Menu::construct();
-        m_thickness_actions.set_exclusive(true);
-        auto insert_action = [&](int size, bool checked = false) {
-            auto action = GUI::Action::create_checkable(String::number(size), [this, size](auto&) {
-                m_thickness = size;
-            });
-            action->set_checked(checked);
-            m_thickness_actions.add_action(*action);
-            m_context_menu->add_action(move(action));
+        auto& thickness_container = m_properties_widget->add<GUI::Widget>();
+        thickness_container.set_fixed_height(20);
+        thickness_container.set_layout<GUI::HorizontalBoxLayout>();
+
+        auto& thickness_label = thickness_container.add<GUI::Label>("Thickness:");
+        thickness_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
+        thickness_label.set_fixed_size(80, 20);
+
+        auto& thickness_slider = thickness_container.add<GUI::ValueSlider>(Orientation::Horizontal, "px");
+        thickness_slider.set_range(1, 10);
+        thickness_slider.set_value(m_thickness);
+
+        thickness_slider.on_change = [&](int value) {
+            m_thickness = value;
         };
-        insert_action(1, true);
-        insert_action(2);
-        insert_action(3);
-        insert_action(4);
     }
-    m_context_menu->popup(event.screen_position());
+
+    return m_properties_widget.ptr();
 }
 
 }

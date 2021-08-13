@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -46,7 +26,6 @@ public:
     FlowDirection flow_direction() const { return m_flow_direction; }
     void set_flow_direction(FlowDirection);
 
-    int content_width() const;
     int horizontal_padding() const { return m_horizontal_padding; }
 
     virtual void scroll_into_view(const ModelIndex&, bool scroll_horizontally = true, bool scroll_vertically = true) override;
@@ -61,6 +40,8 @@ public:
 
     virtual ModelIndex index_at_event_position(const Gfx::IntPoint&) const override;
     virtual Gfx::IntRect content_rect(const ModelIndex&) const override;
+    virtual Gfx::IntRect editing_rect(ModelIndex const&) const override;
+    virtual Gfx::IntRect paint_invalidation_rect(ModelIndex const&) const override;
 
     virtual void select_all() override;
 
@@ -81,6 +62,7 @@ private:
 
     struct ItemData {
         Gfx::IntRect text_rect;
+        Optional<Gfx::IntRect> text_rect_wrapped;
         Gfx::IntRect icon_rect;
         int icon_offset_y;
         int text_offset_y;
@@ -98,20 +80,25 @@ private:
             text = {};
         }
 
+        Gfx::IntRect hot_icon_rect() const { return icon_rect.inflated(10, 10); }
+        Gfx::IntRect hot_text_rect() const { return text_rect.inflated(2, 2); }
+
         bool is_intersecting(const Gfx::IntRect& rect) const
         {
             VERIFY(valid);
-            return icon_rect.intersects(rect) || text_rect.intersects(rect);
+            return hot_icon_rect().intersects(rect) || hot_text_rect().intersects(rect);
         }
 
         bool is_containing(const Gfx::IntPoint& point) const
         {
             VERIFY(valid);
-            return icon_rect.contains(point) || text_rect.contains(point);
+            return hot_icon_rect().contains(point) || hot_text_rect().contains(point);
         }
 
-        Gfx::IntRect rect() const
+        Gfx::IntRect rect(bool wrapped = false) const
         {
+            if (wrapped && text_rect_wrapped.has_value())
+                return text_rect_wrapped->united(icon_rect);
             return text_rect.united(icon_rect);
         }
     };
@@ -137,7 +124,7 @@ private:
     void scroll_out_of_view_timer_fired();
     int items_per_page() const;
 
-    void reinit_item_cache() const;
+    void rebuild_item_cache() const;
     int model_index_to_item_index(const ModelIndex& model_index) const
     {
         VERIFY(model_index.row() < item_count());
@@ -168,7 +155,6 @@ private:
     bool m_always_wrap_item_labels { false };
 
     bool m_rubber_banding { false };
-    bool m_rubber_banding_store_selection { false };
     RefPtr<Core::Timer> m_out_of_view_timer;
     Gfx::IntPoint m_out_of_view_position;
     Gfx::IntPoint m_rubber_band_origin;

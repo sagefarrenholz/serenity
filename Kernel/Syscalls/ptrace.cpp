@@ -1,37 +1,18 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
  * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/ScopeGuard.h>
+#include <Kernel/Memory/MemoryManager.h>
+#include <Kernel/Memory/PrivateInodeVMObject.h>
+#include <Kernel/Memory/ProcessPagingScope.h>
+#include <Kernel/Memory/Region.h>
+#include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/Process.h>
-#include <Kernel/VM/MemoryManager.h>
-#include <Kernel/VM/PrivateInodeVMObject.h>
-#include <Kernel/VM/ProcessPagingScope.h>
-#include <Kernel/VM/Region.h>
-#include <Kernel/VM/SharedInodeVMObject.h>
+#include <Kernel/ThreadTracer.h>
 
 namespace Kernel {
 
@@ -57,7 +38,7 @@ static KResultOr<u32> handle_ptrace(const Kernel::Syscall::SC_ptrace_params& par
     if (!peer)
         return ESRCH;
 
-    Locker ptrace_locker(peer->process().ptrace_lock());
+    MutexLocker ptrace_locker(peer->process().ptrace_lock());
 
     if ((peer->process().uid() != caller.euid())
         || (peer->process().uid() != peer->process().euid())) // Disallow tracing setuid processes
@@ -71,7 +52,9 @@ static KResultOr<u32> handle_ptrace(const Kernel::Syscall::SC_ptrace_params& par
         if (peer_process.tracer()) {
             return EBUSY;
         }
-        peer_process.start_tracing_from(caller.pid());
+        auto result = peer_process.start_tracing_from(caller.pid());
+        if (result.is_error())
+            return result.error();
         ScopedSpinLock lock(peer->get_lock());
         if (peer->state() != Thread::State::Stopped) {
             peer->send_signal(SIGSTOP, &caller);
@@ -138,7 +121,7 @@ static KResultOr<u32> handle_ptrace(const Kernel::Syscall::SC_ptrace_params& par
         Kernel::Syscall::SC_ptrace_peek_params peek_params {};
         if (!copy_from_user(&peek_params, reinterpret_cast<Kernel::Syscall::SC_ptrace_peek_params*>(params.addr)))
             return EFAULT;
-        if (!is_user_address(VirtualAddress { peek_params.address }))
+        if (!Memory::is_user_address(VirtualAddress { peek_params.address }))
             return EFAULT;
         auto result = peer->process().peek_user_data(Userspace<const u32*> { (FlatPtr)peek_params.address });
         if (result.is_error())
@@ -149,10 +132,23 @@ static KResultOr<u32> handle_ptrace(const Kernel::Syscall::SC_ptrace_params& par
     }
 
     case PT_POKE:
-        if (!is_user_address(VirtualAddress { params.addr }))
+        if (!Memory::is_user_address(VirtualAddress { params.addr }))
             return EFAULT;
         return peer->process().poke_user_data(Userspace<u32*> { (FlatPtr)params.addr }, params.data);
 
+    case PT_PEEKDEBUG: {
+        Kernel::Syscall::SC_ptrace_peek_params peek_params {};
+        if (!copy_from_user(&peek_params, reinterpret_cast<Kernel::Syscall::SC_ptrace_peek_params*>(params.addr)))
+            return EFAULT;
+        auto result = peer->peek_debug_register(reinterpret_cast<uintptr_t>(peek_params.address));
+        if (result.is_error())
+            return result.error();
+        if (!copy_to_user(peek_params.out_data, &result.value()))
+            return EFAULT;
+        break;
+    }
+    case PT_POKEDEBUG:
+        return peer->poke_debug_register(reinterpret_cast<uintptr_t>(params.addr), params.data);
     default:
         return EINVAL;
     }
@@ -160,8 +156,9 @@ static KResultOr<u32> handle_ptrace(const Kernel::Syscall::SC_ptrace_params& par
     return KSuccess;
 }
 
-KResultOr<int> Process::sys$ptrace(Userspace<const Syscall::SC_ptrace_params*> user_params)
+KResultOr<FlatPtr> Process::sys$ptrace(Userspace<const Syscall::SC_ptrace_params*> user_params)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(ptrace);
     Syscall::SC_ptrace_params params {};
     if (!copy_from_user(&params, user_params))
@@ -197,8 +194,8 @@ KResultOr<u32> Process::peek_user_data(Userspace<const u32*> address)
 
 KResult Process::poke_user_data(Userspace<u32*> address, u32 data)
 {
-    Range range = { VirtualAddress(address), sizeof(u32) };
-    auto* region = space().find_region_containing(range);
+    Memory::VirtualRange range = { VirtualAddress(address), sizeof(u32) };
+    auto* region = address_space().find_region_containing(range);
     if (!region)
         return EFAULT;
     ProcessPagingScope scope(*this);
@@ -206,7 +203,10 @@ KResult Process::poke_user_data(Userspace<u32*> address, u32 data)
         // If the region is shared, we change its vmobject to a PrivateInodeVMObject
         // to prevent the write operation from changing any shared inode data
         VERIFY(region->vmobject().is_shared_inode());
-        region->set_vmobject(PrivateInodeVMObject::create_with_inode(static_cast<SharedInodeVMObject&>(region->vmobject()).inode()));
+        auto vmobject = Memory::PrivateInodeVMObject::try_create_with_inode(static_cast<Memory::SharedInodeVMObject&>(region->vmobject()).inode());
+        if (!vmobject)
+            return ENOMEM;
+        region->set_vmobject(vmobject.release_nonnull());
         region->set_shared(false);
     }
     const bool was_writable = region->is_writable();
@@ -226,6 +226,58 @@ KResult Process::poke_user_data(Userspace<u32*> address, u32 data)
         return EFAULT;
     }
 
+    return KSuccess;
+}
+
+KResultOr<u32> Thread::peek_debug_register(u32 register_index)
+{
+    u32 data;
+    switch (register_index) {
+    case 0:
+        data = m_debug_register_state.dr0;
+        break;
+    case 1:
+        data = m_debug_register_state.dr1;
+        break;
+    case 2:
+        data = m_debug_register_state.dr2;
+        break;
+    case 3:
+        data = m_debug_register_state.dr3;
+        break;
+    case 6:
+        data = m_debug_register_state.dr6;
+        break;
+    case 7:
+        data = m_debug_register_state.dr7;
+        break;
+    default:
+        return EINVAL;
+    }
+    return data;
+}
+
+KResult Thread::poke_debug_register(u32 register_index, u32 data)
+{
+    switch (register_index) {
+    case 0:
+        m_debug_register_state.dr0 = data;
+        break;
+    case 1:
+        m_debug_register_state.dr1 = data;
+        break;
+    case 2:
+        m_debug_register_state.dr2 = data;
+        break;
+    case 3:
+        m_debug_register_state.dr3 = data;
+        break;
+    case 7:
+        m_debug_register_state.dr7 = data;
+        break;
+    default:
+        return EINVAL;
+    }
     return KSuccess;
 }
 

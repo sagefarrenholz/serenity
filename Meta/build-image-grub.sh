@@ -24,10 +24,14 @@ fi
 echo "using grub-install at ${grub}"
 
 disk_usage() {
+if [ "$(uname -s)" = "Darwin" ]; then
     du -sm "$1" | cut -f1
+else
+    du -sm --apparent-size "$1" | cut -f1
+fi
 }
 
-DISK_SIZE=$(($(disk_usage "$SERENITY_ROOT/Base") + $(disk_usage Root) + 300))
+DISK_SIZE=$(($(disk_usage "$SERENITY_SOURCE_DIR/Base") + $(disk_usage Root) + 300))
 
 echo "setting up disk image..."
 if [ "$1" = "ebr" ]; then
@@ -62,7 +66,7 @@ trap cleanup EXIT
 
 printf "creating partition table... "
 if [ "$1" = "mbr" ]; then
-    parted -s "${dev}" mklabel msdos mkpart primary ext2 32k 100% -a minimal set 1 boot on || die "couldn't partition disk"
+    parted -s "${dev}" mklabel msdos mkpart primary ext2 1MiB 100% -a minimal set 1 boot on || die "couldn't partition disk"
     partition_number="p1"
     partition_scheme="mbr"
 elif [ "$1" = "gpt" ]; then
@@ -74,7 +78,7 @@ elif [ "$1" = "ebr" ]; then
     partition_number="p5"
     partition_scheme="ebr"
 else
-    parted -s "${dev}" mklabel msdos mkpart primary ext2 32k 100% -a minimal set 1 boot on || die "couldn't partition disk"
+    parted -s "${dev}" mklabel msdos mkpart primary ext2 1MiB 100% -a minimal set 1 boot on || die "couldn't partition disk"
     partition_number="p1"
     partition_scheme="mbr"
 fi
@@ -98,7 +102,7 @@ script_path=$(cd -P -- "$(dirname -- "$0")" && pwd -P)
 "$script_path/build-root-filesystem.sh"
 
 if [ -z "$2" ]; then
-    grub_cfg="$SERENITY_ROOT"/Meta/grub-"${partition_scheme}".cfg
+    grub_cfg="$SERENITY_SOURCE_DIR"/Meta/grub-"${partition_scheme}".cfg
 else
     grub_cfg=$2
 fi

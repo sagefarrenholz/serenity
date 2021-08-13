@@ -1,32 +1,11 @@
 /*
  * Copyright (c) 2020, Maciej Zygmanowski <sppmacd@pm.me>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/ByteBuffer.h>
 #include <AK/GenericLexer.h>
-#include <AK/HashMap.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
@@ -58,7 +37,7 @@ static bool parse_name(StringView name, OpenFile& file)
         return true;
     } else {
         file.type = component1;
-        auto component2 = lexer.consume_while([](char c) { return isprint(c) && !isspace(c) && c != '('; });
+        auto component2 = lexer.consume_while([](char c) { return isprint(c) && c != '('; });
         lexer.ignore_while(isspace);
         file.name = component2;
 
@@ -84,9 +63,9 @@ static bool parse_name(StringView name, OpenFile& file)
 
 static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
 {
-    auto file = Core::File::open(String::formatted("/proc/{}/fds", pid), Core::IODevice::OpenMode::ReadOnly);
+    auto file = Core::File::open(String::formatted("/proc/{}/fds", pid), Core::OpenMode::ReadOnly);
     if (file.is_error()) {
-        printf("lsof: PID %d: %s\n", pid, file.error().characters());
+        outln("lsof: PID {}: {}", pid, file.error());
         return Vector<OpenFile>();
     }
     auto data = file.value()->read_all();
@@ -115,7 +94,7 @@ static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
 
 static void display_entry(const OpenFile& file, const Core::ProcessStatistics& statistics)
 {
-    printf("%-28s %4d %4d %-10s %4d %s\n", statistics.name.characters(), file.pid, statistics.pgid, statistics.username.characters(), file.fd, file.full_name.characters());
+    outln("{:28} {:>4} {:>4} {:10} {:>4} {}", statistics.name, file.pid, statistics.pgid, statistics.username, file.fd, file.full_name);
 }
 
 int main(int argc, char* argv[])
@@ -144,7 +123,7 @@ int main(int argc, char* argv[])
     int arg_uid_int = -1;
     int arg_pgid { -1 };
     pid_t arg_pid { -1 };
-    const char* arg_file_name { nullptr };
+    const char* arg_filename { nullptr };
 
     if (argc == 1)
         arg_all_processes = true;
@@ -155,7 +134,7 @@ int main(int argc, char* argv[])
         parser.add_option(arg_fd, "Select by file descriptor", nullptr, 'd', "fd");
         parser.add_option(arg_uid, "Select by login/UID", nullptr, 'u', "login/UID");
         parser.add_option(arg_pgid, "Select by process group ID", nullptr, 'g', "PGID");
-        parser.add_positional_argument(arg_file_name, "File name", "file name", Core::ArgsParser::Required::No);
+        parser.add_positional_argument(arg_filename, "Filename", "filename", Core::ArgsParser::Required::No);
         parser.parse(argc, argv);
     }
     {
@@ -165,27 +144,27 @@ int main(int argc, char* argv[])
             arg_uid_int = arg.value();
     }
 
-    printf("%-28s %4s %4s %-10s %4s %s\n", "COMMAND", "PID", "PGID", "USER", "FD", "NAME");
-    auto processes = Core::ProcessStatisticsReader::get_all();
-    if (!processes.has_value())
+    outln("{:28} {:>4} {:>4} {:10} {:>4} {}", "COMMAND", "PID", "PGID", "USER", "FD", "NAME");
+    auto all_processes = Core::ProcessStatisticsReader::get_all();
+    if (!all_processes.has_value())
         return 1;
     if (arg_pid == -1) {
-        for (auto process : processes.value()) {
-            if (process.key == 0)
+        for (auto& process : all_processes.value().processes) {
+            if (process.pid == 0)
                 continue;
-            auto open_files = get_open_files_by_pid(process.key);
+            auto open_files = get_open_files_by_pid(process.pid);
 
             if (open_files.is_empty())
                 continue;
 
-            for (auto file : open_files) {
+            for (auto& file : open_files) {
                 if ((arg_all_processes)
                     || (arg_fd != -1 && file.fd == arg_fd)
-                    || (arg_uid_int != -1 && (int)process.value.uid == arg_uid_int)
-                    || (arg_uid != nullptr && process.value.username == arg_uid)
-                    || (arg_pgid != -1 && (int)process.value.pgid == arg_pgid)
-                    || (arg_file_name != nullptr && file.name == arg_file_name))
-                    display_entry(file, process.value);
+                    || (arg_uid_int != -1 && (int)process.uid == arg_uid_int)
+                    || (arg_uid != nullptr && process.username == arg_uid)
+                    || (arg_pgid != -1 && (int)process.pgid == arg_pgid)
+                    || (arg_filename != nullptr && file.name == arg_filename))
+                    display_entry(file, process);
             }
         }
     } else {
@@ -194,8 +173,8 @@ int main(int argc, char* argv[])
         if (open_files.is_empty())
             return 0;
 
-        for (auto file : open_files) {
-            display_entry(file, processes.value().get(arg_pid).value());
+        for (auto& file : open_files) {
+            display_entry(file, *all_processes->processes.find_if([&](auto& entry) { return entry.pid == arg_pid; }));
         }
     }
 

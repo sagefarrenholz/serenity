@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Jakob-Niklas See <git@nwex.de>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibGUI/BoxLayout.h>
@@ -30,26 +11,26 @@
 #include <LibGUI/Label.h>
 #include <LibGUI/TextBox.h>
 #include <LibGfx/Font.h>
-#include <stdio.h>
 
 namespace GUI {
 
-InputBox::InputBox(Window* parent_window, String& text_value, const StringView& prompt, const StringView& title)
+InputBox::InputBox(Window* parent_window, String& text_value, StringView const& prompt, StringView const& title, StringView const& placeholder, InputType input_type)
     : Dialog(parent_window)
     , m_text_value(text_value)
     , m_prompt(prompt)
+    , m_placeholder(placeholder)
 {
     set_title(title);
-    build();
+    build(input_type);
 }
 
 InputBox::~InputBox()
 {
 }
 
-int InputBox::show(Window* parent_window, String& text_value, const StringView& prompt, const StringView& title)
+int InputBox::show(Window* parent_window, String& text_value, StringView const& prompt, StringView const& title, StringView const& placeholder, InputType input_type)
 {
-    auto box = InputBox::construct(parent_window, text_value, prompt, title);
+    auto box = InputBox::construct(parent_window, text_value, prompt, title, placeholder, input_type);
     box->set_resizable(false);
     if (parent_window)
         box->set_icon(parent_window->icon());
@@ -58,7 +39,7 @@ int InputBox::show(Window* parent_window, String& text_value, const StringView& 
     return result;
 }
 
-void InputBox::build()
+void InputBox::build(InputType input_type)
 {
     auto& widget = set_main_widget<Widget>();
 
@@ -80,9 +61,20 @@ void InputBox::build()
     auto& label = label_editor_container.add<Label>(m_prompt);
     label.set_fixed_size(text_width, 16);
 
-    m_text_editor = label_editor_container.add<TextBox>();
+    switch (input_type) {
+    case InputType::Text:
+        m_text_editor = label_editor_container.add<TextBox>();
+        break;
+    case InputType::Password:
+        m_text_editor = label_editor_container.add<PasswordBox>();
+        break;
+    }
+
     m_text_editor->set_fixed_height(19);
     m_text_editor->set_text(m_text_value);
+
+    if (!m_placeholder.is_null())
+        m_text_editor->set_placeholder(m_placeholder);
 
     auto& button_container_outer = widget.add<Widget>();
     button_container_outer.set_fixed_height(20);

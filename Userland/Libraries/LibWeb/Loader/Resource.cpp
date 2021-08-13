@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
@@ -35,8 +15,8 @@ namespace Web {
 NonnullRefPtr<Resource> Resource::create(Badge<ResourceLoader>, Type type, const LoadRequest& request)
 {
     if (type == Type::Image)
-        return adopt(*new ImageResource(request));
-    return adopt(*new Resource(type, request));
+        return adopt_ref(*new ImageResource(request));
+    return adopt_ref(*new Resource(type, request));
 }
 
 Resource::Resource(Type type, const LoadRequest& request)
@@ -61,9 +41,9 @@ void Resource::for_each_client(Function<void(ResourceClient&)> callback)
     }
 }
 
-static String encoding_from_content_type(const String& content_type)
+static Optional<String> encoding_from_content_type(const String& content_type)
 {
-    auto offset = content_type.index_of("charset=");
+    auto offset = content_type.find("charset="sv);
     if (offset.has_value()) {
         auto encoding = content_type.substring(offset.value() + 8, content_type.length() - offset.value() - 8).to_lowercase();
         if (encoding.length() >= 2 && encoding.starts_with('"') && encoding.ends_with('"'))
@@ -73,42 +53,50 @@ static String encoding_from_content_type(const String& content_type)
         return encoding;
     }
 
-    return "utf-8";
+    return {};
 }
 
 static String mime_type_from_content_type(const String& content_type)
 {
-    auto offset = content_type.index_of(";");
+    auto offset = content_type.find(';');
     if (offset.has_value())
         return content_type.substring(0, offset.value()).to_lowercase();
 
     return content_type;
 }
 
-void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap<String, String, CaseInsensitiveStringTraits>& headers)
+void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap<String, String, CaseInsensitiveStringTraits>& headers, Optional<u32> status_code)
 {
     VERIFY(!m_loaded);
     m_encoded_data = ByteBuffer::copy(data);
     m_response_headers = headers;
+    m_status_code = move(status_code);
     m_loaded = true;
 
     auto content_type = headers.get("Content-Type");
+
     if (content_type.has_value()) {
-#if RESOURCE_DEBUG
-        dbgln("Content-Type header: '{}'", content_type.value());
-#endif
-        m_encoding = encoding_from_content_type(content_type.value());
+        dbgln_if(RESOURCE_DEBUG, "Content-Type header: '{}'", content_type.value());
         m_mime_type = mime_type_from_content_type(content_type.value());
     } else if (url().protocol() == "data" && !url().data_mime_type().is_empty()) {
         dbgln_if(RESOURCE_DEBUG, "This is a data URL with mime-type _{}_", url().data_mime_type());
-        m_encoding = "utf-8"; // FIXME: This doesn't seem nice.
         m_mime_type = url().data_mime_type();
     } else {
-#if RESOURCE_DEBUG
-        dbgln("No Content-Type header to go on! Guessing based on filename...");
-#endif
-        m_encoding = "utf-8"; // FIXME: This doesn't seem nice.
-        m_mime_type = Core::guess_mime_type_based_on_filename(url().path());
+        auto content_type_options = headers.get("X-Content-Type-Options");
+        if (content_type_options.value_or("").equals_ignoring_case("nosniff")) {
+            m_mime_type = "text/plain";
+        } else {
+            m_mime_type = Core::guess_mime_type_based_on_filename(url().path());
+        }
+    }
+
+    m_encoding = {};
+    if (content_type.has_value()) {
+        auto encoding = encoding_from_content_type(content_type.value());
+        if (encoding.has_value()) {
+            dbgln_if(RESOURCE_DEBUG, "Set encoding '{}' from Content-Type", encoding.has_value());
+            m_encoding = encoding.value();
+        }
     }
 
     for_each_client([](auto& client) {
@@ -116,9 +104,10 @@ void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, const HashMap
     });
 }
 
-void Resource::did_fail(Badge<ResourceLoader>, const String& error)
+void Resource::did_fail(Badge<ResourceLoader>, const String& error, Optional<u32> status_code)
 {
     m_error = error;
+    m_status_code = move(status_code);
     m_failed = true;
 
     for_each_client([](auto& client) {

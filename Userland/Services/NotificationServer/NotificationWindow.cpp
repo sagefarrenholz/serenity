@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "NotificationWindow.h"
@@ -39,14 +19,14 @@ namespace NotificationServer {
 
 static HashMap<u32, RefPtr<NotificationWindow>> s_windows;
 
-void update_notification_window_locations()
+static void update_notification_window_locations(const Gfx::IntRect& screen_rect)
 {
     Gfx::IntRect last_window_rect;
     for (auto& window_entry : s_windows) {
         auto& window = window_entry.value;
         Gfx::IntPoint new_window_location;
         if (last_window_rect.is_null())
-            new_window_location = GUI::Desktop::the().rect().top_right().translated(-window->rect().width() - 24, 26);
+            new_window_location = screen_rect.top_right().translated(-window->rect().width() - 24, 7);
         else
             new_window_location = last_window_rect.bottom_left().translated(0, 10);
         if (window->rect().location() != new_window_location) {
@@ -76,7 +56,7 @@ NotificationWindow::NotificationWindow(i32 client_id, const String& text, const 
     Gfx::IntRect rect;
     rect.set_width(220);
     rect.set_height(40);
-    rect.set_location(GUI::Desktop::the().rect().top_right().translated(-rect.width() - 24, 26));
+    rect.set_location(GUI::Desktop::the().rect().top_right().translated(-rect.width() - 24, 7));
 
     if (!lowest_notification_rect_on_screen.is_null())
         rect.set_location(lowest_notification_rect_on_screen.bottom_left().translated(0, 10));
@@ -86,8 +66,8 @@ NotificationWindow::NotificationWindow(i32 client_id, const String& text, const 
     m_original_rect = rect;
 
     auto& widget = set_main_widget<GUI::Widget>();
-    widget.set_fill_with_background_color(true);
 
+    widget.set_fill_with_background_color(true);
     widget.set_layout<GUI::HorizontalBoxLayout>();
     widget.layout()->set_margins({ 8, 8, 8, 8 });
     widget.layout()->set_spacing(6);
@@ -102,22 +82,19 @@ NotificationWindow::NotificationWindow(i32 client_id, const String& text, const 
     left_container.set_layout<GUI::VerticalBoxLayout>();
 
     m_title_label = &left_container.add<GUI::Label>(title);
-    m_title_label->set_font(Gfx::FontDatabase::default_bold_font());
+    m_title_label->set_font(Gfx::FontDatabase::default_font().bold_variant());
     m_title_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
     m_text_label = &left_container.add<GUI::Label>(text);
     m_text_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
 
-    widget.set_tooltip(text);
-    m_title_label->set_tooltip(text);
-    m_text_label->set_tooltip(text);
-
-    auto& right_container = widget.add<GUI::Widget>();
-    right_container.set_fixed_width(36);
-    right_container.set_layout<GUI::HorizontalBoxLayout>();
+    // FIXME: There used to be code for setting the tooltip here, but since we
+    // expand the notification now we no longer set the tooltip. Should there be
+    // a limit to the lines shown in an expanded notification, at which point a
+    // tooltip should be set?
 
     on_close = [this] {
         s_windows.remove(m_id);
-        update_notification_window_locations();
+        update_notification_window_locations(GUI::Desktop::the().rect());
     };
 }
 
@@ -131,22 +108,59 @@ RefPtr<NotificationWindow> NotificationWindow::get_window_by_id(i32 id)
     return window.value_or(nullptr);
 }
 
-void NotificationWindow::set_text(const String& value)
+void NotificationWindow::resize_to_fit_text()
 {
-    m_text_label->set_text(value);
+    auto line_height = m_text_label->font().glyph_height();
+    auto total_height = m_text_label->preferred_height();
+
+    m_text_label->set_fixed_height(total_height);
+    set_height(40 - line_height + total_height);
 }
 
-void NotificationWindow::set_title(const String& value)
+void NotificationWindow::enter_event(Core::Event&)
+{
+    m_hovering = true;
+    resize_to_fit_text();
+    move_to_front();
+}
+
+void NotificationWindow::leave_event(Core::Event&)
+{
+    m_hovering = false;
+    m_text_label->set_fixed_height(-1);
+    set_height(40);
+}
+
+void NotificationWindow::set_text(String const& value)
+{
+    m_text_label->set_text(value);
+    if (m_hovering)
+        resize_to_fit_text();
+}
+
+void NotificationWindow::set_title(String const& value)
 {
     m_title_label->set_text(value);
 }
 
-void NotificationWindow::set_image(const Gfx::ShareableBitmap& image)
+void NotificationWindow::set_image(Gfx::ShareableBitmap const& image)
 {
     m_image->set_visible(image.is_valid());
     if (image.is_valid()) {
         m_image->set_bitmap(image.bitmap());
     }
+}
+
+void NotificationWindow::set_height(int height)
+{
+    auto rect = this->rect();
+    rect.set_height(height);
+    set_rect(rect);
+}
+
+void NotificationWindow::screen_rects_change_event(GUI::ScreenRectsChangeEvent& event)
+{
+    update_notification_window_locations(event.rects()[event.main_screen_index()]);
 }
 
 }

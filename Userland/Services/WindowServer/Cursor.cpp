@@ -1,44 +1,21 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/LexicalPath.h>
 #include <WindowServer/Cursor.h>
+#include <WindowServer/Screen.h>
 #include <WindowServer/WindowManager.h>
 
 namespace WindowServer {
 
-CursorParams CursorParams::parse_from_file_name(const StringView& cursor_path, const Gfx::IntPoint& default_hotspot)
+CursorParams CursorParams::parse_from_filename(const StringView& cursor_path, const Gfx::IntPoint& default_hotspot)
 {
     LexicalPath path(cursor_path);
-    if (!path.is_valid()) {
-        dbgln("Cannot parse invalid cursor path, use default cursor params");
-        return { default_hotspot };
-    }
     auto file_title = path.title();
-    auto last_dot_in_title = StringView(file_title).find_last_of('.');
+    auto last_dot_in_title = file_title.find_last('.');
     if (!last_dot_in_title.has_value() || last_dot_in_title.value() == 0) {
         // No encoded params in filename. Not an error, we'll just use defaults
         return { default_hotspot };
@@ -97,6 +74,7 @@ CursorParams CursorParams::parse_from_file_name(const StringView& cursor_path, c
             return { default_hotspot };
         }
     }
+
     return params;
 }
 
@@ -113,16 +91,21 @@ CursorParams CursorParams::constrained(const Gfx::Bitmap& bitmap) const
         }
     }
     if (params.m_have_hotspot)
-        params.m_hotspot = params.m_hotspot.constrained(rect);
+        params.m_hotspot.constrain(rect);
     else
         params.m_hotspot = rect.center();
     return params;
 }
 
-Cursor::Cursor(NonnullRefPtr<Gfx::Bitmap>&& bitmap, const CursorParams& cursor_params)
-    : m_bitmap(move(bitmap))
-    , m_params(cursor_params.constrained(*m_bitmap))
-    , m_rect(m_bitmap->rect())
+Cursor::Cursor(NonnullRefPtr<Gfx::Bitmap>&& bitmap, int scale_factor, const CursorParams& cursor_params)
+    : m_params(cursor_params.constrained(*bitmap))
+    , m_rect(bitmap->rect())
+{
+    m_bitmaps.set(scale_factor, move(bitmap));
+    update_rect_if_animated();
+}
+
+void Cursor::update_rect_if_animated()
 {
     if (m_params.frames() > 1) {
         VERIFY(m_rect.width() % m_params.frames() == 0);
@@ -130,20 +113,49 @@ Cursor::Cursor(NonnullRefPtr<Gfx::Bitmap>&& bitmap, const CursorParams& cursor_p
     }
 }
 
-Cursor::~Cursor()
-{
-}
-
-NonnullRefPtr<Cursor> Cursor::create(NonnullRefPtr<Gfx::Bitmap>&& bitmap)
+NonnullRefPtr<Cursor> Cursor::create(NonnullRefPtr<Gfx::Bitmap>&& bitmap, int scale_factor)
 {
     auto hotspot = bitmap->rect().center();
-    return adopt(*new Cursor(move(bitmap), CursorParams(hotspot)));
+    return adopt_ref(*new Cursor(move(bitmap), scale_factor, CursorParams(hotspot)));
 }
 
-NonnullRefPtr<Cursor> Cursor::create(NonnullRefPtr<Gfx::Bitmap>&& bitmap, const StringView& filename)
+RefPtr<Cursor> Cursor::create(const StringView& filename, const StringView& default_filename)
 {
-    auto default_hotspot = bitmap->rect().center();
-    return adopt(*new Cursor(move(bitmap), CursorParams::parse_from_file_name(filename, default_hotspot)));
+    auto cursor = adopt_ref(*new Cursor());
+    if (cursor->load(filename, default_filename))
+        return cursor;
+    return {};
+}
+
+bool Cursor::load(const StringView& filename, const StringView& default_filename)
+{
+    bool did_load_any = false;
+
+    auto load_bitmap = [&](const StringView& path, int scale_factor) {
+        auto bitmap = Gfx::Bitmap::try_load_from_file(path, scale_factor);
+        if (bitmap) {
+            did_load_any = true;
+            m_bitmaps.set(scale_factor, bitmap.release_nonnull());
+        }
+    };
+
+    Screen::for_each_scale_factor_in_use([&](int scale_factor) {
+        load_bitmap(filename, scale_factor);
+        return IterationDecision::Continue;
+    });
+    if (!did_load_any) {
+        Screen::for_each_scale_factor_in_use([&](int scale_factor) {
+            load_bitmap(default_filename, scale_factor);
+            return IterationDecision::Continue;
+        });
+    }
+    if (did_load_any) {
+        auto& bitmap = this->bitmap(1);
+        m_rect = bitmap.rect();
+        m_params = CursorParams::parse_from_filename(filename, m_rect.center()).constrained(bitmap);
+        update_rect_if_animated();
+    }
+    return did_load_any;
 }
 
 RefPtr<Cursor> Cursor::create(Gfx::StandardCursor standard_cursor)

@@ -1,31 +1,12 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <LibCompress/Gzip.h>
 #include <LibCoreDump/Reader.h>
 #include <signal_numbers.h>
 #include <string.h>
@@ -37,12 +18,12 @@ OwnPtr<Reader> Reader::create(const String& path)
     auto file_or_error = MappedFile::map(path);
     if (file_or_error.is_error())
         return {};
-    return adopt_own(*new Reader(file_or_error.release_value()));
+    return adopt_own(*new Reader(file_or_error.value()->bytes()));
 }
 
-Reader::Reader(NonnullRefPtr<MappedFile> coredump_file)
-    : m_coredump_file(move(coredump_file))
-    , m_coredump_image(m_coredump_file->bytes())
+Reader::Reader(ReadonlyBytes coredump_bytes)
+    : m_coredump_buffer(decompress_coredump(coredump_bytes))
+    , m_coredump_image(m_coredump_buffer.bytes())
 {
     size_t index = 0;
     m_coredump_image.for_each_program_header([this, &index](auto pheader) {
@@ -54,6 +35,16 @@ Reader::Reader(NonnullRefPtr<MappedFile> coredump_file)
         return IterationDecision::Continue;
     });
     VERIFY(m_notes_segment_index != -1);
+}
+
+ByteBuffer Reader::decompress_coredump(const ReadonlyBytes& raw_coredump)
+{
+    if (!Compress::GzipDecompressor::is_likely_compressed(raw_coredump))
+        return ByteBuffer::copy(raw_coredump); // handle old format core dumps (uncompressed)
+    auto decompressed_coredump = Compress::GzipDecompressor::decompress_all(raw_coredump);
+    if (!decompressed_coredump.has_value())
+        return ByteBuffer::copy(raw_coredump); // if we didn't manage to decompress it, try and parse it as decompressed core dump
+    return decompressed_coredump.value();
 }
 
 Reader::~Reader()
@@ -115,7 +106,7 @@ bool Reader::NotesEntryIterator::at_end() const
     return type() == ELF::Core::NotesEntryHeader::Type::Null;
 }
 
-Optional<uint32_t> Reader::peek_memory(FlatPtr address) const
+Optional<FlatPtr> Reader::peek_memory(FlatPtr address) const
 {
     const auto* region = region_containing(address);
     if (!region)
@@ -123,7 +114,7 @@ Optional<uint32_t> Reader::peek_memory(FlatPtr address) const
 
     FlatPtr offset_in_region = address - region->region_start;
     const char* region_data = image().program_header(region->program_header_index).raw_data();
-    return *(const uint32_t*)(&region_data[offset_in_region]);
+    return *(const FlatPtr*)(&region_data[offset_in_region]);
 }
 
 const JsonObject Reader::process_info() const
@@ -144,6 +135,19 @@ const JsonObject Reader::process_info() const
         return {};
     return process_info_json_value.value().as_object();
     // FIXME: Maybe just cache this on the Reader instance after first access.
+}
+
+ELF::Core::MemoryRegionInfo const* Reader::first_region_for_object(StringView object_name) const
+{
+    ELF::Core::MemoryRegionInfo const* ret = nullptr;
+    for_each_memory_region_info([&ret, &object_name](auto& region_info) {
+        if (region_info.object_name() == object_name) {
+            ret = &region_info;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return ret;
 }
 
 const ELF::Core::MemoryRegionInfo* Reader::region_containing(FlatPtr address) const
@@ -251,7 +255,7 @@ const Reader::LibraryData* Reader::library_containing(FlatPtr address) const
 
     String path;
     if (name.contains(".so"))
-        path = String::format("/usr/lib/%s", name.characters());
+        path = String::formatted("/usr/lib/{}", name);
     else {
         path = name;
     }
@@ -261,7 +265,7 @@ const Reader::LibraryData* Reader::library_containing(FlatPtr address) const
         if (file_or_error.is_error())
             return {};
         auto image = ELF::Image(file_or_error.value()->bytes());
-        cached_libs.set(path, make<LibraryData>(name, region->region_start, file_or_error.release_value(), move(image)));
+        cached_libs.set(path, make<LibraryData>(name, (FlatPtr)region->region_start, file_or_error.release_value(), move(image)));
     }
 
     auto lib_data = cached_libs.get(path).value();

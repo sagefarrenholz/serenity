@@ -1,41 +1,18 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "MemoryStatsWidget.h"
 #include "GraphWidget.h"
-#include <AK/ByteBuffer.h>
 #include <AK/JsonObject.h>
 #include <LibCore/File.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Painter.h>
-#include <LibGfx/Font.h>
 #include <LibGfx/FontDatabase.h>
 #include <LibGfx/StylePainter.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 static MemoryStatsWidget* s_the;
@@ -62,7 +39,7 @@ MemoryStatsWidget::MemoryStatsWidget(GraphWidget& graph)
         container.set_layout<GUI::HorizontalBoxLayout>();
         container.set_fixed_size(275, 12);
         auto& description_label = container.add<GUI::Label>(description);
-        description_label.set_font(Gfx::FontDatabase::default_bold_font());
+        description_label.set_font(Gfx::FontDatabase::default_font().bold_variant());
         description_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
         auto& label = container.add<GUI::Label>();
         label.set_text_alignment(Gfx::TextAlignment::CenterRight);
@@ -84,12 +61,12 @@ MemoryStatsWidget::~MemoryStatsWidget()
 {
 }
 
-static inline size_t page_count_to_kb(size_t kb)
+static inline u64 page_count_to_kb(u64 kb)
 {
     return (kb * 4096) / 1024;
 }
 
-static inline size_t bytes_to_kb(size_t bytes)
+static inline u64 bytes_to_kb(u64 bytes)
 {
     return bytes / 1024;
 }
@@ -97,7 +74,7 @@ static inline size_t bytes_to_kb(size_t bytes)
 void MemoryStatsWidget::refresh()
 {
     auto proc_memstat = Core::File::construct("/proc/memstat");
-    if (!proc_memstat->open(Core::IODevice::OpenMode::ReadOnly))
+    if (!proc_memstat->open(Core::OpenMode::ReadOnly))
         VERIFY_NOT_REACHED();
 
     auto file_contents = proc_memstat->read_all();
@@ -108,12 +85,12 @@ void MemoryStatsWidget::refresh()
     [[maybe_unused]] unsigned kmalloc_eternal_allocated = json.get("kmalloc_eternal_allocated").to_u32();
     unsigned kmalloc_allocated = json.get("kmalloc_allocated").to_u32();
     unsigned kmalloc_available = json.get("kmalloc_available").to_u32();
-    unsigned user_physical_allocated = json.get("user_physical_allocated").to_u32();
-    unsigned user_physical_available = json.get("user_physical_available").to_u32();
-    unsigned user_physical_committed = json.get("user_physical_committed").to_u32();
-    unsigned user_physical_uncommitted = json.get("user_physical_uncommitted").to_u32();
-    unsigned super_physical_alloc = json.get("super_physical_allocated").to_u32();
-    unsigned super_physical_free = json.get("super_physical_available").to_u32();
+    unsigned user_physical_allocated = json.get("user_physical_allocated").to_u64();
+    unsigned user_physical_available = json.get("user_physical_available").to_u64();
+    unsigned user_physical_committed = json.get("user_physical_committed").to_u64();
+    unsigned user_physical_uncommitted = json.get("user_physical_uncommitted").to_u64();
+    unsigned super_physical_alloc = json.get("super_physical_allocated").to_u64();
+    unsigned super_physical_free = json.get("super_physical_available").to_u64();
     unsigned kmalloc_call_count = json.get("kmalloc_call_count").to_u32();
     unsigned kfree_call_count = json.get("kfree_call_count").to_u32();
 

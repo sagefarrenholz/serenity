@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "IRCWindow.h"
@@ -75,14 +55,14 @@ IRCWindow::IRCWindow(IRCClient& client, void* owner, Type type, const String& na
 
             m_context_menu = GUI::Menu::construct();
 
-            m_context_menu->add_action(GUI::Action::create("Open query", Gfx::Bitmap::load_from_file("/res/icons/16x16/irc-open-query.png"), [&](const GUI::Action&) {
+            m_context_menu->add_action(GUI::Action::create("Open &Query", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/irc-open-query.png"), [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
                 m_client->handle_open_query_action(m_client->nick_without_prefix(nick.characters()));
             }));
 
-            m_context_menu->add_action(GUI::Action::create("Whois", Gfx::Bitmap::load_from_file("/res/icons/16x16/irc-whois.png"), [&](const GUI::Action&) {
+            m_context_menu->add_action(GUI::Action::create("Whois", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/irc-whois.png"), [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
@@ -91,7 +71,7 @@ IRCWindow::IRCWindow(IRCClient& client, void* owner, Type type, const String& na
 
             auto& context_control_menu = m_context_menu->add_submenu("Control");
 
-            context_control_menu.add_action(GUI::Action::create("Voice", [&](const GUI::Action&) {
+            context_control_menu.add_action(GUI::Action::create("&Voice", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
@@ -119,7 +99,7 @@ IRCWindow::IRCWindow(IRCClient& client, void* owner, Type type, const String& na
                 m_client->handle_dehop_user_action(m_name.characters(), m_client->nick_without_prefix(nick.characters()));
             }));
 
-            context_control_menu.add_action(GUI::Action::create("Op", [&](const GUI::Action&) {
+            context_control_menu.add_action(GUI::Action::create("&Op", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
@@ -135,7 +115,7 @@ IRCWindow::IRCWindow(IRCClient& client, void* owner, Type type, const String& na
 
             context_control_menu.add_separator();
 
-            context_control_menu.add_action(GUI::Action::create("Kick", [&](const GUI::Action&) {
+            context_control_menu.add_action(GUI::Action::create("&Kick", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
@@ -148,35 +128,35 @@ IRCWindow::IRCWindow(IRCClient& client, void* owner, Type type, const String& na
 
             auto& context_ctcp_menu = m_context_menu->add_submenu("CTCP");
 
-            context_ctcp_menu.add_action(GUI::Action::create("User info", [&](const GUI::Action&) {
+            context_ctcp_menu.add_action(GUI::Action::create("&User Info", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
                 m_client->handle_ctcp_user_action(m_client->nick_without_prefix(nick.characters()), "USERINFO");
             }));
 
-            context_ctcp_menu.add_action(GUI::Action::create("Finger", [&](const GUI::Action&) {
+            context_ctcp_menu.add_action(GUI::Action::create("&Finger", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
                 m_client->handle_ctcp_user_action(m_client->nick_without_prefix(nick.characters()), "FINGER");
             }));
 
-            context_ctcp_menu.add_action(GUI::Action::create("Time", [&](const GUI::Action&) {
+            context_ctcp_menu.add_action(GUI::Action::create("&Time", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
                 m_client->handle_ctcp_user_action(m_client->nick_without_prefix(nick.characters()), "TIME");
             }));
 
-            context_ctcp_menu.add_action(GUI::Action::create("Version", [&](const GUI::Action&) {
+            context_ctcp_menu.add_action(GUI::Action::create("&Version", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
                 m_client->handle_ctcp_user_action(m_client->nick_without_prefix(nick.characters()), "VERSION");
             }));
 
-            context_ctcp_menu.add_action(GUI::Action::create("Client info", [&](const GUI::Action&) {
+            context_ctcp_menu.add_action(GUI::Action::create("&Client Info", [&](const GUI::Action&) {
                 auto nick = channel().member_model()->nick_at(member_view.selection().first());
                 if (nick.is_empty())
                     return;
@@ -247,7 +227,7 @@ void IRCWindow::post_notification_if_needed(const String& name, const String& me
         notification->set_title(name);
     }
 
-    notification->set_icon(Gfx::Bitmap::load_from_file("/res/icons/32x32/app-irc-client.png"));
+    notification->set_icon(Gfx::Bitmap::try_load_from_file("/res/icons/32x32/app-irc-client.png"));
     notification->set_text(message);
     notification->show();
 }

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -46,11 +26,15 @@ public:
     ValueWithShadow<u16> read16(X86::LogicalAddress);
     ValueWithShadow<u32> read32(X86::LogicalAddress);
     ValueWithShadow<u64> read64(X86::LogicalAddress);
+    ValueWithShadow<u128> read128(X86::LogicalAddress);
+    ValueWithShadow<u256> read256(X86::LogicalAddress);
 
     void write8(X86::LogicalAddress, ValueWithShadow<u8>);
     void write16(X86::LogicalAddress, ValueWithShadow<u16>);
     void write32(X86::LogicalAddress, ValueWithShadow<u32>);
     void write64(X86::LogicalAddress, ValueWithShadow<u64>);
+    void write128(X86::LogicalAddress, ValueWithShadow<u128>);
+    void write256(X86::LogicalAddress, ValueWithShadow<u256>);
 
     ALWAYS_INLINE Region* find_region(X86::LogicalAddress address)
     {
@@ -87,6 +71,16 @@ public:
         }
     }
 
+    template<typename Type, typename Callback>
+    void for_each_region_of_type(Callback callback)
+    {
+        return for_each_region([callback](auto& region) {
+            if (!is<Type>(region))
+                return IterationDecision::Continue;
+            return callback(static_cast<Type&>(region));
+        });
+    }
+
     template<typename Callback>
     void for_regions_in(X86::LogicalAddress address, size_t size, Callback callback)
     {
@@ -112,7 +106,7 @@ public:
 private:
     Emulator& m_emulator;
 
-    Region* m_page_to_region_map[786432];
+    Region* m_page_to_region_map[786432] = { nullptr };
 
     OwnPtr<Region> m_tls_region;
     NonnullOwnPtrVector<Region> m_regions;

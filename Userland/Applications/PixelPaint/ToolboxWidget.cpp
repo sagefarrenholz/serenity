@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "ToolboxWidget.h"
@@ -29,84 +9,39 @@
 #include "BucketTool.h"
 #include "EllipseTool.h"
 #include "EraseTool.h"
+#include "GuideTool.h"
 #include "LineTool.h"
 #include "MoveTool.h"
 #include "PenTool.h"
 #include "PickerTool.h"
+#include "RectangleSelectTool.h"
 #include "RectangleTool.h"
 #include "SprayTool.h"
-#include <AK/StringBuilder.h>
+#include "ZoomTool.h"
 #include <LibGUI/Action.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
-#include <LibGUI/Window.h>
+#include <LibGUI/Toolbar.h>
+
+REGISTER_WIDGET(PixelPaint, ToolboxWidget);
 
 namespace PixelPaint {
-
-class ToolButton final : public GUI::Button {
-    C_OBJECT(ToolButton)
-public:
-    ToolButton(ToolboxWidget& toolbox, const String& name, const GUI::Shortcut& shortcut, OwnPtr<Tool> tool)
-        : m_toolbox(toolbox)
-        , m_tool(move(tool))
-    {
-        StringBuilder builder;
-        builder.append(name);
-        builder.append(" (");
-        builder.append(shortcut.to_string());
-        builder.append(")");
-        set_tooltip(builder.to_string());
-
-        m_action = GUI::Action::create_checkable(
-            name, shortcut, [this](auto& action) {
-                if (action.is_checked())
-                    m_toolbox.on_tool_selection(m_tool);
-                else
-                    m_toolbox.on_tool_selection(nullptr);
-            },
-            toolbox.window());
-
-        m_tool->set_action(m_action);
-        set_action(*m_action);
-        m_toolbox.m_action_group.add_action(*m_action);
-    }
-
-    const Tool& tool() const { return *m_tool; }
-    Tool& tool() { return *m_tool; }
-
-    virtual bool is_uncheckable() const override { return false; }
-
-    virtual void context_menu_event(GUI::ContextMenuEvent& event) override
-    {
-        m_action->activate();
-        m_tool->on_tool_button_contextmenu(event);
-    }
-
-private:
-    ToolboxWidget& m_toolbox;
-    OwnPtr<Tool> m_tool;
-    RefPtr<GUI::Action> m_action;
-};
 
 ToolboxWidget::ToolboxWidget()
 {
     set_fill_with_background_color(true);
 
-    set_frame_thickness(1);
-    set_frame_shape(Gfx::FrameShape::Panel);
-    set_frame_shadow(Gfx::FrameShadow::Raised);
-
-    set_fixed_width(48);
+    set_fixed_width(26);
 
     set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_margins({ 4, 4, 4, 4 });
+    layout()->set_spacing(0);
+    layout()->set_margins({ 2, 2, 2, 2 });
 
     m_action_group.set_exclusive(true);
     m_action_group.set_unchecking_allowed(false);
 
-    deferred_invoke([this](auto&) {
-        setup_tools();
-    });
+    m_toolbar = add<GUI::Toolbar>(Gfx::Orientation::Vertical);
+    setup_tools();
 }
 
 ToolboxWidget::~ToolboxWidget()
@@ -115,14 +50,22 @@ ToolboxWidget::~ToolboxWidget()
 
 void ToolboxWidget::setup_tools()
 {
-    auto add_tool = [&](const StringView& name, const StringView& icon_name, const GUI::Shortcut& shortcut, NonnullOwnPtr<Tool> tool) -> ToolButton& {
-        m_tools.append(tool.ptr());
-        auto& button = add<ToolButton>(*this, name, shortcut, move(tool));
-        button.set_focus_policy(GUI::FocusPolicy::TabFocus);
-        button.set_fixed_height(32);
-        button.set_checkable(true);
-        button.set_icon(Gfx::Bitmap::load_from_file(String::formatted("/res/icons/pixelpaint/{}.png", icon_name)));
-        return button;
+    auto add_tool = [&](String name, StringView const& icon_name, GUI::Shortcut const& shortcut, NonnullOwnPtr<Tool> tool) {
+        auto action = GUI::Action::create_checkable(move(name), shortcut, Gfx::Bitmap::try_load_from_file(String::formatted("/res/icons/pixelpaint/{}.png", icon_name)),
+            [this, tool = tool.ptr()](auto& action) {
+                if (action.is_checked())
+                    on_tool_selection(tool);
+                else
+                    on_tool_selection(nullptr);
+            });
+        m_action_group.add_action(action);
+        auto& button = m_toolbar->add_action(action);
+        button.on_context_menu_request = [action = action.ptr(), tool = tool.ptr()](auto& event) {
+            action->activate();
+            tool->on_tool_button_contextmenu(event);
+        };
+        tool->set_action(action);
+        m_tools.append(move(tool));
     };
 
     add_tool("Move", "move", { 0, Key_M }, make<MoveTool>());
@@ -135,6 +78,9 @@ void ToolboxWidget::setup_tools()
     add_tool("Line", "line", { Mod_Ctrl | Mod_Shift, Key_L }, make<LineTool>());
     add_tool("Rectangle", "rectangle", { Mod_Ctrl | Mod_Shift, Key_R }, make<RectangleTool>());
     add_tool("Ellipse", "circle", { Mod_Ctrl | Mod_Shift, Key_E }, make<EllipseTool>());
+    add_tool("Zoom", "zoom", { 0, Key_Z }, make<ZoomTool>());
+    add_tool("Rectangle Select", "rectangle-select", { 0, Key_R }, make<RectangleSelectTool>());
+    add_tool("Guides", "guides", { 0, Key_G }, make<GuideTool>());
 }
 
 }

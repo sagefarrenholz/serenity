@@ -1,50 +1,49 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/Types.h>
 #include <Kernel/Debug.h>
+#include <LibC/limits.h>
 
 #define KMALLOC_SCRUB_BYTE 0xbb
 #define KFREE_SCRUB_BYTE 0xaa
 
-#define MAKE_ALIGNED_ALLOCATED(type, alignment)                                     \
-public:                                                                             \
-    void* operator new(size_t) { return kmalloc_aligned<alignment>(sizeof(type)); } \
-    void operator delete(void* ptr) { kfree_aligned(ptr); }                         \
-                                                                                    \
+#define MAKE_ALIGNED_ALLOCATED(type, alignment)                                                                                   \
+public:                                                                                                                           \
+    [[nodiscard]] void* operator new(size_t)                                                                                      \
+    {                                                                                                                             \
+        void* ptr = kmalloc_aligned<alignment>(sizeof(type));                                                                     \
+        VERIFY(ptr);                                                                                                              \
+        return ptr;                                                                                                               \
+    }                                                                                                                             \
+    [[nodiscard]] void* operator new(size_t, const std::nothrow_t&) noexcept { return kmalloc_aligned<alignment>(sizeof(type)); } \
+    void operator delete(void* ptr) noexcept { kfree_aligned(ptr); }                                                              \
+                                                                                                                                  \
 private:
+
+// The C++ standard specifies that the nothrow allocation tag should live in the std namespace.
+// Otherwise, `new (std::nothrow)` calls wouldn't get resolved.
+namespace std {
+struct nothrow_t {
+    explicit nothrow_t() = default;
+};
+
+extern const nothrow_t nothrow;
+
+enum class align_val_t : size_t {};
+};
 
 void kmalloc_init();
 [[gnu::malloc, gnu::returns_nonnull, gnu::alloc_size(1)]] void* kmalloc_impl(size_t);
 [[gnu::malloc, gnu::returns_nonnull, gnu::alloc_size(1)]] void* kmalloc_eternal(size_t);
 
-void* krealloc(void*, size_t);
 void kfree(void*);
+void kfree_sized(void*, size_t);
 
 struct kmalloc_stats {
     size_t bytes_allocated;
@@ -60,14 +59,32 @@ extern bool g_dump_kmalloc_stacks;
 inline void* operator new(size_t, void* p) { return p; }
 inline void* operator new[](size_t, void* p) { return p; }
 
-[[gnu::malloc, gnu::returns_nonnull, gnu::alloc_size(1)]] void* kmalloc(size_t);
+[[nodiscard]] void* operator new(size_t size);
+[[nodiscard]] void* operator new(size_t size, const std::nothrow_t&) noexcept;
+[[nodiscard]] void* operator new(size_t size, std::align_val_t);
+[[nodiscard]] void* operator new(size_t size, std::align_val_t, const std::nothrow_t&) noexcept;
+
+void operator delete(void* ptr) noexcept DISALLOW("All deletes in the kernel should have a known size.");
+void operator delete(void* ptr, size_t) noexcept;
+void operator delete(void* ptr, std::align_val_t) noexcept DISALLOW("All deletes in the kernel should have a known size.");
+void operator delete(void* ptr, size_t, std::align_val_t) noexcept;
+
+[[nodiscard]] void* operator new[](size_t size);
+[[nodiscard]] void* operator new[](size_t size, const std::nothrow_t&) noexcept;
+
+void operator delete[](void* ptrs) noexcept DISALLOW("All deletes in the kernel should have a known size.");
+void operator delete[](void* ptr, size_t) noexcept;
+
+[[gnu::malloc, gnu::alloc_size(1)]] void* kmalloc(size_t);
 
 template<size_t ALIGNMENT>
-[[gnu::malloc, gnu::returns_nonnull, gnu::alloc_size(1)]] inline void* kmalloc_aligned(size_t size)
+[[gnu::malloc, gnu::alloc_size(1)]] inline void* kmalloc_aligned(size_t size)
 {
     static_assert(ALIGNMENT > sizeof(ptrdiff_t));
     static_assert(ALIGNMENT <= 4096);
     void* ptr = kmalloc(size + ALIGNMENT + sizeof(ptrdiff_t));
+    if (ptr == nullptr)
+        return ptr;
     size_t max_addr = (size_t)ptr + ALIGNMENT;
     void* aligned_ptr = (void*)(max_addr - (max_addr % ALIGNMENT));
     ((ptrdiff_t*)aligned_ptr)[-1] = (ptrdiff_t)((u8*)aligned_ptr - (u8*)ptr);
@@ -76,7 +93,11 @@ template<size_t ALIGNMENT>
 
 inline void kfree_aligned(void* ptr)
 {
+    if (ptr == nullptr)
+        return;
     kfree((u8*)ptr - ((const ptrdiff_t*)ptr)[-1]);
 }
+
+size_t kmalloc_good_size(size_t);
 
 void kmalloc_enable_expand();

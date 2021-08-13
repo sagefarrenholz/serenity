@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Ali Mohammad Pur <ali.mpfard@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -67,7 +47,7 @@ public:
         // FIXME: We should have two of these encrypt/decrypt functions that
         //        we SFINAE out based on whether the Cipher mode needs an ivec
         VERIFY(!ivec.is_empty());
-        const auto* iv = ivec.data();
+        ReadonlyBytes iv = ivec;
 
         m_cipher_block.set_padding_mode(cipher.padding_mode());
         size_t offset { 0 };
@@ -79,7 +59,7 @@ public:
             cipher.encrypt_block(m_cipher_block, m_cipher_block);
             VERIFY(offset + block_size <= out.size());
             __builtin_memcpy(out.offset(offset), m_cipher_block.bytes().data(), block_size);
-            iv = out.offset(offset);
+            iv = out.slice(offset);
             length -= block_size;
             offset += block_size;
         }
@@ -90,11 +70,11 @@ public:
             cipher.encrypt_block(m_cipher_block, m_cipher_block);
             VERIFY(offset + block_size <= out.size());
             __builtin_memcpy(out.offset(offset), m_cipher_block.bytes().data(), block_size);
-            iv = out.offset(offset);
+            iv = out.slice(offset);
         }
 
         if (ivec_out)
-            __builtin_memcpy(ivec_out->data(), iv, min(IV_length(), ivec_out->size()));
+            __builtin_memcpy(ivec_out->data(), iv.data(), min(IV_length(), ivec_out->size()));
     }
 
     virtual void decrypt(ReadonlyBytes in, Bytes& out, ReadonlyBytes ivec = {}) override
@@ -106,7 +86,7 @@ public:
         auto& cipher = this->cipher();
 
         VERIFY(!ivec.is_empty());
-        const auto* iv = ivec.data();
+        ReadonlyBytes iv = ivec;
 
         auto block_size = cipher.block_size();
 
@@ -118,8 +98,8 @@ public:
         size_t offset { 0 };
 
         while (length > 0) {
-            auto* slice = in.offset(offset);
-            m_cipher_block.overwrite(slice, block_size);
+            auto slice = in.slice(offset);
+            m_cipher_block.overwrite(slice.data(), block_size);
             cipher.decrypt_block(m_cipher_block, m_cipher_block);
             m_cipher_block.apply_initialization_vector(iv);
             auto decrypted = m_cipher_block.bytes();

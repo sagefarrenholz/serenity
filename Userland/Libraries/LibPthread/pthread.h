@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -68,6 +48,12 @@ int pthread_attr_setstack(pthread_attr_t* attr, void*, size_t);
 int pthread_attr_getstacksize(const pthread_attr_t*, size_t*);
 int pthread_attr_setstacksize(pthread_attr_t*, size_t);
 
+#define PTHREAD_SCOPE_SYSTEM 0
+#define PTHREAD_SCOPE_PROCESS 1
+
+int pthread_attr_getscope(const pthread_attr_t*, int*);
+int pthread_attr_setscope(pthread_attr_t*, int);
+
 int pthread_once(pthread_once_t*, void (*)(void));
 #define PTHREAD_ONCE_INIT 0
 void* pthread_getspecific(pthread_key_t key);
@@ -80,6 +66,10 @@ int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param
 #define PTHREAD_MUTEX_RECURSIVE __PTHREAD_MUTEX_RECURSIVE
 #define PTHREAD_MUTEX_DEFAULT PTHREAD_MUTEX_NORMAL
 #define PTHREAD_MUTEX_INITIALIZER __PTHREAD_MUTEX_INITIALIZER
+#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP __PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+
+#define PTHREAD_PROCESS_PRIVATE 1
+#define PTHREAD_PROCESS_SHARED 2
 
 #define PTHREAD_COND_INITIALIZER     \
     {                                \
@@ -108,6 +98,9 @@ int pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const struct times
 #define PTHREAD_CANCEL_ENABLE 1
 #define PTHREAD_CANCEL_DISABLE 2
 
+#define PTHREAD_CANCEL_DEFERRED 1
+#define PTHREAD_CANCEL_ASYNCHRONOUS 2
+
 int pthread_cancel(pthread_t);
 int pthread_setcancelstate(int state, int* oldstate);
 int pthread_setcanceltype(int type, int* oldtype);
@@ -123,6 +116,7 @@ int pthread_detach(pthread_t);
 int pthread_equal(pthread_t, pthread_t);
 int pthread_mutexattr_init(pthread_mutexattr_t*);
 int pthread_mutexattr_settype(pthread_mutexattr_t*, int);
+int pthread_mutexattr_gettype(pthread_mutexattr_t*, int*);
 int pthread_mutexattr_destroy(pthread_mutexattr_t*);
 
 int pthread_setname_np(pthread_t, const char*);

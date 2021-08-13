@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -41,24 +21,45 @@ public:
     bool operator!=(const SinglyLinkedListIterator& other) const { return m_node != other.m_node; }
     SinglyLinkedListIterator& operator++()
     {
-        m_prev = m_node;
-        m_node = m_node->next;
+        if (m_removed)
+            m_removed = false;
+        else
+            m_prev = m_node;
+        m_node = m_next;
+        if (m_next)
+            m_next = m_next->next;
         return *this;
     }
-    ElementType& operator*() { return m_node->value; }
-    ElementType* operator->() { return &m_node->value; }
+    ElementType& operator*()
+    {
+        VERIFY(!m_removed);
+        return m_node->value;
+    }
+    ElementType* operator->()
+    {
+        VERIFY(!m_removed);
+        return &m_node->value;
+    }
     bool is_end() const { return !m_node; }
     bool is_begin() const { return !m_prev; }
+    void remove(ListType& list)
+    {
+        m_removed = true;
+        list.remove(*this);
+    };
 
 private:
     friend ListType;
     explicit SinglyLinkedListIterator(typename ListType::Node* node, typename ListType::Node* prev = nullptr)
         : m_node(node)
         , m_prev(prev)
+        , m_next(node ? node->next : nullptr)
     {
     }
     typename ListType::Node* m_node { nullptr };
     typename ListType::Node* m_prev { nullptr };
+    typename ListType::Node* m_next { nullptr };
+    bool m_removed { false };
 };
 
 template<typename T>
@@ -185,18 +186,6 @@ public:
         return find_if([&](auto& other) { return Traits<T>::equals(value, other); });
     }
 
-    void remove(Iterator iterator)
-    {
-        VERIFY(!iterator.is_end());
-        if (m_head == iterator.m_node)
-            m_head = iterator.m_node->next;
-        if (m_tail == iterator.m_node)
-            m_tail = iterator.m_prev;
-        if (iterator.m_prev)
-            iterator.m_prev->next = iterator.m_node->next;
-        delete iterator.m_node;
-    }
-
     template<typename U = T>
     void insert_before(Iterator iterator, U&& value)
     {
@@ -226,6 +215,18 @@ public:
     }
 
 private:
+    void remove(Iterator& iterator)
+    {
+        VERIFY(!iterator.is_end());
+        if (m_head == iterator.m_node)
+            m_head = iterator.m_node->next;
+        if (m_tail == iterator.m_node)
+            m_tail = iterator.m_prev;
+        if (iterator.m_prev)
+            iterator.m_prev->next = iterator.m_node->next;
+        delete iterator.m_node;
+    }
+
     Node* head() { return m_head; }
     const Node* head() const { return m_head; }
 

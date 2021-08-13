@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/JsonObject.h>
@@ -30,8 +10,8 @@
 #include <LibGfx/Orientation.h>
 #include <stdio.h>
 
-REGISTER_WIDGET(GUI, HorizontalBoxLayout)
-REGISTER_WIDGET(GUI, VerticalBoxLayout)
+REGISTER_CORE_OBJECT(GUI, HorizontalBoxLayout)
+REGISTER_CORE_OBJECT(GUI, VerticalBoxLayout)
 
 namespace GUI {
 
@@ -170,13 +150,18 @@ void BoxLayout::run(Widget& widget)
     // Pass 2: Distribute remaining available size evenly, respecting each item's maximum size.
     while (unfinished_items && available_size > 0) {
         int slice = available_size / unfinished_items;
+        // If available_size does not divide evenly by unfinished_items,
+        // there are some extra pixels that have to be distributed.
+        int pixels = available_size - slice * unfinished_items;
         available_size = 0;
 
         for (auto& item : items) {
             if (item.final)
                 continue;
 
-            int item_size_with_full_slice = item.size + slice;
+            int pixel = pixels ? 1 : 0;
+            pixels -= pixel;
+            int item_size_with_full_slice = item.size + slice + pixel;
             item.size = item_size_with_full_slice;
 
             if (item.max_size >= 0)
@@ -197,6 +182,12 @@ void BoxLayout::run(Widget& widget)
     // Pass 3: Place the widgets.
     int current_x = margins().left();
     int current_y = margins().top();
+
+    auto widget_rect_with_margins_subtracted = widget.rect();
+    widget_rect_with_margins_subtracted.take_from_left(margins().left());
+    widget_rect_with_margins_subtracted.take_from_top(margins().top());
+    widget_rect_with_margins_subtracted.take_from_right(margins().right());
+    widget_rect_with_margins_subtracted.take_from_bottom(margins().bottom());
 
     for (auto& item : items) {
         Gfx::IntRect rect { current_x, current_y, 0, 0 };
@@ -220,9 +211,9 @@ void BoxLayout::run(Widget& widget)
             rect.set_secondary_size_for_orientation(orientation(), secondary);
 
             if (orientation() == Gfx::Orientation::Horizontal)
-                rect.center_vertically_within(widget.rect());
+                rect.center_vertically_within(widget_rect_with_margins_subtracted);
             else
-                rect.center_horizontally_within(widget.rect());
+                rect.center_horizontally_within(widget_rect_with_margins_subtracted);
 
             item.widget->set_relative_rect(rect);
         }

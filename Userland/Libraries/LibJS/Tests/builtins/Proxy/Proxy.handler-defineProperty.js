@@ -27,6 +27,25 @@ describe("[[DefineProperty]] trap normal behavior", () => {
         Object.defineProperty(p, "foo", { configurable: true, writable: true, value: 10 });
     });
 
+    test("correct arguments passed to trap even for number", () => {
+        let o = {};
+        p = new Proxy(o, {
+            defineProperty(target, name, descriptor) {
+                expect(target).toBe(o);
+                expect(name).toBe("1");
+                expect(descriptor.configurable).toBeTrue();
+                expect(descriptor.enumerable).toBeUndefined();
+                expect(descriptor.writable).toBeTrue();
+                expect(descriptor.value).toBe(10);
+                expect(descriptor.get).toBeUndefined();
+                expect(descriptor.set).toBeUndefined();
+                return true;
+            },
+        });
+
+        Object.defineProperty(p, 1, { configurable: true, writable: true, value: 10 });
+    });
+
     test("optionally ignoring the define call", () => {
         let o = {};
         let p = new Proxy(o, {
@@ -77,7 +96,7 @@ describe("[[DefineProperty]] invariants", () => {
 
         expect(() => {
             Object.defineProperty(p, "foo", {});
-        }).toThrowWithMessage(TypeError, "Object's [[DefineProperty]] method returned false");
+        }).toThrowWithMessage(TypeError, "Object's [[DefineOwnProperty]] method returned false");
     });
 
     test("trap cannot return true for a non-extensible target if the property does not exist", () => {

@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -45,7 +25,7 @@ namespace Debug {
 
 class DebugSession {
 public:
-    static OwnPtr<DebugSession> exec_and_attach(const String& command, String source_root = {});
+    static OwnPtr<DebugSession> exec_and_attach(String const& command, String source_root = {});
 
     ~DebugSession();
 
@@ -53,6 +33,9 @@ public:
 
     bool poke(u32* address, u32 data);
     Optional<u32> peek(u32* address) const;
+
+    bool poke_debug(u32 register_index, u32 data);
+    Optional<u32> peek_debug(u32 register_index) const;
 
     enum class BreakPointState {
         Enabled,
@@ -70,22 +53,33 @@ public:
         FlatPtr address { 0 };
     };
 
-    Optional<InsertBreakpointAtSymbolResult> insert_breakpoint(const String& symbol_name);
+    Optional<InsertBreakpointAtSymbolResult> insert_breakpoint(String const& symbol_name);
 
     struct InsertBreakpointAtSourcePositionResult {
         String library_name;
-        String file_name;
+        String filename;
         size_t line_number { 0 };
         FlatPtr address { 0 };
     };
 
-    Optional<InsertBreakpointAtSourcePositionResult> insert_breakpoint(const String& file_name, size_t line_number);
+    Optional<InsertBreakpointAtSourcePositionResult> insert_breakpoint(String const& filename, size_t line_number);
 
     bool insert_breakpoint(void* address);
     bool disable_breakpoint(void* address);
     bool enable_breakpoint(void* address);
     bool remove_breakpoint(void* address);
     bool breakpoint_exists(void* address) const;
+
+    struct WatchPoint {
+        void* address { nullptr };
+        u32 debug_register_index { 0 };
+        u32 ebp { 0 };
+    };
+
+    bool insert_watchpoint(void* address, u32 ebp);
+    bool remove_watchpoint(void* address);
+    bool disable_watchpoint(void* address);
+    bool watchpoint_exists(void* address) const;
 
     void dump_breakpoints()
     {
@@ -95,7 +89,7 @@ public:
     }
 
     PtraceRegisters get_registers() const;
-    void set_registers(const PtraceRegisters&);
+    void set_registers(PtraceRegisters const&);
 
     enum class ContinueType {
         FreeRun,
@@ -135,12 +129,14 @@ public:
     struct LoadedLibrary {
         String name;
         NonnullRefPtr<MappedFile> file;
+        NonnullOwnPtr<ELF::Image> image;
         NonnullOwnPtr<DebugInfo> debug_info;
         FlatPtr base_address;
 
-        LoadedLibrary(const String& name, NonnullRefPtr<MappedFile> file, NonnullOwnPtr<DebugInfo>&& debug_info, FlatPtr base_address)
+        LoadedLibrary(String const& name, NonnullRefPtr<MappedFile> file, NonnullOwnPtr<ELF::Image> image, NonnullOwnPtr<DebugInfo>&& debug_info, FlatPtr base_address)
             : name(name)
             , file(move(file))
+            , image(move(image))
             , debug_info(move(debug_info))
             , base_address(base_address)
         {
@@ -165,7 +161,7 @@ public:
     };
     Optional<SymbolicationResult> symbolicate(FlatPtr address) const;
 
-    Optional<DebugInfo::SourcePositionAndAddress> get_address_from_source_position(const String& file, size_t line) const;
+    Optional<DebugInfo::SourcePositionAndAddress> get_address_from_source_position(String const& file, size_t line) const;
 
     Optional<DebugInfo::SourcePosition> get_source_position(FlatPtr address) const;
 
@@ -182,6 +178,7 @@ private:
     bool m_is_debuggee_dead { false };
 
     HashMap<void*, BreakPoint> m_breakpoints;
+    HashMap<void*, WatchPoint> m_watchpoints;
 
     // Maps from base address to loaded library
     HashMap<String, NonnullOwnPtr<LoadedLibrary>> m_loaded_libraries;
@@ -190,7 +187,6 @@ private:
 template<typename Callback>
 void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callback callback)
 {
-
     enum class State {
         FirstIteration,
         FreeRun,
@@ -223,25 +219,79 @@ void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callbac
             state = State::FreeRun;
 
         auto regs = get_registers();
+
+#if ARCH(I386)
+        FlatPtr current_instruction = regs.eip;
+#else
+        FlatPtr current_instruction = regs.rip;
+#endif
+
+        auto debug_status = peek_debug(DEBUG_STATUS_REGISTER);
+        if (debug_status.has_value() && (debug_status.value() & 0b1111) > 0) {
+            // Tripped a watchpoint
+            auto watchpoint_index = debug_status.value() & 0b1111;
+            Optional<WatchPoint> watchpoint {};
+            for (auto wp : m_watchpoints) {
+                if ((watchpoint_index & (1 << wp.value.debug_register_index)) == 0)
+                    continue;
+                watchpoint = wp.value;
+                break;
+            }
+            if (watchpoint.has_value()) {
+                auto required_ebp = watchpoint.value().ebp;
+                auto found_ebp = false;
+
+#if ARCH(I386)
+                FlatPtr current_ebp = regs.ebp;
+#else
+                FlatPtr current_ebp = regs.rbp;
+#endif
+
+                do {
+                    if (current_ebp == required_ebp) {
+                        found_ebp = true;
+                        break;
+                    }
+                    auto return_address = peek(reinterpret_cast<u32*>(current_ebp + sizeof(FlatPtr)));
+                    auto next_ebp = peek(reinterpret_cast<u32*>(current_ebp));
+                    VERIFY(return_address.has_value());
+                    VERIFY(next_ebp.has_value());
+                    current_instruction = return_address.value();
+                    current_ebp = next_ebp.value();
+                } while (current_ebp && current_instruction);
+
+                if (!found_ebp) {
+                    dbgln("Removing watchpoint at {:p} because it went out of scope!", watchpoint.value().address);
+                    remove_watchpoint(watchpoint.value().address);
+                    continue;
+                }
+            }
+        }
+
         Optional<BreakPoint> current_breakpoint;
 
         if (state == State::FreeRun || state == State::Syscall) {
-            current_breakpoint = m_breakpoints.get((void*)((u32)regs.eip - 1));
+            current_breakpoint = m_breakpoints.get((void*)((uintptr_t)current_instruction - 1));
             if (current_breakpoint.has_value())
                 state = State::FreeRun;
         } else {
-            current_breakpoint = m_breakpoints.get((void*)regs.eip);
+            current_breakpoint = m_breakpoints.get((void*)current_instruction);
         }
 
         if (current_breakpoint.has_value()) {
             // We want to make the breakpoint transparent to the user of the debugger.
-            // To achieive this, we perform two rollbacks:
+            // To achieve this, we perform two rollbacks:
             // 1. Set regs.eip to point at the actual address of the instruction we breaked on.
             //    regs.eip currently points to one byte after the address of the original instruction,
             //    because the cpu has just executed the INT3 we patched into the instruction.
             // 2. We restore the original first byte of the instruction,
             //    because it was patched with INT3.
-            regs.eip = reinterpret_cast<u32>(current_breakpoint.value().address);
+            auto breakpoint_addr = reinterpret_cast<uintptr_t>(current_breakpoint.value().address);
+#if ARCH(I386)
+            regs.eip = breakpoint_addr;
+#else
+            regs.rip = breakpoint_addr;
+#endif
             set_registers(regs);
             disable_breakpoint(current_breakpoint.value().address);
         }
@@ -298,7 +348,8 @@ void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callbac
             break;
         }
         if (decision == DebugDecision::Kill) {
-            VERIFY_NOT_REACHED(); // TODO: implement
+            kill(m_debuggee_pid, SIGTERM);
+            break;
         }
 
         if (state == State::SingleStep && !did_single_step) {

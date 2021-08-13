@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 /*
@@ -32,21 +12,24 @@
 #include <AK/Assertions.h>
 #include <AK/NonnullOwnPtrVector.h>
 #include <AK/Types.h>
-#include <Kernel/Arch/x86/CPU.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Heap/Heap.h>
 #include <Kernel/Heap/kmalloc.h>
 #include <Kernel/KSyms.h>
+#include <Kernel/Locking/SpinLock.h>
+#include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Panic.h>
-#include <Kernel/Process.h>
-#include <Kernel/Scheduler.h>
-#include <Kernel/SpinLock.h>
+#include <Kernel/PerformanceManager.h>
+#include <Kernel/Sections.h>
 #include <Kernel/StdLib.h>
-#include <Kernel/VM/MemoryManager.h>
 
 #define CHUNK_SIZE 32
 #define POOL_SIZE (2 * MiB)
-#define ETERNAL_RANGE_SIZE (2 * MiB)
+#define ETERNAL_RANGE_SIZE (4 * MiB)
+
+namespace std {
+const nothrow_t nothrow;
+}
 
 static RecursiveSpinLock s_lock; // needs to be recursive because of dump_backtrace()
 
@@ -64,7 +47,7 @@ struct KmallocGlobalHeap {
         bool m_adding { false };
         bool add_memory(size_t allocation_request)
         {
-            if (!MemoryManager::is_initialized()) {
+            if (!Memory::MemoryManager::is_initialized()) {
                 if constexpr (KMALLOC_DEBUG) {
                     dmesgln("kmalloc: Cannot expand heap before MM is initialized!");
                 }
@@ -111,12 +94,12 @@ struct KmallocGlobalHeap {
             // was big enough to likely satisfy the request
             if (subheap.free_bytes() < allocation_request) {
                 // Looks like we probably need more
-                size_t memory_size = page_round_up(decltype(m_global_heap.m_heap)::calculate_memory_for_bytes(allocation_request));
+                size_t memory_size = Memory::page_round_up(decltype(m_global_heap.m_heap)::calculate_memory_for_bytes(allocation_request));
                 // Add some more to the new heap. We're already using it for other
                 // allocations not including the original allocation_request
                 // that triggered heap expansion. If we don't allocate
                 memory_size += 1 * MiB;
-                region = MM.allocate_kernel_region(memory_size, "kmalloc subheap", Region::Access::Read | Region::Access::Write, AllocationStrategy::AllocateNow);
+                region = MM.allocate_kernel_region(memory_size, "kmalloc subheap", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
                 if (region) {
                     dbgln("kmalloc: Adding even more memory to heap at {}, bytes: {}", region->vaddr(), region->size());
 
@@ -179,8 +162,8 @@ struct KmallocGlobalHeap {
     typedef ExpandableHeap<CHUNK_SIZE, KMALLOC_SCRUB_BYTE, KFREE_SCRUB_BYTE, ExpandGlobalHeap> HeapType;
 
     HeapType m_heap;
-    NonnullOwnPtrVector<Region> m_subheap_memory;
-    OwnPtr<Region> m_backup_memory;
+    NonnullOwnPtrVector<Memory::Region> m_subheap_memory;
+    OwnPtr<Memory::Region> m_backup_memory;
 
     KmallocGlobalHeap(u8* memory, size_t memory_size)
         : m_heap(memory, memory_size, ExpandGlobalHeap(*this))
@@ -190,7 +173,7 @@ struct KmallocGlobalHeap {
     {
         if (m_backup_memory)
             return;
-        m_backup_memory = MM.allocate_kernel_region(1 * MiB, "kmalloc subheap", Region::Access::Read | Region::Access::Write, AllocationStrategy::AllocateNow);
+        m_backup_memory = MM.allocate_kernel_region(1 * MiB, "kmalloc subheap", Memory::Region::Access::ReadWrite, AllocationStrategy::AllocateNow);
     }
 
     size_t backup_memory_bytes() const
@@ -200,7 +183,7 @@ struct KmallocGlobalHeap {
 };
 
 READONLY_AFTER_INIT static KmallocGlobalHeap* g_kmalloc_global;
-static u8 g_kmalloc_global_heap[sizeof(KmallocGlobalHeap)];
+alignas(KmallocGlobalHeap) static u8 g_kmalloc_global_heap[sizeof(KmallocGlobalHeap)];
 
 // Treat the heap as logically separate from .bss
 __attribute__((section(".heap"))) static u8 kmalloc_eternal_heap[ETERNAL_RANGE_SIZE];
@@ -209,6 +192,7 @@ __attribute__((section(".heap"))) static u8 kmalloc_pool_heap[POOL_SIZE];
 static size_t g_kmalloc_bytes_eternal = 0;
 static size_t g_kmalloc_call_count;
 static size_t g_kfree_call_count;
+static size_t g_nested_kfree_calls;
 bool g_dump_kmalloc_stacks;
 
 static u8* s_next_eternal_ptr;
@@ -224,6 +208,14 @@ void kmalloc_enable_expand()
     g_kmalloc_global->allocate_backup_memory();
 }
 
+static inline void kmalloc_verify_nospinlock_held()
+{
+    // Catch bad callers allocating under spinlock.
+    if constexpr (KMALLOC_VERIFY_NO_SPINLOCK_HELD) {
+        VERIFY(!Processor::in_critical());
+    }
+}
+
 UNMAP_AFTER_INIT void kmalloc_init()
 {
     // Zero out heap since it's placed after end_of_kernel_bss.
@@ -234,11 +226,13 @@ UNMAP_AFTER_INIT void kmalloc_init()
     s_lock.initialize();
 
     s_next_eternal_ptr = kmalloc_eternal_heap;
-    s_end_of_eternal_range = s_next_eternal_ptr + sizeof(kmalloc_pool_heap);
+    s_end_of_eternal_range = s_next_eternal_ptr + sizeof(kmalloc_eternal_heap);
 }
 
 void* kmalloc_eternal(size_t size)
 {
+    kmalloc_verify_nospinlock_held();
+
     size = round_up_to_power_of_two(size, sizeof(void*));
 
     ScopedSpinLock lock(s_lock);
@@ -251,6 +245,7 @@ void* kmalloc_eternal(size_t size)
 
 void* kmalloc(size_t size)
 {
+    kmalloc_verify_nospinlock_held();
     ScopedSpinLock lock(s_lock);
     ++g_kmalloc_call_count;
 
@@ -260,11 +255,20 @@ void* kmalloc(size_t size)
     }
 
     void* ptr = g_kmalloc_global->m_heap.allocate(size);
-    if (!ptr) {
-        PANIC("kmalloc: Out of memory (requested size: {})", size);
-    }
+
+    Thread* current_thread = Thread::current();
+    if (!current_thread)
+        current_thread = Processor::idle_thread();
+    if (current_thread)
+        PerformanceManager::add_kmalloc_perf_event(*current_thread, size, (FlatPtr)ptr);
 
     return ptr;
+}
+
+void kfree_sized(void* ptr, size_t size)
+{
+    (void)size;
+    return kfree(ptr);
 }
 
 void kfree(void* ptr)
@@ -272,26 +276,101 @@ void kfree(void* ptr)
     if (!ptr)
         return;
 
+    kmalloc_verify_nospinlock_held();
     ScopedSpinLock lock(s_lock);
     ++g_kfree_call_count;
+    ++g_nested_kfree_calls;
+
+    if (g_nested_kfree_calls == 1) {
+        Thread* current_thread = Thread::current();
+        if (!current_thread)
+            current_thread = Processor::idle_thread();
+        if (current_thread)
+            PerformanceManager::add_kfree_perf_event(*current_thread, 0, (FlatPtr)ptr);
+    }
 
     g_kmalloc_global->m_heap.deallocate(ptr);
+    --g_nested_kfree_calls;
 }
 
-void* krealloc(void* ptr, size_t new_size)
+size_t kmalloc_good_size(size_t size)
 {
-    ScopedSpinLock lock(s_lock);
-    return g_kmalloc_global->m_heap.reallocate(ptr, new_size);
+    return size;
+}
+
+[[gnu::malloc, gnu::alloc_size(1), gnu::alloc_align(2)]] static void* kmalloc_aligned_cxx(size_t size, size_t alignment)
+{
+    VERIFY(alignment <= 4096);
+    void* ptr = kmalloc(size + alignment + sizeof(ptrdiff_t));
+    if (ptr == nullptr)
+        return nullptr;
+    size_t max_addr = (size_t)ptr + alignment;
+    void* aligned_ptr = (void*)(max_addr - (max_addr % alignment));
+    ((ptrdiff_t*)aligned_ptr)[-1] = (ptrdiff_t)((u8*)aligned_ptr - (u8*)ptr);
+    return aligned_ptr;
 }
 
 void* operator new(size_t size)
 {
+    void* ptr = kmalloc(size);
+    VERIFY(ptr);
+    return ptr;
+}
+
+void* operator new(size_t size, const std::nothrow_t&) noexcept
+{
     return kmalloc(size);
+}
+
+void* operator new(size_t size, std::align_val_t al)
+{
+    void* ptr = kmalloc_aligned_cxx(size, (size_t)al);
+    VERIFY(ptr);
+    return ptr;
+}
+
+void* operator new(size_t size, std::align_val_t al, const std::nothrow_t&) noexcept
+{
+    return kmalloc_aligned_cxx(size, (size_t)al);
 }
 
 void* operator new[](size_t size)
 {
+    void* ptr = kmalloc(size);
+    VERIFY(ptr);
+    return ptr;
+}
+
+void* operator new[](size_t size, const std::nothrow_t&) noexcept
+{
     return kmalloc(size);
+}
+
+void operator delete(void*) noexcept
+{
+    // All deletes in kernel code should have a known size.
+    VERIFY_NOT_REACHED();
+}
+
+void operator delete(void* ptr, size_t size) noexcept
+{
+    return kfree_sized(ptr, size);
+}
+
+void operator delete(void* ptr, size_t, std::align_val_t) noexcept
+{
+    return kfree_aligned(ptr);
+}
+
+void operator delete[](void*) noexcept
+{
+    // All deletes in kernel code should have a known size.
+    VERIFY_NOT_REACHED();
+}
+
+void operator delete[](void* ptr, size_t size) noexcept
+{
+    return kfree_sized(ptr, size);
 }
 
 void get_kmalloc_stats(kmalloc_stats& stats)

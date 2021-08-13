@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -30,8 +10,13 @@
 
 namespace AK {
 
-class Bitmap;
+namespace Detail {
+template<size_t inline_capacity>
 class ByteBuffer;
+}
+
+class Bitmap;
+using ByteBuffer = AK::Detail::ByteBuffer<32>;
 class IPv4Address;
 class JsonArray;
 class JsonObject;
@@ -44,6 +29,7 @@ class StringView;
 class Time;
 class URL;
 class FlyString;
+class Utf16View;
 class Utf32View;
 class Utf8View;
 class InputStream;
@@ -78,23 +64,29 @@ class SinglyLinkedList;
 template<typename T>
 class DoublyLinkedList;
 
-template<typename T>
-class InlineLinkedList;
-
 template<typename T, size_t capacity>
 class CircularQueue;
 
 template<typename T>
 struct Traits;
 
-template<typename T, typename = Traits<T>>
+template<typename T, typename TraitsForT = Traits<T>, bool IsOrdered = false>
 class HashTable;
 
-template<typename K, typename V, typename = Traits<K>>
+template<typename T, typename TraitsForT = Traits<T>>
+using OrderedHashTable = HashTable<T, TraitsForT, true>;
+
+template<typename K, typename V, typename KeyTraits = Traits<K>, bool IsOrdered = false>
 class HashMap;
+
+template<typename K, typename V, typename KeyTraits = Traits<K>>
+using OrderedHashMap = HashMap<K, V, KeyTraits, true>;
 
 template<typename T>
 class Badge;
+
+template<typename T>
+class FixedArray;
 
 template<typename>
 class Function;
@@ -130,7 +122,7 @@ template<typename T>
 class WeakPtr;
 
 template<typename T, size_t inline_capacity = 0>
-class Vector;
+requires(!IsRvalueReference<T>) class Vector;
 
 }
 
@@ -144,11 +136,11 @@ using AK::CircularDuplexStream;
 using AK::CircularQueue;
 using AK::DoublyLinkedList;
 using AK::DuplexMemoryStream;
+using AK::FixedArray;
 using AK::FlyString;
 using AK::Function;
 using AK::HashMap;
 using AK::HashTable;
-using AK::InlineLinkedList;
 using AK::InputBitStream;
 using AK::InputMemoryStream;
 using AK::InputStream;
@@ -177,6 +169,7 @@ using AK::StringView;
 using AK::Time;
 using AK::Traits;
 using AK::URL;
+using AK::Utf16View;
 using AK::Utf32View;
 using AK::Utf8View;
 using AK::Vector;

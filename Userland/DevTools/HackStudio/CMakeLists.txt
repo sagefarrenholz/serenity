@@ -1,3 +1,10 @@
+serenity_component(
+    HackStudio
+    RECOMMENDED
+    TARGETS HackStudio
+    DEPENDS CppLanguageServer ShellLanguageServer
+)
+
 add_subdirectory(LanguageServers)
 add_subdirectory(LanguageClients)
 
@@ -5,12 +12,15 @@ compile_gml(Dialogs/NewProjectDialog.gml Dialogs/NewProjectDialogGML.h new_proje
 
 set(SOURCES
     CodeDocument.cpp
-    CursorTool.cpp
+    ClassViewWidget.cpp
     Debugger/BacktraceModel.cpp
     Debugger/DebugInfoWidget.cpp
     Debugger/Debugger.cpp
+    Debugger/DebuggerGlobalJSObject.cpp
+    Debugger/DebuggerVariableJSObject.cpp
     Debugger/DisassemblyModel.cpp
     Debugger/DisassemblyWidget.cpp
+    Debugger/EvaluateExpressionDialog.cpp
     Debugger/RegistersModel.cpp
     Debugger/VariablesModel.cpp
     Dialogs/NewProjectDialog.cpp
@@ -19,26 +29,26 @@ set(SOURCES
     Editor.cpp
     EditorWrapper.cpp
     FindInFilesWidget.cpp
-    FormEditorWidget.cpp
-    FormWidget.cpp
     Git/DiffViewer.cpp
     Git/GitFilesModel.cpp
     Git/GitFilesView.cpp
     Git/GitRepo.cpp
     Git/GitWidget.cpp
+    GMLPreviewWidget.cpp
     HackStudioWidget.cpp
     Language.cpp
     LanguageClient.cpp
     Locator.cpp
     Project.cpp
+    ProjectDeclarations.cpp
     ProjectFile.cpp
     ProjectTemplate.cpp
     TerminalWrapper.cpp
-    WidgetTool.cpp
-    WidgetTreeModel.cpp
+    ToDoEntries.cpp
+    ToDoEntriesWidget.cpp
     main.cpp
 )
 
 serenity_app(HackStudio ICON app-hack-studio)
-target_link_libraries(HackStudio LibWeb LibMarkdown LibGUI LibCpp LibGfx LibCore LibVT LibDebug LibX86 LibDiff LibShell LibRegex)
+target_link_libraries(HackStudio LibWeb LibMarkdown LibGUI LibCpp LibGfx LibCore LibVT LibDebug LibX86 LibDiff LibShell LibSymbolication LibRegex LibSQL)
 add_dependencies(HackStudio CppLanguageServer)

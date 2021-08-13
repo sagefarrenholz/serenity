@@ -1,32 +1,16 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <LibWeb/DOM/ExceptionOr.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/HTML/HTMLTableCaptionElement.h>
+#include <LibWeb/HTML/HTMLTableRowElement.h>
+#include <LibWeb/HTML/HTMLTableSectionElement.h>
 
 namespace Web::HTML {
 
@@ -36,6 +20,28 @@ public:
 
     HTMLTableElement(DOM::Document&, QualifiedName);
     virtual ~HTMLTableElement() override;
+
+    RefPtr<HTMLTableCaptionElement> caption();
+    void set_caption(HTMLTableCaptionElement*);
+    NonnullRefPtr<HTMLTableCaptionElement> create_caption();
+    void delete_caption();
+
+    RefPtr<HTMLTableSectionElement> t_head();
+    DOM::ExceptionOr<void> set_t_head(HTMLTableSectionElement* thead);
+    NonnullRefPtr<HTMLTableSectionElement> create_t_head();
+    void delete_t_head();
+
+    RefPtr<HTMLTableSectionElement> t_foot();
+    DOM::ExceptionOr<void> set_t_foot(HTMLTableSectionElement* tfoot);
+    NonnullRefPtr<HTMLTableSectionElement> create_t_foot();
+    void delete_t_foot();
+
+    NonnullRefPtr<DOM::HTMLCollection> t_bodies();
+    NonnullRefPtr<HTMLTableSectionElement> create_t_body();
+
+    NonnullRefPtr<DOM::HTMLCollection> rows();
+    DOM::ExceptionOr<NonnullRefPtr<HTMLTableRowElement>> insert_row(long index);
+    DOM::ExceptionOr<void> delete_row(long index);
 
 private:
     virtual void apply_presentational_hints(CSS::StyleProperties&) const override;

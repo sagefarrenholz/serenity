@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020-2021, the SerenityOS developers.
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "HelpWindow.h"
@@ -35,24 +15,19 @@
 #include <LibGUI/FilePicker.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/Menu.h>
-#include <LibGUI/MenuBar.h>
+#include <LibGUI/Menubar.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Window.h>
 #include <unistd.h>
 
 int main(int argc, char* argv[])
 {
-    if (pledge("stdio recvfd sendfd accept rpath unix cpath wpath fattr thread", nullptr) < 0) {
+    if (pledge("stdio recvfd sendfd rpath fattr unix cpath wpath thread", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
 
     auto app = GUI::Application::construct(argc, argv);
-
-    if (pledge("stdio recvfd sendfd thread rpath accept cpath wpath fattr unix", nullptr) < 0) {
-        perror("pledge");
-        return 1;
-    }
 
     const char* filename = nullptr;
 
@@ -110,13 +85,12 @@ int main(int argc, char* argv[])
     if (filename)
         spreadsheet_widget.load(filename);
 
-    auto menubar = GUI::MenuBar::construct();
-    auto& app_menu = menubar->add_menu("Spreadsheet");
+    auto& file_menu = window->add_menu("&File");
 
-    app_menu.add_action(GUI::Action::create("Add New Sheet", Gfx::Bitmap::load_from_file("/res/icons/16x16/new-tab.png"), [&](auto&) {
+    file_menu.add_action(GUI::Action::create("Add New Sheet", Gfx::Bitmap::try_load_from_file("/res/icons/16x16/new-tab.png"), [&](auto&) {
         spreadsheet_widget.add_sheet();
     }));
-    app_menu.add_action(GUI::CommonActions::make_open_action([&](auto&) {
+    file_menu.add_action(GUI::CommonActions::make_open_action([&](auto&) {
         Optional<String> load_path = GUI::FilePicker::get_open_filepath(window);
         if (!load_path.has_value())
             return;
@@ -124,7 +98,7 @@ int main(int argc, char* argv[])
         spreadsheet_widget.load(load_path.value());
     }));
 
-    app_menu.add_action(GUI::CommonActions::make_save_action([&](auto&) {
+    file_menu.add_action(GUI::CommonActions::make_save_action([&](auto&) {
         if (spreadsheet_widget.current_filename().is_empty()) {
             String name = "workbook";
             Optional<String> save_path = GUI::FilePicker::get_save_filepath(window, name, "sheets");
@@ -137,7 +111,7 @@ int main(int argc, char* argv[])
         }
     }));
 
-    app_menu.add_action(GUI::CommonActions::make_save_as_action([&](auto&) {
+    file_menu.add_action(GUI::CommonActions::make_save_as_action([&](auto&) {
         auto current_filename = spreadsheet_widget.current_filename();
         String name = "workbook";
         Optional<String> save_path = GUI::FilePicker::get_save_filepath(window, name, "sheets");
@@ -149,9 +123,9 @@ int main(int argc, char* argv[])
         if (!current_filename.is_empty())
             spreadsheet_widget.set_filename(current_filename);
     }));
-    app_menu.add_separator();
+    file_menu.add_separator();
 
-    app_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) {
+    file_menu.add_action(GUI::CommonActions::make_quit_action([&](auto&) {
         if (!spreadsheet_widget.request_close())
             return;
         app->quit(0);
@@ -163,7 +137,7 @@ int main(int argc, char* argv[])
         return GUI::Window::CloseRequestDecision::StayOpen;
     };
 
-    auto& edit_menu = menubar->add_menu("Edit");
+    auto& edit_menu = window->add_menu("&Edit");
 
     auto clipboard_action = [&](bool is_cut) {
         /// text/x-spreadsheet-data:
@@ -211,8 +185,8 @@ int main(int argc, char* argv[])
         GUI::Clipboard::the().set_data(text_builder.string_view().bytes(), "text/plain", move(metadata));
     };
 
-    edit_menu.add_action(GUI::CommonActions::make_copy_action([&] { clipboard_action(false); }, window));
-    edit_menu.add_action(GUI::CommonActions::make_cut_action([&] { clipboard_action(true); }, window));
+    edit_menu.add_action(GUI::CommonActions::make_cut_action([&](auto&) { clipboard_action(true); }, window));
+    edit_menu.add_action(GUI::CommonActions::make_copy_action([&](auto&) { clipboard_action(false); }, window));
     edit_menu.add_action(GUI::CommonActions::make_paste_action([&](auto&) {
         ScopeGuard update_after_paste { [&] { spreadsheet_widget.update(); } };
 
@@ -253,10 +227,10 @@ int main(int argc, char* argv[])
     },
         window));
 
-    auto& help_menu = menubar->add_menu("Help");
+    auto& help_menu = window->add_menu("&Help");
 
     help_menu.add_action(GUI::Action::create(
-        "Functions Help", [&](auto&) {
+        "&Functions Help", [&](auto&) {
             if (auto* worksheet_ptr = spreadsheet_widget.current_worksheet_if_available()) {
                 auto docs = worksheet_ptr->gather_documentation();
                 auto help_window = Spreadsheet::HelpWindow::the(window);
@@ -269,8 +243,6 @@ int main(int argc, char* argv[])
         window));
 
     help_menu.add_action(GUI::CommonActions::make_about_action("Spreadsheet", app_icon, window));
-
-    app->set_menubar(move(menubar));
 
     window->show();
 

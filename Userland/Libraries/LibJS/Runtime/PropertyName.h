@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -33,11 +13,16 @@ namespace JS {
 
 class PropertyName {
 public:
-    enum class Type {
+    enum class Type : u8 {
         Invalid,
         Number,
         String,
         Symbol,
+    };
+
+    enum class StringMayBeNumber {
+        Yes,
+        No,
     };
 
     static PropertyName from_value(GlobalObject& global_object, Value value)
@@ -45,9 +30,9 @@ public:
         if (value.is_empty())
             return {};
         if (value.is_symbol())
-            return &value.as_symbol();
-        if (value.is_integer() && value.as_i32() >= 0)
-            return value.as_i32();
+            return value.as_symbol();
+        if (value.is_integral_number() && value.as_double() >= 0 && value.as_double() < NumericLimits<u32>::max())
+            return value.as_u32();
         auto string = value.to_string(global_object);
         if (string.is_null())
             return {};
@@ -56,41 +41,53 @@ public:
 
     PropertyName() { }
 
-    PropertyName(i32 index)
-        : m_type(Type::Number)
-        , m_number(index)
+    template<Integral T>
+    PropertyName(T index)
     {
+        // FIXME: Replace this with requires(IsUnsigned<T>)?
+        //        Needs changes in various places using `int` (but not actually being in the negative range)
         VERIFY(index >= 0);
+        if constexpr (NumericLimits<T>::max() >= NumericLimits<u32>::max()) {
+            if (index >= NumericLimits<u32>::max()) {
+                m_string = String::number(index);
+                m_type = Type::String;
+                m_string_may_be_number = false;
+                return;
+            }
+        }
+
+        m_type = Type::Number;
+        m_number = index;
     }
 
-    PropertyName(const char* chars)
+    PropertyName(char const* chars)
         : m_type(Type::String)
         , m_string(FlyString(chars))
     {
     }
 
-    PropertyName(const String& string)
+    PropertyName(String const& string)
         : m_type(Type::String)
         , m_string(FlyString(string))
     {
         VERIFY(!string.is_null());
     }
 
-    PropertyName(const FlyString& string)
+    PropertyName(FlyString const& string, StringMayBeNumber string_may_be_number = StringMayBeNumber::Yes)
         : m_type(Type::String)
+        , m_string_may_be_number(string_may_be_number == StringMayBeNumber::Yes)
         , m_string(string)
     {
         VERIFY(!string.is_null());
     }
 
-    PropertyName(Symbol* symbol)
+    PropertyName(Symbol& symbol)
         : m_type(Type::Symbol)
-        , m_symbol(symbol)
+        , m_symbol(&symbol)
     {
-        VERIFY(symbol);
     }
 
-    PropertyName(const StringOrSymbol& string_or_symbol)
+    PropertyName(StringOrSymbol const& string_or_symbol)
     {
         if (string_or_symbol.is_string()) {
             m_string = string_or_symbol.as_string();
@@ -101,24 +98,68 @@ public:
         }
     }
 
+    ALWAYS_INLINE Type type() const { return m_type; }
+
     bool is_valid() const { return m_type != Type::Invalid; }
-    bool is_number() const { return m_type == Type::Number; }
-    bool is_string() const { return m_type == Type::String; }
+    bool is_number() const
+    {
+        if (m_type == Type::Number)
+            return true;
+        if (m_type != Type::String || !m_string_may_be_number)
+            return false;
+
+        return const_cast<PropertyName*>(this)->try_coerce_into_number();
+    }
+    bool is_string() const
+    {
+        if (m_type != Type::String)
+            return false;
+        if (!m_string_may_be_number)
+            return true;
+
+        return !const_cast<PropertyName*>(this)->try_coerce_into_number();
+    }
     bool is_symbol() const { return m_type == Type::Symbol; }
 
-    i32 as_number() const
+    bool try_coerce_into_number()
+    {
+        VERIFY(m_string_may_be_number);
+        if (m_string.is_empty()) {
+            m_string_may_be_number = false;
+            return false;
+        }
+
+        if (char first = m_string.characters()[0]; first < '0' || first > '9') {
+            m_string_may_be_number = false;
+            return false;
+        } else if (m_string.length() > 1 && first == '0') {
+            m_string_may_be_number = false;
+            return false;
+        }
+
+        auto property_index = m_string.to_uint(TrimWhitespace::No);
+        if (!property_index.has_value() || property_index.value() == NumericLimits<u32>::max()) {
+            m_string_may_be_number = false;
+            return false;
+        }
+        m_type = Type::Number;
+        m_number = *property_index;
+        return true;
+    }
+
+    u32 as_number() const
     {
         VERIFY(is_number());
         return m_number;
     }
 
-    const FlyString& as_string() const
+    FlyString const& as_string() const
     {
         VERIFY(is_string());
         return m_string;
     }
 
-    const Symbol* as_symbol() const
+    Symbol const* as_symbol() const
     {
         VERIFY(is_symbol());
         return m_symbol;
@@ -142,22 +183,58 @@ public:
         return StringOrSymbol(as_symbol());
     }
 
-    Value to_value(VM& vm) const
-    {
-        if (is_string())
-            return js_string(vm, m_string);
-        if (is_number())
-            return Value(m_number);
-        if (is_symbol())
-            return m_symbol;
-        return js_undefined();
-    }
-
 private:
     Type m_type { Type::Invalid };
+    bool m_string_may_be_number { true };
     FlyString m_string;
     Symbol* m_symbol { nullptr };
     u32 m_number { 0 };
+};
+
+struct PropertyNameTraits : public Traits<PropertyName> {
+    static unsigned hash(PropertyName const& name)
+    {
+        VERIFY(name.is_valid());
+        if (name.is_string())
+            return name.as_string().hash();
+        if (name.is_number())
+            return int_hash(name.as_number());
+        return ptr_hash(name.as_symbol());
+    }
+
+    static bool equals(PropertyName const& a, PropertyName const& b)
+    {
+        if (a.type() != b.type())
+            return false;
+
+        switch (a.type()) {
+        case PropertyName::Type::Number:
+            return a.as_number() == b.as_number();
+        case PropertyName::Type::String:
+            return a.as_string() == b.as_string();
+        case PropertyName::Type::Symbol:
+            return a.as_symbol() == b.as_symbol();
+        default:
+            VERIFY_NOT_REACHED();
+        }
+    }
+};
+
+}
+
+namespace AK {
+
+template<>
+struct Formatter<JS::PropertyName> : Formatter<StringView> {
+    void format(FormatBuilder& builder, JS::PropertyName const& property_name)
+    {
+        if (!property_name.is_valid())
+            Formatter<StringView>::format(builder, "<invalid PropertyName>");
+        else if (property_name.is_number())
+            Formatter<StringView>::format(builder, String::number(property_name.as_number()));
+        else
+            Formatter<StringView>::format(builder, property_name.to_string_or_symbol().to_display_string());
+    }
 };
 
 }

@@ -1,32 +1,12 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/Assertions.h>
 #include <AK/Time.h>
 #include <Kernel/CMOS.h>
+#include <Kernel/IO.h>
 #include <Kernel/RTC.h>
 
 namespace RTC {
@@ -53,10 +33,29 @@ static u8 bcd_to_binary(u8 bcd)
     return (bcd & 0x0F) + ((bcd >> 4) * 10);
 }
 
-void read_registers(unsigned& year, unsigned& month, unsigned& day, unsigned& hour, unsigned& minute, unsigned& second)
+static bool try_to_read_registers(unsigned& year, unsigned& month, unsigned& day, unsigned& hour, unsigned& minute, unsigned& second)
 {
-    while (update_in_progress())
-        ;
+    // Note: Let's wait 0.01 seconds until we stop trying to query the RTC CMOS
+    size_t time_passed_in_milliseconds = 0;
+    bool update_in_progress_ended_successfully = false;
+    while (time_passed_in_milliseconds < 100) {
+        if (!update_in_progress()) {
+            update_in_progress_ended_successfully = true;
+            break;
+        }
+        IO::delay(1000);
+        time_passed_in_milliseconds++;
+    }
+
+    if (!update_in_progress_ended_successfully) {
+        year = 1970;
+        month = 1;
+        day = 1;
+        hour = 0;
+        minute = 0;
+        second = 0;
+        return false;
+    }
 
     u8 status_b = CMOS::read(0x0b);
 
@@ -86,20 +85,31 @@ void read_registers(unsigned& year, unsigned& month, unsigned& day, unsigned& ho
     }
 
     year += 2000;
+    return true;
 }
 
 time_t now()
 {
-    // FIXME: We should probably do something more robust here.
-    //        Perhaps read all the values twice and verify that they were identical.
-    //        We don't want to be caught in the middle of an RTC register update.
-    while (update_in_progress())
-        ;
+
+    auto check_registers_against_preloaded_values = [](unsigned year, unsigned month, unsigned day, unsigned hour, unsigned minute, unsigned second) {
+        unsigned checked_year, checked_month, checked_day, checked_hour, checked_minute, checked_second;
+        if (!try_to_read_registers(checked_year, checked_month, checked_day, checked_hour, checked_minute, checked_second))
+            return false;
+        return checked_year == year && checked_month == month && checked_day == day && checked_hour == hour && checked_minute == minute && checked_second == second;
+    };
 
     unsigned year, month, day, hour, minute, second;
-    read_registers(year, month, day, hour, minute, second);
+    bool did_read_rtc_sucessfully = false;
+    for (size_t attempt = 0; attempt < 5; attempt++) {
+        if (!try_to_read_registers(year, month, day, hour, minute, second))
+            break;
+        if (check_registers_against_preloaded_values(year, month, day, hour, minute, second)) {
+            did_read_rtc_sucessfully = true;
+            break;
+        }
+    }
 
-    dmesgln("RTC: Year: {}, month: {}, day: {}, hour: {}, minute: {}, second: {}", year, month, day, hour, minute, second);
+    dmesgln("RTC: {} Year: {}, month: {}, day: {}, hour: {}, minute: {}, second: {}", (did_read_rtc_sucessfully ? "" : "(failed to read)"), year, month, day, hour, minute, second);
 
     time_t days_since_epoch = years_to_days_since_epoch(year) + day_of_year(year, month, day);
     return ((days_since_epoch * 24 + hour) * 60 + minute) * 60 + second;

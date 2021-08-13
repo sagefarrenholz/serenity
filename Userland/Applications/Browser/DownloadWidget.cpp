@@ -1,46 +1,27 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "DownloadWidget.h"
 #include <AK/NumberFormat.h>
 #include <AK/StringBuilder.h>
+#include <LibCore/ConfigFile.h>
 #include <LibCore/File.h>
 #include <LibCore/FileStream.h>
 #include <LibCore/StandardPaths.h>
 #include <LibDesktop/Launcher.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
+#include <LibGUI/CheckBox.h>
 #include <LibGUI/ImageWidget.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/MessageBox.h>
-#include <LibGUI/ProgressBar.h>
+#include <LibGUI/Progressbar.h>
 #include <LibGUI/Window.h>
-#include <LibProtocol/Client.h>
+#include <LibProtocol/RequestClient.h>
 #include <LibWeb/Loader/ResourceLoader.h>
-#include <math.h>
 
 namespace Browser {
 
@@ -55,15 +36,18 @@ DownloadWidget::DownloadWidget(const URL& url)
         m_destination_path = builder.to_string();
     }
 
+    auto browser_config = Core::ConfigFile::get_for_app("Browser");
+    auto close_on_finish = browser_config->read_bool_entry("Preferences", "CloseDownloadWidgetOnFinish", false);
+
     m_elapsed_timer.start();
-    m_download = Web::ResourceLoader::the().protocol_client().start_download("GET", url.to_string());
+    m_download = Web::ResourceLoader::the().protocol_client().start_request("GET", url);
     VERIFY(m_download);
     m_download->on_progress = [this](Optional<u32> total_size, u32 downloaded_size) {
         did_progress(total_size.value(), downloaded_size);
     };
 
     {
-        auto file_or_error = Core::File::open(m_destination_path, Core::IODevice::WriteOnly);
+        auto file_or_error = Core::File::open(m_destination_path, Core::OpenMode::WriteOnly);
         if (file_or_error.is_error()) {
             GUI::MessageBox::show(window(), String::formatted("Cannot open {} for writing", m_destination_path), "Download failed", GUI::MessageBox::Type::Error);
             window()->close();
@@ -83,16 +67,16 @@ DownloadWidget::DownloadWidget(const URL& url)
     animation_container.set_fixed_height(32);
     auto& animation_layout = animation_container.set_layout<GUI::HorizontalBoxLayout>();
 
-    auto& browser_image = animation_container.add<GUI::ImageWidget>();
-    browser_image.load_from_file("/res/graphics/download-animation.gif");
+    m_browser_image = animation_container.add<GUI::ImageWidget>();
+    m_browser_image->load_from_file("/res/graphics/download-animation.gif");
     animation_layout.add_spacer();
 
     auto& source_label = add<GUI::Label>(String::formatted("From: {}", url));
     source_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
     source_label.set_fixed_height(16);
 
-    m_progress_bar = add<GUI::ProgressBar>();
-    m_progress_bar->set_fixed_height(20);
+    m_progressbar = add<GUI::Progressbar>();
+    m_progressbar->set_fixed_height(20);
 
     m_progress_label = add<GUI::Label>();
     m_progress_label->set_text_alignment(Gfx::TextAlignment::CenterLeft);
@@ -101,6 +85,14 @@ DownloadWidget::DownloadWidget(const URL& url)
     auto& destination_label = add<GUI::Label>(String::formatted("To: {}", m_destination_path));
     destination_label.set_text_alignment(Gfx::TextAlignment::CenterLeft);
     destination_label.set_fixed_height(16);
+
+    m_close_on_finish_checkbox = add<GUI::CheckBox>("Close when finished");
+    m_close_on_finish_checkbox->set_checked(close_on_finish);
+
+    m_close_on_finish_checkbox->on_checked = [&](bool checked) {
+        auto browser_config = Core::ConfigFile::get_for_app("Browser");
+        browser_config->write_bool_entry("Preferences", "CloseDownloadWidgetOnFinish", checked);
+    };
 
     auto& button_container = add<GUI::Widget>();
     auto& button_container_layout = button_container.set_layout<GUI::HorizontalBoxLayout>();
@@ -127,15 +119,15 @@ DownloadWidget::~DownloadWidget()
 
 void DownloadWidget::did_progress(Optional<u32> total_size, u32 downloaded_size)
 {
-    m_progress_bar->set_min(0);
+    m_progressbar->set_min(0);
     if (total_size.has_value()) {
         int percent = roundf(((float)downloaded_size / (float)total_size.value()) * 100.0f);
         window()->set_progress(percent);
-        m_progress_bar->set_max(total_size.value());
+        m_progressbar->set_max(total_size.value());
     } else {
-        m_progress_bar->set_max(0);
+        m_progressbar->set_max(0);
     }
-    m_progress_bar->set_value(downloaded_size);
+    m_progressbar->set_value(downloaded_size);
 
     {
         StringBuilder builder;
@@ -163,6 +155,8 @@ void DownloadWidget::did_finish(bool success)
 {
     dbgln("did_finish, success={}", success);
 
+    m_browser_image->load_from_file("/res/graphics/download-finished.gif");
+    window()->set_title("Download finished!");
     m_close_button->set_enabled(true);
     m_cancel_button->set_text("Open in Folder");
     m_cancel_button->on_click = [this](auto) {
@@ -176,6 +170,9 @@ void DownloadWidget::did_finish(bool success)
         window()->close();
         return;
     }
+
+    if (m_close_on_finish_checkbox->is_checked())
+        window()->close();
 }
 
 }

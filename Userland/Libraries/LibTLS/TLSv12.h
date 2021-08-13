@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Ali Mohammad Pur <ali.mpfard@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Ali Mohammad Pur <mpfard@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -37,16 +17,14 @@
 #include <LibCrypto/Cipher/AES.h>
 #include <LibCrypto/Hash/HashManager.h>
 #include <LibCrypto/PK/RSA.h>
+#include <LibTLS/CipherSuite.h>
 #include <LibTLS/TLSPacketBuilder.h>
 
 namespace TLS {
 
 inline void print_buffer(ReadonlyBytes buffer)
 {
-    StringBuilder builder(buffer.size() * 2);
-    for (auto b : buffer)
-        builder.appendff("{:02x} ", b);
-    dbgln("{}", builder.string_view());
+    dbgln("{:hex-dump}", buffer);
 }
 
 inline void print_buffer(const ByteBuffer& buffer)
@@ -60,23 +38,6 @@ inline void print_buffer(const u8* buffer, size_t size)
 }
 
 class Socket;
-
-enum class CipherSuite {
-    Invalid = 0,
-    AES_128_GCM_SHA256 = 0x1301,
-    AES_256_GCM_SHA384 = 0x1302,
-    AES_128_CCM_SHA256 = 0x1304,
-    AES_128_CCM_8_SHA256 = 0x1305,
-
-    // We support these
-    RSA_WITH_AES_128_CBC_SHA = 0x002F,
-    RSA_WITH_AES_256_CBC_SHA = 0x0035,
-    RSA_WITH_AES_128_CBC_SHA256 = 0x003C,
-    RSA_WITH_AES_256_CBC_SHA256 = 0x003D,
-    // TODO
-    RSA_WITH_AES_128_GCM_SHA256 = 0x009C,
-    RSA_WITH_AES_256_GCM_SHA384 = 0x009D,
-};
 
 #define ENUMERATE_ALERT_DESCRIPTIONS                        \
     ENUMERATE_ALERT_DESCRIPTION(CloseNotify, 0)             \
@@ -175,6 +136,10 @@ enum class HandshakeExtension : u16 {
     SignatureAlgorithms = 0x0d,
 };
 
+enum class NameType : u8 {
+    HostName = 0x00,
+};
+
 enum class WritePacketStage {
     Initial = 0,
     ClientHandshake = 1,
@@ -195,6 +160,75 @@ enum ClientVerificationStaus {
     VerificationNeeded,
 };
 
+// Note for the 16 iv length instead of 8:
+// 4 bytes of fixed IV, 8 random (nonce) bytes, 4 bytes for counter
+// GCM specifically asks us to transmit only the nonce, the counter is zero
+// and the fixed IV is derived from the premaster key.
+#define ENUMERATE_CIPHERS(C)                                                                                                                    \
+    C(true, CipherSuite::RSA_WITH_AES_128_CBC_SHA, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA1, 16, false)      \
+    C(true, CipherSuite::RSA_WITH_AES_256_CBC_SHA, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA1, 16, false)      \
+    C(true, CipherSuite::RSA_WITH_AES_128_CBC_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_CBC, Crypto::Hash::SHA256, 16, false) \
+    C(true, CipherSuite::RSA_WITH_AES_256_CBC_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_CBC, Crypto::Hash::SHA256, 16, false) \
+    C(true, CipherSuite::RSA_WITH_AES_128_GCM_SHA256, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_128_GCM, Crypto::Hash::SHA256, 8, true)   \
+    C(true, CipherSuite::RSA_WITH_AES_256_GCM_SHA384, KeyExchangeAlgorithm::RSA, CipherAlgorithm::AES_256_GCM, Crypto::Hash::SHA384, 8, true)
+
+constexpr KeyExchangeAlgorithm get_key_exchange_algorithm(CipherSuite suite)
+{
+    switch (suite) {
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return key_exchange;
+        ENUMERATE_CIPHERS(C)
+#undef C
+    default:
+        return KeyExchangeAlgorithm::Invalid;
+    }
+}
+
+constexpr CipherAlgorithm get_cipher_algorithm(CipherSuite suite)
+{
+    switch (suite) {
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return cipher;
+        ENUMERATE_CIPHERS(C)
+#undef C
+    default:
+        return CipherAlgorithm::Invalid;
+    }
+}
+
+struct Options {
+    static Vector<CipherSuite> default_usable_cipher_suites()
+    {
+        Vector<CipherSuite> cipher_suites;
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    if constexpr (is_supported)                                              \
+        cipher_suites.empend(suite);
+        ENUMERATE_CIPHERS(C)
+#undef C
+        return cipher_suites;
+    }
+    Vector<CipherSuite> usable_cipher_suites = default_usable_cipher_suites();
+
+#define OPTION_WITH_DEFAULTS(typ, name, ...)                    \
+    static typ default_##name() { return typ { __VA_ARGS__ }; } \
+    typ name = default_##name();
+
+    OPTION_WITH_DEFAULTS(Version, version, Version::V12)
+    OPTION_WITH_DEFAULTS(Vector<SignatureAndHashAlgorithm>, supported_signature_algorithms,
+        { HashAlgorithm::SHA512, SignatureAlgorithm::RSA },
+        { HashAlgorithm::SHA384, SignatureAlgorithm::RSA },
+        { HashAlgorithm::SHA256, SignatureAlgorithm::RSA },
+        { HashAlgorithm::SHA1, SignatureAlgorithm::RSA });
+
+    OPTION_WITH_DEFAULTS(bool, use_sni, true)
+    OPTION_WITH_DEFAULTS(bool, use_compression, false)
+    OPTION_WITH_DEFAULTS(bool, validate_certificates, true)
+
+#undef OPTION_WITH_DEFAULTS
+};
+
 struct Context {
     String to_string() const;
     bool verify() const;
@@ -202,13 +236,13 @@ struct Context {
 
     static void print_file(const StringView& fname);
 
+    Options options;
+
     u8 remote_random[32];
-    // To be predictable
     u8 local_random[32];
     u8 session_id[32];
     u8 session_id_size { 0 };
     CipherSuite cipher;
-    Version version;
     bool is_server { false };
     Vector<Certificate> certificates;
     Certificate private_key;
@@ -242,7 +276,10 @@ struct Context {
 
     bool is_child { false };
 
-    String SNI; // I hate your existence
+    struct {
+        // Server Name Indicator
+        String SNI; // I hate your existence
+    } extensions;
 
     u8 request_client_certificate { 0 };
 
@@ -278,10 +315,9 @@ public:
             dbgln("invalid state for set_sni");
             return;
         }
-        m_context.SNI = sni;
+        m_context.extensions.SNI = sni;
     }
 
-    Optional<Certificate> parse_asn1(ReadonlyBytes, bool client_cert = false) const;
     bool load_certificates(ReadonlyBytes pem_buffer);
     bool load_private_key(ReadonlyBytes pem_buffer);
 
@@ -302,11 +338,15 @@ public:
 
     bool supports_cipher(CipherSuite suite) const
     {
-        return suite == CipherSuite::RSA_WITH_AES_128_CBC_SHA256
-            || suite == CipherSuite::RSA_WITH_AES_256_CBC_SHA256
-            || suite == CipherSuite::RSA_WITH_AES_128_CBC_SHA
-            || suite == CipherSuite::RSA_WITH_AES_256_CBC_SHA
-            || suite == CipherSuite::RSA_WITH_AES_128_GCM_SHA256;
+        switch (suite) {
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return is_supported;
+            ENUMERATE_CIPHERS(C)
+#undef C
+        default:
+            return false;
+        }
     }
 
     bool supports_version(Version v) const
@@ -332,7 +372,7 @@ public:
     Function<void(TLSv12&)> on_tls_certificate_request;
 
 private:
-    explicit TLSv12(Core::Object* parent, Version version = Version::V12);
+    explicit TLSv12(Core::Object* parent, Options = {});
 
     virtual bool common_connect(const struct sockaddr*, socklen_t) override;
 
@@ -342,7 +382,7 @@ private:
     void ensure_hmac(size_t digest_size, bool local);
 
     void update_packet(ByteBuffer& packet);
-    void update_hash(ReadonlyBytes in);
+    void update_hash(ReadonlyBytes in, size_t header_size);
 
     void write_packet(ByteBuffer& packet);
 
@@ -350,13 +390,13 @@ private:
     ByteBuffer build_server_key_exchange();
 
     ByteBuffer build_hello();
-    ByteBuffer build_finished();
+    ByteBuffer build_handshake_finished();
     ByteBuffer build_certificate();
     ByteBuffer build_done();
     ByteBuffer build_alert(bool critical, u8 code);
     ByteBuffer build_change_cipher_spec();
     ByteBuffer build_verify_request();
-    void build_random(PacketBuilder&);
+    void build_rsa_pre_master_secret(PacketBuilder&);
 
     bool flush();
     void write_into_socket();
@@ -364,13 +404,13 @@ private:
 
     bool check_connection_state(bool read);
 
-    ssize_t handle_hello(ReadonlyBytes, WritePacketStage&);
-    ssize_t handle_finished(ReadonlyBytes, WritePacketStage&);
+    ssize_t handle_server_hello(ReadonlyBytes, WritePacketStage&);
+    ssize_t handle_handshake_finished(ReadonlyBytes, WritePacketStage&);
     ssize_t handle_certificate(ReadonlyBytes);
     ssize_t handle_server_key_exchange(ReadonlyBytes);
     ssize_t handle_server_hello_done(ReadonlyBytes);
-    ssize_t handle_verify(ReadonlyBytes);
-    ssize_t handle_payload(ReadonlyBytes);
+    ssize_t handle_certificate_verify(ReadonlyBytes);
+    ssize_t handle_handshake_payload(ReadonlyBytes);
     ssize_t handle_message(ReadonlyBytes);
     ssize_t handle_random(ReadonlyBytes);
 
@@ -381,72 +421,64 @@ private:
     size_t key_length() const
     {
         switch (m_context.cipher) {
-        case CipherSuite::AES_128_CCM_8_SHA256:
-        case CipherSuite::AES_128_CCM_SHA256:
-        case CipherSuite::AES_128_GCM_SHA256:
-        case CipherSuite::Invalid:
-        case CipherSuite::RSA_WITH_AES_128_CBC_SHA256:
-        case CipherSuite::RSA_WITH_AES_128_CBC_SHA:
-        case CipherSuite::RSA_WITH_AES_128_GCM_SHA256:
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return cipher_key_size(cipher) / 8;
+            ENUMERATE_CIPHERS(C)
+#undef C
         default:
             return 128 / 8;
-        case CipherSuite::AES_256_GCM_SHA384:
-        case CipherSuite::RSA_WITH_AES_256_CBC_SHA:
-        case CipherSuite::RSA_WITH_AES_256_CBC_SHA256:
-        case CipherSuite::RSA_WITH_AES_256_GCM_SHA384:
-            return 256 / 8;
         }
     }
+
     size_t mac_length() const
     {
         switch (m_context.cipher) {
-        case CipherSuite::RSA_WITH_AES_128_CBC_SHA:
-        case CipherSuite::RSA_WITH_AES_256_CBC_SHA:
-            return Crypto::Hash::SHA1::digest_size();
-        case CipherSuite::AES_256_GCM_SHA384:
-        case CipherSuite::RSA_WITH_AES_256_GCM_SHA384:
-            return Crypto::Hash::SHA512::digest_size();
-        case CipherSuite::AES_128_CCM_8_SHA256:
-        case CipherSuite::AES_128_CCM_SHA256:
-        case CipherSuite::AES_128_GCM_SHA256:
-        case CipherSuite::Invalid:
-        case CipherSuite::RSA_WITH_AES_128_CBC_SHA256:
-        case CipherSuite::RSA_WITH_AES_128_GCM_SHA256:
-        case CipherSuite::RSA_WITH_AES_256_CBC_SHA256:
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return hash ::digest_size();
+            ENUMERATE_CIPHERS(C)
+#undef C
         default:
             return Crypto::Hash::SHA256::digest_size();
         }
     }
+
+    Crypto::Hash::HashKind hmac_hash() const
+    {
+        switch (mac_length()) {
+        case Crypto::Hash::SHA512::DigestSize:
+            return Crypto::Hash::HashKind::SHA512;
+        case Crypto::Hash::SHA384::DigestSize:
+            return Crypto::Hash::HashKind::SHA384;
+        case Crypto::Hash::SHA256::DigestSize:
+        case Crypto::Hash::SHA1::DigestSize:
+        default:
+            return Crypto::Hash::HashKind::SHA256;
+        }
+    }
+
     size_t iv_length() const
     {
         switch (m_context.cipher) {
-        case CipherSuite::AES_128_CCM_8_SHA256:
-        case CipherSuite::AES_128_CCM_SHA256:
-        case CipherSuite::Invalid:
-        case CipherSuite::RSA_WITH_AES_128_CBC_SHA256:
-        case CipherSuite::RSA_WITH_AES_128_CBC_SHA:
-        case CipherSuite::RSA_WITH_AES_256_CBC_SHA256:
-        case CipherSuite::RSA_WITH_AES_256_CBC_SHA:
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return iv_size;
+            ENUMERATE_CIPHERS(C)
+#undef C
         default:
             return 16;
-        case CipherSuite::AES_128_GCM_SHA256:
-        case CipherSuite::AES_256_GCM_SHA384:
-        case CipherSuite::RSA_WITH_AES_128_GCM_SHA256:
-        case CipherSuite::RSA_WITH_AES_256_GCM_SHA384:
-            return 8; // 4 bytes of fixed IV, 8 random (nonce) bytes, 4 bytes for counter
-                      // GCM specifically asks us to transmit only the nonce, the counter is zero
-                      // and the fixed IV is derived from the premaster key.
         }
     }
 
     bool is_aead() const
     {
         switch (m_context.cipher) {
-        case CipherSuite::AES_128_GCM_SHA256:
-        case CipherSuite::AES_256_GCM_SHA384:
-        case CipherSuite::RSA_WITH_AES_128_GCM_SHA256:
-        case CipherSuite::RSA_WITH_AES_256_GCM_SHA384:
-            return true;
+#define C(is_supported, suite, key_exchange, cipher, hash, iv_size, is_aead) \
+    case suite:                                                              \
+        return is_aead;
+            ENUMERATE_CIPHERS(C)
+#undef C
         default:
             return false;
         }
@@ -454,7 +486,7 @@ private:
 
     bool expand_key();
 
-    bool compute_master_secret(size_t length);
+    bool compute_master_secret_from_pre_master_secret(size_t length);
 
     Optional<size_t> verify_chain_and_get_matching_certificate(const StringView& host) const;
 
@@ -465,46 +497,17 @@ private:
     OwnPtr<Crypto::Authentication::HMAC<Crypto::Hash::Manager>> m_hmac_local;
     OwnPtr<Crypto::Authentication::HMAC<Crypto::Hash::Manager>> m_hmac_remote;
 
-    struct {
-        OwnPtr<Crypto::Cipher::AESCipher::CBCMode> cbc;
-        OwnPtr<Crypto::Cipher::AESCipher::GCMMode> gcm;
-    } m_aes_local, m_aes_remote;
+    using CipherVariant = Variant<
+        Empty,
+        Crypto::Cipher::AESCipher::CBCMode,
+        Crypto::Cipher::AESCipher::GCMMode>;
+    CipherVariant m_cipher_local { Empty {} };
+    CipherVariant m_cipher_remote { Empty {} };
 
     bool m_has_scheduled_write_flush { false };
     i32 m_max_wait_time_for_handshake_in_seconds { 10 };
 
     RefPtr<Core::Timer> m_handshake_timeout_timer;
 };
-
-namespace Constants {
-constexpr static const u32 version_id[] { 1, 1, 1, 0 };
-constexpr static const u32 pk_id[] { 1, 1, 7, 0 };
-constexpr static const u32 serial_id[] { 1, 1, 2, 1, 0 };
-constexpr static const u32 issurer_id[] { 1, 1, 4, 0 };
-constexpr static const u32 owner_id[] { 1, 1, 6, 0 };
-constexpr static const u32 validity_id[] { 1, 1, 5, 0 };
-constexpr static const u32 algorithm_id[] { 1, 1, 3, 0 };
-constexpr static const u32 sign_id[] { 1, 3, 2, 1, 0 };
-constexpr static const u32 priv_id[] { 1, 4, 0 };
-constexpr static const u32 priv_der_id[] { 1, 3, 1, 0 };
-constexpr static const u32 ecc_priv_id[] { 1, 2, 0 };
-
-constexpr static const u8 country_oid[] { 0x55, 0x04, 0x06, 0x00 };
-constexpr static const u8 state_oid[] { 0x55, 0x04, 0x08, 0x00 };
-constexpr static const u8 location_oid[] { 0x55, 0x04, 0x07, 0x00 };
-constexpr static const u8 entity_oid[] { 0x55, 0x04, 0x0A, 0x00 };
-constexpr static const u8 subject_oid[] { 0x55, 0x04, 0x03, 0x00 };
-constexpr static const u8 unit_oid[] { 0x55, 0x04, 0x0B, 0x00 };
-constexpr static const u8 san_oid[] { 0x55, 0x1D, 0x11, 0x00 };
-constexpr static const u8 ocsp_oid[] { 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x00 };
-
-static constexpr const u8 RSA_SIGN_RSA_OID[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x00 };
-static constexpr const u8 RSA_SIGN_MD5_OID[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x04, 0x00 };
-static constexpr const u8 RSA_SIGN_SHA1_OID[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x05, 0x00 };
-static constexpr const u8 RSA_SIGN_SHA256_OID[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x00 };
-static constexpr const u8 RSA_SIGN_SHA384_OID[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c, 0x00 };
-static constexpr const u8 RSA_SIGN_SHA512_OID[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x00 };
-
-}
 
 }

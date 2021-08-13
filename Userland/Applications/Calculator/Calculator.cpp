@@ -1,32 +1,13 @@
 /*
  * Copyright (c) 2019-2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "Calculator.h"
+#include "KeypadValue.h"
 #include <AK/Assertions.h>
-#include <math.h>
+#include <AK/Math.h>
 
 Calculator::Calculator()
 {
@@ -36,9 +17,9 @@ Calculator::~Calculator()
 {
 }
 
-double Calculator::begin_operation(Operation operation, double argument)
+KeypadValue Calculator::begin_operation(Operation operation, KeypadValue argument)
 {
-    double res = 0.0;
+    KeypadValue res = 0;
 
     switch (operation) {
     case Operation::None:
@@ -53,30 +34,30 @@ double Calculator::begin_operation(Operation operation, double argument)
         return argument;
 
     case Operation::Sqrt:
-        if (argument < 0.0) {
+        if (argument < 0) {
             m_has_error = true;
             return argument;
         }
-        res = sqrt(argument);
+        res = KeypadValue { AK::sqrt((double)argument) };
         clear_operation();
         break;
     case Operation::Inverse:
-        if (argument == 0.0) {
+        if (argument == 0) {
             m_has_error = true;
             return argument;
         }
-        res = 1 / argument;
+        res = KeypadValue { 1.0 / (double)argument };
         clear_operation();
         break;
     case Operation::Percent:
-        res = argument * 0.01;
+        res = argument * KeypadValue { 1, 2 }; // also known as `KeypadValue{0.01}`
         break;
     case Operation::ToggleSign:
         res = -argument;
         break;
 
     case Operation::MemClear:
-        m_mem = 0.0;
+        m_mem = 0;
         res = argument;
         break;
     case Operation::MemRecall:
@@ -87,7 +68,7 @@ double Calculator::begin_operation(Operation operation, double argument)
         res = argument;
         break;
     case Operation::MemAdd:
-        m_mem += argument;
+        m_mem = m_mem + argument; //avoids the need for operator+=()
         res = m_mem;
         break;
     }
@@ -95,9 +76,9 @@ double Calculator::begin_operation(Operation operation, double argument)
     return res;
 }
 
-double Calculator::finish_operation(double argument)
+KeypadValue Calculator::finish_operation(KeypadValue argument)
 {
-    double res = 0.0;
+    KeypadValue res = 0;
 
     switch (m_operation_in_progress) {
     case Operation::None:
@@ -113,11 +94,11 @@ double Calculator::finish_operation(double argument)
         res = m_saved_argument * argument;
         break;
     case Operation::Divide:
-        if (argument == 0.0) {
+        if (argument == 0) {
             m_has_error = true;
             return argument;
         }
-        res = m_saved_argument / argument;
+        res = KeypadValue { (double)m_saved_argument / (double)argument };
         break;
 
     case Operation::Sqrt:
@@ -138,6 +119,6 @@ double Calculator::finish_operation(double argument)
 void Calculator::clear_operation()
 {
     m_operation_in_progress = Operation::None;
-    m_saved_argument = 0.0;
+    m_saved_argument = 0;
     clear_error();
 }

@@ -1,37 +1,16 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/Debug.h>
 #include <AK/Endian.h>
 #include <AK/LexicalPath.h>
 #include <AK/MappedFile.h>
-#include <LibCompress/Gzip.h>
+#include <LibCompress/Zlib.h>
 #include <LibGfx/PNGLoader.h>
 #include <fcntl.h>
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -121,7 +100,7 @@ struct PNGLoadingContext {
     bool has_alpha() const { return color_type & 4 || palette_transparency_data.size() > 0; }
     Vector<Scanline> scanlines;
     RefPtr<Gfx::Bitmap> bitmap;
-    ByteBuffer decompression_buffer;
+    ByteBuffer* decompression_buffer { nullptr };
     Vector<u8> compressed_data;
     Vector<PaletteEntry> palette_data;
     Vector<u8> palette_transparency_data;
@@ -190,7 +169,7 @@ private:
 static RefPtr<Gfx::Bitmap> load_png_impl(const u8*, size_t);
 static bool process_chunk(Streamer&, PNGLoadingContext& context);
 
-RefPtr<Gfx::Bitmap> load_png(const StringView& path)
+RefPtr<Gfx::Bitmap> load_png(String const& path)
 {
     auto file_or_error = MappedFile::map(path);
     if (file_or_error.is_error())
@@ -450,10 +429,10 @@ NEVER_INLINE FLATTEN static bool unfilter(PNGLoadingContext& context)
             auto pixels_per_byte = 8 / context.bit_depth;
             auto mask = (1 << context.bit_depth) - 1;
             for (int y = 0; y < context.height; ++y) {
-                auto* palette_indexes = context.scanlines[y].data.data();
+                auto* palette_indices = context.scanlines[y].data.data();
                 for (int i = 0; i < context.width; ++i) {
                     auto bit_offset = (8 - context.bit_depth) - (context.bit_depth * (i % pixels_per_byte));
-                    auto palette_index = (palette_indexes[i / pixels_per_byte] >> bit_offset) & mask;
+                    auto palette_index = (palette_indices[i / pixels_per_byte] >> bit_offset) & mask;
                     auto& pixel = (Pixel&)context.bitmap->scanline(y)[i];
                     if ((size_t)palette_index >= context.palette_data.size())
                         return false;
@@ -477,6 +456,7 @@ NEVER_INLINE FLATTEN static bool unfilter(PNGLoadingContext& context)
     }
 
     u8 dummy_scanline[context.width * sizeof(RGBA32)];
+    memset(dummy_scanline, 0, sizeof(dummy_scanline));
 
     for (int y = 0; y < context.height; ++y) {
         auto filter = context.scanlines[y].filter;
@@ -526,17 +506,13 @@ static bool decode_png_header(PNGLoadingContext& context)
         return true;
 
     if (!context.data || context.data_size < sizeof(png_header)) {
-#if PNG_DEBUG
-        dbgln("Missing PNG header");
-#endif
+        dbgln_if(PNG_DEBUG, "Missing PNG header");
         context.state = PNGLoadingContext::State::Error;
         return false;
     }
 
     if (memcmp(context.data, png_header, sizeof(png_header)) != 0) {
-#if PNG_DEBUG
-        dbgln("Invalid PNG header");
-#endif
+        dbgln_if(PNG_DEBUG, "Invalid PNG header");
         context.state = PNGLoadingContext::State::Error;
         return false;
     }
@@ -603,7 +579,7 @@ static bool decode_png_chunks(PNGLoadingContext& context)
 
 static bool decode_png_bitmap_simple(PNGLoadingContext& context)
 {
-    Streamer streamer(context.decompression_buffer.data(), context.decompression_buffer.size());
+    Streamer streamer(context.decompression_buffer->data(), context.decompression_buffer->size());
 
     for (int y = 0; y < context.height; ++y) {
         u8 filter;
@@ -630,7 +606,7 @@ static bool decode_png_bitmap_simple(PNGLoadingContext& context)
         }
     }
 
-    context.bitmap = Bitmap::create_purgeable(context.has_alpha() ? BitmapFormat::BGRA8888 : BitmapFormat::BGRx8888, { context.width, context.height });
+    context.bitmap = Bitmap::try_create(context.has_alpha() ? BitmapFormat::BGRA8888 : BitmapFormat::BGRx8888, { context.width, context.height });
 
     if (!context.bitmap) {
         context.state = PNGLoadingContext::State::Error;
@@ -732,7 +708,7 @@ static bool decode_adam7_pass(PNGLoadingContext& context, Streamer& streamer, in
         }
     }
 
-    subimage_context.bitmap = Bitmap::create(context.bitmap->format(), { subimage_context.width, subimage_context.height });
+    subimage_context.bitmap = Bitmap::try_create(context.bitmap->format(), { subimage_context.width, subimage_context.height });
     if (!unfilter(subimage_context)) {
         subimage_context.bitmap = nullptr;
         return false;
@@ -749,8 +725,8 @@ static bool decode_adam7_pass(PNGLoadingContext& context, Streamer& streamer, in
 
 static bool decode_png_adam7(PNGLoadingContext& context)
 {
-    Streamer streamer(context.decompression_buffer.data(), context.decompression_buffer.size());
-    context.bitmap = Bitmap::create_purgeable(context.has_alpha() ? BitmapFormat::BGRA8888 : BitmapFormat::BGRx8888, { context.width, context.height });
+    Streamer streamer(context.decompression_buffer->data(), context.decompression_buffer->size());
+    context.bitmap = Bitmap::try_create(context.has_alpha() ? BitmapFormat::BGRA8888 : BitmapFormat::BGRx8888, { context.width, context.height });
     if (!context.bitmap)
         return false;
 
@@ -777,12 +753,12 @@ static bool decode_png_bitmap(PNGLoadingContext& context)
     if (context.color_type == 3 && context.palette_data.is_empty())
         return false; // Didn't see a PLTE chunk for a palettized image, or it was empty.
 
-    auto result = Compress::DeflateDecompressor::decompress_all(context.compressed_data.span().slice(2));
+    auto result = Compress::Zlib::decompress_all(context.compressed_data.span());
     if (!result.has_value()) {
         context.state = PNGLoadingContext::State::Error;
         return false;
     }
-    context.decompression_buffer = result.value();
+    context.decompression_buffer = &result.value();
     context.compressed_data.clear();
 
     context.scanlines.ensure_capacity(context.height);
@@ -800,7 +776,7 @@ static bool decode_png_bitmap(PNGLoadingContext& context)
         return false;
     }
 
-    context.decompression_buffer.clear();
+    context.decompression_buffer = nullptr;
 
     context.state = PNGLoadingContext::State::BitmapDecoded;
     return true;
@@ -828,7 +804,7 @@ static bool is_valid_compression_method(u8 compression_method)
 
 static bool is_valid_filter_method(u8 filter_method)
 {
-    return filter_method <= 4;
+    return filter_method == 0;
 }
 
 static bool process_IHDR(ReadonlyBytes data, PNGLoadingContext& context)
@@ -860,18 +836,14 @@ static bool process_IHDR(ReadonlyBytes data, PNGLoadingContext& context)
     context.filter_method = ihdr.filter_method;
     context.interlace_method = ihdr.interlace_method;
 
-#if PNG_DEBUG
-    printf("PNG: %dx%d (%d bpp)\n", context.width, context.height, context.bit_depth);
-    printf("     Color type: %d\n", context.color_type);
-    printf("Compress Method: %d\n", context.compression_method);
-    printf("  Filter Method: %d\n", context.filter_method);
-    printf(" Interlace type: %d\n", context.interlace_method);
-#endif
+    dbgln_if(PNG_DEBUG, "PNG: {}x{} ({} bpp)", context.width, context.height, context.bit_depth);
+    dbgln_if(PNG_DEBUG, "     Color type: {}", context.color_type);
+    dbgln_if(PNG_DEBUG, "Compress Method: {}", context.compression_method);
+    dbgln_if(PNG_DEBUG, "  Filter Method: {}", context.filter_method);
+    dbgln_if(PNG_DEBUG, " Interlace type: {}", context.interlace_method);
 
     if (context.interlace_method != PngInterlaceMethod::Null && context.interlace_method != PngInterlaceMethod::Adam7) {
-#if PNG_DEBUG
-        dbgln("PNGLoader::process_IHDR: unknown interlace method: {}", context.interlace_method);
-#endif
+        dbgln_if(PNG_DEBUG, "PNGLoader::process_IHDR: unknown interlace method: {}", context.interlace_method);
         return false;
     }
 
@@ -933,36 +905,26 @@ static bool process_chunk(Streamer& streamer, PNGLoadingContext& context)
 {
     u32 chunk_size;
     if (!streamer.read(chunk_size)) {
-#if PNG_DEBUG
-        printf("Bail at chunk_size\n");
-#endif
+        dbgln_if(PNG_DEBUG, "Bail at chunk_size");
         return false;
     }
     u8 chunk_type[5];
     chunk_type[4] = '\0';
     if (!streamer.read_bytes(chunk_type, 4)) {
-#if PNG_DEBUG
-        printf("Bail at chunk_type\n");
-#endif
+        dbgln_if(PNG_DEBUG, "Bail at chunk_type");
         return false;
     }
     ReadonlyBytes chunk_data;
     if (!streamer.wrap_bytes(chunk_data, chunk_size)) {
-#if PNG_DEBUG
-        printf("Bail at chunk_data\n");
-#endif
+        dbgln_if(PNG_DEBUG, "Bail at chunk_data");
         return false;
     }
     u32 chunk_crc;
     if (!streamer.read(chunk_crc)) {
-#if PNG_DEBUG
-        printf("Bail at chunk_crc\n");
-#endif
+        dbgln_if(PNG_DEBUG, "Bail at chunk_crc");
         return false;
     }
-#if PNG_DEBUG
-    printf("Chunk type: '%s', size: %u, crc: %x\n", chunk_type, chunk_size, chunk_crc);
-#endif
+    dbgln_if(PNG_DEBUG, "Chunk type: '{}', size: {}, crc: {:x}", chunk_type, chunk_size, chunk_crc);
 
     if (!strcmp((const char*)chunk_type, "IHDR"))
         return process_IHDR(chunk_data, context);
@@ -1022,11 +984,11 @@ void PNGImageDecoderPlugin::set_volatile()
         m_context->bitmap->set_volatile();
 }
 
-bool PNGImageDecoderPlugin::set_nonvolatile()
+bool PNGImageDecoderPlugin::set_nonvolatile(bool& was_purged)
 {
     if (!m_context->bitmap)
         return false;
-    return m_context->bitmap->set_nonvolatile();
+    return m_context->bitmap->set_nonvolatile(was_purged);
 }
 
 bool PNGImageDecoderPlugin::sniff()
@@ -1051,10 +1013,9 @@ size_t PNGImageDecoderPlugin::frame_count()
 
 ImageFrameDescriptor PNGImageDecoderPlugin::frame(size_t i)
 {
-    if (i > 0) {
-        return { bitmap(), 0 };
-    }
-    return {};
+    if (i > 0)
+        return {};
+    return { bitmap(), 0 };
 }
 
 }

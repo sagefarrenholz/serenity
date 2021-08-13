@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "AppletManager.h"
@@ -30,6 +10,8 @@
 #include "Screen.h"
 #include "WindowManager.h"
 #include <LibCore/ConfigFile.h>
+#include <LibCore/DirIterator.h>
+#include <LibCore/File.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
 #include <signal.h>
@@ -39,7 +21,7 @@
 
 int main(int, char**)
 {
-    if (pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc fattr sigaction", nullptr) < 0) {
+    if (pledge("stdio video thread sendfd recvfd accept rpath wpath cpath unix proc sigaction", nullptr) < 0) {
         perror("pledge");
         return 1;
     }
@@ -54,8 +36,8 @@ int main(int, char**)
         return 1;
     }
 
-    if (unveil("/etc/WindowServer/WindowServer.ini", "rwc") < 0) {
-        perror("unveil /etc/WindowServer/WindowServer.ini");
+    if (unveil("/etc/WindowServer.ini", "rwc") < 0) {
+        perror("unveil /etc/WindowServer.ini");
         return 1;
     }
 
@@ -74,13 +56,19 @@ int main(int, char**)
         return 1;
     }
 
-    auto wm_config = Core::ConfigFile::open("/etc/WindowServer/WindowServer.ini");
+    auto wm_config = Core::ConfigFile::open("/etc/WindowServer.ini");
     auto theme_name = wm_config->read_entry("Theme", "Name", "Default");
 
     auto theme = Gfx::load_system_theme(String::formatted("/res/themes/{}.ini", theme_name));
     VERIFY(theme.is_valid());
     Gfx::set_system_theme(theme);
     auto palette = Gfx::PaletteImpl::create_with_anonymous_buffer(theme);
+
+    auto default_font_query = wm_config->read_entry("Fonts", "Default", "Katica 10 400");
+    auto fixed_width_font_query = wm_config->read_entry("Fonts", "FixedWidth", "Csilla 10 400");
+
+    Gfx::FontDatabase::set_default_font_query(default_font_query);
+    Gfx::FontDatabase::set_fixed_width_font_query(fixed_width_font_query);
 
     WindowServer::EventLoop loop;
 
@@ -89,10 +77,65 @@ int main(int, char**)
         return 1;
     }
 
-    int scale = wm_config->read_num_entry("Screen", "ScaleFactor", 1);
-    WindowServer::Screen screen(wm_config->read_num_entry("Screen", "Width", 1024 / scale), wm_config->read_num_entry("Screen", "Height", 768 / scale), scale);
-    screen.set_acceleration_factor(atof(wm_config->read_entry("Mouse", "AccelerationFactor", "1.0").characters()));
-    screen.set_scroll_step_size(wm_config->read_num_entry("Mouse", "ScrollStepSize", 4));
+    // First check which screens are explicitly configured
+    {
+        AK::HashTable<String> fb_devices_configured;
+        WindowServer::ScreenLayout screen_layout;
+        String error_msg;
+
+        auto add_unconfigured_devices = [&]() {
+            // Enumerate the /dev/fbX devices and try to set up any ones we find that we haven't already used
+            Core::DirIterator di("/dev", Core::DirIterator::SkipParentAndBaseDir);
+            while (di.has_next()) {
+                auto path = di.next_path();
+                if (!path.starts_with("fb"))
+                    continue;
+                auto full_path = String::formatted("/dev/{}", path);
+                if (!Core::File::is_device(full_path))
+                    continue;
+                if (fb_devices_configured.find(full_path) != fb_devices_configured.end())
+                    continue;
+                if (!screen_layout.try_auto_add_framebuffer(full_path))
+                    dbgln("Could not auto-add framebuffer device {} to screen layout", full_path);
+            }
+        };
+
+        auto apply_and_generate_generic_screen_layout = [&]() {
+            screen_layout = {};
+            fb_devices_configured = {};
+            add_unconfigured_devices();
+            if (!WindowServer::Screen::apply_layout(move(screen_layout), error_msg)) {
+                dbgln("Failed to apply generated fallback screen layout: {}", error_msg);
+                return false;
+            }
+
+            dbgln("Applied generated fallback screen layout!");
+            return true;
+        };
+
+        if (screen_layout.load_config(*wm_config, &error_msg)) {
+            for (auto& screen_info : screen_layout.screens)
+                fb_devices_configured.set(screen_info.device);
+
+            add_unconfigured_devices();
+
+            if (!WindowServer::Screen::apply_layout(move(screen_layout), error_msg)) {
+                dbgln("Error applying screen layout: {}", error_msg);
+                if (!apply_and_generate_generic_screen_layout())
+                    return 1;
+            }
+        } else {
+            dbgln("Error loading screen configuration: {}", error_msg);
+            if (!apply_and_generate_generic_screen_layout())
+                return 1;
+        }
+    }
+
+    auto& screen_input = WindowServer::ScreenInput::the();
+    screen_input.set_cursor_location(WindowServer::Screen::main().rect().center());
+    screen_input.set_acceleration_factor(atof(wm_config->read_entry("Mouse", "AccelerationFactor", "1.0").characters()));
+    screen_input.set_scroll_step_size(wm_config->read_num_entry("Mouse", "ScrollStepSize", 4));
+
     WindowServer::Compositor::the();
     auto wm = WindowServer::WindowManager::construct(*palette);
     auto am = WindowServer::AppletManager::construct();
@@ -103,10 +146,9 @@ int main(int, char**)
         return 1;
     }
 
-    if (unveil("/dev", "") < 0) {
-        perror("unveil /dev");
-        return 1;
-    }
+    // NOTE: Because we dynamically need to be able to open new /dev/fb*
+    // devices we can't really unveil all of /dev unless we have some
+    // other mechanism that can hand us file descriptors for these.
 
     if (unveil(nullptr, nullptr) < 0) {
         perror("unveil");

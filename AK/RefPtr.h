@@ -1,31 +1,12 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include <AK/Assertions.h>
 #include <AK/Atomic.h>
 #include <AK/Format.h>
 #include <AK/NonnullRefPtr.h>
@@ -33,7 +14,8 @@
 #include <AK/Traits.h>
 #include <AK/Types.h>
 #ifdef KERNEL
-#    include <Kernel/Arch/x86/CPU.h>
+#    include <Kernel/Arch/x86/Processor.h>
+#    include <Kernel/Arch/x86/ScopedCritical.h>
 #endif
 
 namespace AK {
@@ -379,7 +361,7 @@ public:
 
     ALWAYS_INLINE bool is_null() const { return PtrTraits::is_null(m_bits.load(AK::MemoryOrder::memory_order_relaxed)); }
 
-    template<typename U = T, typename EnableIf<IsSame<U, T>::value && !IsNullPointer<typename PtrTraits::NullType>::value>::Type* = nullptr>
+    template<typename U = T, typename EnableIf<IsSame<U, T> && !IsNullPointer<typename PtrTraits::NullType>>::Type* = nullptr>
     typename PtrTraits::NullType null_value() const
     {
         // make sure we are holding a null value
@@ -387,7 +369,7 @@ public:
         VERIFY(PtrTraits::is_null(bits));
         return PtrTraits::to_null_value(bits);
     }
-    template<typename U = T, typename EnableIf<IsSame<U, T>::value && !IsNullPointer<typename PtrTraits::NullType>::value>::Type* = nullptr>
+    template<typename U = T, typename EnableIf<IsSame<U, T> && !IsNullPointer<typename PtrTraits::NullType>>::Type* = nullptr>
     void set_null_value(typename PtrTraits::NullType value)
     {
         // make sure that new null value would be interpreted as a null value
@@ -471,7 +453,8 @@ struct Formatter<RefPtr<T>> : Formatter<const T*> {
 
 template<typename T>
 struct Traits<RefPtr<T>> : public GenericTraits<RefPtr<T>> {
-    using PeekType = const T*;
+    using PeekType = T*;
+    using ConstPeekType = const T*;
     static unsigned hash(const RefPtr<T>& p) { return ptr_hash(p.ptr()); }
     static bool equals(const RefPtr<T>& a, const RefPtr<T>& b) { return a.ptr() == b.ptr(); }
 };
@@ -494,7 +477,30 @@ inline void swap(RefPtr<T, PtrTraitsT>& a, RefPtr<U, PtrTraitsU>& b)
     a.swap(b);
 }
 
+template<typename T>
+inline RefPtr<T> adopt_ref_if_nonnull(T* object)
+{
+    if (object)
+        return RefPtr<T>(RefPtr<T>::Adopt, *object);
+    return {};
 }
 
+template<typename T, class... Args>
+requires(IsConstructible<T, Args...>) inline RefPtr<T> try_create(Args&&... args)
+{
+    return adopt_ref_if_nonnull(new (nothrow) T(forward<Args>(args)...));
+}
+
+// FIXME: Remove once P0960R3 is available in Clang.
+template<typename T, class... Args>
+inline RefPtr<T> try_create(Args&&... args)
+{
+    return adopt_ref_if_nonnull(new (nothrow) T { forward<Args>(args)... });
+}
+
+}
+
+using AK::adopt_ref_if_nonnull;
 using AK::RefPtr;
 using AK::static_ptr_cast;
+using AK::try_create;

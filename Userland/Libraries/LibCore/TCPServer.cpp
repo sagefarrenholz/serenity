@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/IPv4Address.h>
@@ -29,12 +9,12 @@
 #include <LibCore/Notifier.h>
 #include <LibCore/TCPServer.h>
 #include <LibCore/TCPSocket.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #ifndef SOCK_NONBLOCK
-#    include <fcntl.h>
 #    include <sys/ioctl.h>
 #endif
 namespace Core {
@@ -84,16 +64,38 @@ bool TCPServer::listen(const IPv4Address& address, u16 port)
     return true;
 }
 
+void TCPServer::set_blocking(bool blocking)
+{
+    int flags = fcntl(m_fd, F_GETFL, 0);
+    VERIFY(flags >= 0);
+    if (blocking)
+        flags = fcntl(m_fd, F_SETFL, flags & ~O_NONBLOCK);
+    else
+        flags = fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
+    VERIFY(flags == 0);
+}
+
 RefPtr<TCPSocket> TCPServer::accept()
 {
     VERIFY(m_listening);
     sockaddr_in in;
     socklen_t in_size = sizeof(in);
+#ifndef AK_OS_MACOS
+    int accepted_fd = ::accept4(m_fd, (sockaddr*)&in, &in_size, SOCK_NONBLOCK | SOCK_CLOEXEC);
+#else
     int accepted_fd = ::accept(m_fd, (sockaddr*)&in, &in_size);
+#endif
+
     if (accepted_fd < 0) {
         perror("accept");
         return nullptr;
     }
+
+#ifdef AK_OS_MACOS
+    int option = 1;
+    (void)ioctl(m_fd, FIONBIO, &option);
+    (void)fcntl(accepted_fd, F_SETFD, FD_CLOEXEC);
+#endif
 
     return TCPSocket::construct(accepted_fd);
 }

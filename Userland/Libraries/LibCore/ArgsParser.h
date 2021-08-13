@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Sergey Bugaev <bugaevc@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -42,6 +22,13 @@ public:
         No
     };
 
+    enum class FailureBehavior {
+        PrintUsageAndExit,
+        PrintUsage,
+        Exit,
+        Ignore,
+    };
+
     struct Option {
         bool requires_argument { true };
         const char* help_string { nullptr };
@@ -53,8 +40,8 @@ public:
         String name_for_display() const
         {
             if (long_name)
-                return String::format("--%s", long_name);
-            return String::format("-%c", short_name);
+                return String::formatted("--{}", long_name);
+            return String::formatted("-{:c}", short_name);
         }
     };
 
@@ -66,23 +53,30 @@ public:
         Function<bool(const char*)> accept_value;
     };
 
-    bool parse(int argc, char** argv, bool exit_on_failure = true);
+    bool parse(int argc, char* const* argv, FailureBehavior failure_behavior = FailureBehavior::PrintUsageAndExit);
     // *Without* trailing newline!
     void set_general_help(const char* help_string) { m_general_help = help_string; };
+    void set_stop_on_first_non_option(bool stop_on_first_non_option) { m_stop_on_first_non_option = stop_on_first_non_option; }
     void print_usage(FILE*, const char* argv0);
 
     void add_option(Option&&);
     void add_option(bool& value, const char* help_string, const char* long_name, char short_name);
     void add_option(const char*& value, const char* help_string, const char* long_name, char short_name, const char* value_name);
+    void add_option(String& value, const char* help_string, const char* long_name, char short_name, const char* value_name);
+    void add_option(StringView& value, char const* help_string, char const* long_name, char short_name, char const* value_name);
     void add_option(int& value, const char* help_string, const char* long_name, char short_name, const char* value_name);
+    void add_option(unsigned& value, const char* help_string, const char* long_name, char short_name, const char* value_name);
     void add_option(double& value, const char* help_string, const char* long_name, char short_name, const char* value_name);
 
     void add_positional_argument(Arg&&);
     void add_positional_argument(const char*& value, const char* help_string, const char* name, Required required = Required::Yes);
     void add_positional_argument(String& value, const char* help_string, const char* name, Required required = Required::Yes);
+    void add_positional_argument(StringView& value, char const* help_string, char const* name, Required required = Required::Yes);
     void add_positional_argument(int& value, const char* help_string, const char* name, Required required = Required::Yes);
+    void add_positional_argument(unsigned& value, const char* help_string, const char* name, Required required = Required::Yes);
     void add_positional_argument(double& value, const char* help_string, const char* name, Required required = Required::Yes);
     void add_positional_argument(Vector<const char*>& value, const char* help_string, const char* name, Required required = Required::Yes);
+    void add_positional_argument(Vector<String>& value, const char* help_string, const char* name, Required required = Required::Yes);
 
 private:
     Vector<Option> m_options;
@@ -90,6 +84,7 @@ private:
 
     bool m_show_help { false };
     const char* m_general_help { nullptr };
+    bool m_stop_on_first_non_option { false };
 };
 
 }

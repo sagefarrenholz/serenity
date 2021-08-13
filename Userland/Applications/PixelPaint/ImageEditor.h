@@ -1,32 +1,14 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
+#include "Guide.h"
 #include "Image.h"
+#include "Selection.h"
 #include <LibGUI/Frame.h>
 #include <LibGUI/UndoStack.h>
 #include <LibGfx/Point.h>
@@ -44,10 +26,8 @@ class ImageEditor final
 public:
     virtual ~ImageEditor() override;
 
-    const Image* image() const { return m_image; }
-    Image* image() { return m_image; }
-
-    void set_image(RefPtr<Image>);
+    Image const& image() const { return m_image; }
+    Image& image() { return m_image; }
 
     Layer* active_layer() { return m_active_layer; }
     void set_active_layer(Layer*);
@@ -59,9 +39,20 @@ public:
     bool undo();
     bool redo();
 
+    void add_guide(NonnullRefPtr<Guide> guide) { m_guides.append(guide); }
+    void remove_guide(Guide const& guide)
+    {
+        m_guides.remove_first_matching([&](auto& entry) { return &guide == entry.ptr(); });
+    }
+
     void layers_did_change();
 
-    Layer* layer_at_editor_position(const Gfx::IntPoint&);
+    Layer* layer_at_editor_position(Gfx::IntPoint const&);
+
+    float scale() const { return m_scale; }
+    void scale_centered_on_position(Gfx::IntPoint const&, float);
+    void reset_scale_and_position();
+    void scale_by(float);
 
     Color primary_color() const { return m_primary_color; }
     void set_primary_color(Color);
@@ -69,7 +60,10 @@ public:
     Color secondary_color() const { return m_secondary_color; }
     void set_secondary_color(Color);
 
-    Color color_for(const GUI::MouseEvent&) const;
+    Selection& selection() { return m_selection; }
+    Selection const& selection() const { return m_selection; }
+
+    Color color_for(GUI::MouseEvent const&) const;
     Color color_for(GUI::MouseButton) const;
 
     Function<void(Color)> on_primary_color_change;
@@ -77,15 +71,24 @@ public:
 
     Function<void(Layer*)> on_active_layer_change;
 
-    Gfx::FloatRect layer_rect_to_editor_rect(const Layer&, const Gfx::IntRect&) const;
-    Gfx::FloatRect image_rect_to_editor_rect(const Gfx::IntRect&) const;
-    Gfx::FloatRect editor_rect_to_image_rect(const Gfx::IntRect&) const;
-    Gfx::FloatPoint layer_position_to_editor_position(const Layer&, const Gfx::IntPoint&) const;
-    Gfx::FloatPoint image_position_to_editor_position(const Gfx::IntPoint&) const;
-    Gfx::FloatPoint editor_position_to_image_position(const Gfx::IntPoint&) const;
+    Function<void(String const&)> on_image_title_change;
+
+    Function<void(Gfx::IntPoint const&)> on_image_mouse_position_change;
+
+    Function<void(void)> on_leave;
+
+    Gfx::FloatRect layer_rect_to_editor_rect(Layer const&, Gfx::IntRect const&) const;
+    Gfx::FloatRect image_rect_to_editor_rect(Gfx::IntRect const&) const;
+    Gfx::FloatRect editor_rect_to_image_rect(Gfx::IntRect const&) const;
+    Gfx::FloatPoint layer_position_to_editor_position(Layer const&, Gfx::IntPoint const&) const;
+    Gfx::FloatPoint image_position_to_editor_position(Gfx::IntPoint const&) const;
+    Gfx::FloatPoint editor_position_to_image_position(Gfx::IntPoint const&) const;
+
+    NonnullRefPtrVector<Guide> const& guides() const { return m_guides; }
+    void toggle_guide_visibility() { m_show_guides = !m_show_guides; }
 
 private:
-    ImageEditor();
+    explicit ImageEditor(NonnullRefPtr<Image>);
 
     virtual void paint_event(GUI::PaintEvent&) override;
     virtual void second_paint_event(GUI::PaintEvent&) override;
@@ -97,18 +100,25 @@ private:
     virtual void keyup_event(GUI::KeyEvent&) override;
     virtual void context_menu_event(GUI::ContextMenuEvent&) override;
     virtual void resize_event(GUI::ResizeEvent&) override;
+    virtual void enter_event(Core::Event&) override;
+    virtual void leave_event(Core::Event&) override;
 
-    virtual void image_did_change() override;
+    virtual void image_did_change(Gfx::IntRect const&) override;
     virtual void image_select_layer(Layer*) override;
+    virtual void image_did_change_title(String const&) override;
 
-    GUI::MouseEvent event_adjusted_for_layer(const GUI::MouseEvent&, const Layer&) const;
-    GUI::MouseEvent event_with_pan_and_scale_applied(const GUI::MouseEvent&) const;
+    GUI::MouseEvent event_adjusted_for_layer(GUI::MouseEvent const&, Layer const&) const;
+    GUI::MouseEvent event_with_pan_and_scale_applied(GUI::MouseEvent const&) const;
 
+    void clamped_scale(float);
     void relayout();
 
-    RefPtr<Image> m_image;
+    NonnullRefPtr<Image> m_image;
     RefPtr<Layer> m_active_layer;
     OwnPtr<GUI::UndoStack> m_undo_stack;
+
+    NonnullRefPtrVector<Guide> m_guides;
+    bool m_show_guides { true };
 
     Tool* m_active_tool { nullptr };
 
@@ -120,6 +130,10 @@ private:
     Gfx::FloatPoint m_pan_origin;
     Gfx::FloatPoint m_saved_pan_origin;
     Gfx::IntPoint m_click_position;
+
+    Gfx::StandardCursor m_active_cursor { Gfx::StandardCursor::None };
+
+    Selection m_selection;
 };
 
 }

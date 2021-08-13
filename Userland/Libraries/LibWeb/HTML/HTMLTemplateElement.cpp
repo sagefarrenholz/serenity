@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, The SerenityOS developers.
- * All rights reserved.
+ * Copyright (c) 2020, the SerenityOS developers.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibWeb/DOM/Document.h>
@@ -32,7 +12,7 @@ namespace Web::HTML {
 HTMLTemplateElement::HTMLTemplateElement(DOM::Document& document, QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
 {
-    m_content = adopt(*new DOM::DocumentFragment(appropriate_template_contents_owner_document(document)));
+    m_content = adopt_ref(*new DOM::DocumentFragment(appropriate_template_contents_owner_document(document)));
     m_content->set_host(*this);
 }
 
@@ -56,6 +36,30 @@ DOM::Document& HTMLTemplateElement::appropriate_template_contents_owner_document
     }
 
     return document;
+}
+
+// https://html.spec.whatwg.org/multipage/scripting.html#the-template-element:concept-node-adopt-ext
+void HTMLTemplateElement::adopted_from(DOM::Document&)
+{
+    // NOTE: It seems the spec has been changed since appropriate_template_contents_owner_document was written above.
+    //       That function is now part of document, which ends up returning associated_inert_template_document in the new version anyway.
+    appropriate_template_contents_owner_document(document()).adopt_node(content());
+}
+
+// https://html.spec.whatwg.org/multipage/scripting.html#the-template-element:concept-node-clone-ext
+void HTMLTemplateElement::cloned(Node& copy, bool clone_children)
+{
+    if (!clone_children)
+        return;
+
+    auto& template_clone = verify_cast<HTMLTemplateElement>(copy);
+
+    content()->for_each_child([&](auto& child) {
+        auto cloned_child = child.clone_node(&template_clone.content()->document(), true);
+
+        // FIXME: Should this use TreeNode::append_child instead?
+        template_clone.content()->append_child(cloned_child);
+    });
 }
 
 }

@@ -1,40 +1,21 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Arch/x86/InterruptDisabler.h>
 #include <Kernel/Process.h>
 #include <Kernel/TTY/TTY.h>
 
 namespace Kernel {
 
-KResultOr<pid_t> Process::sys$getsid(pid_t pid)
+KResultOr<FlatPtr> Process::sys$getsid(pid_t pid)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(proc);
     if (pid == 0)
         return sid().value();
-    ScopedSpinLock lock(g_processes_lock);
     auto process = Process::from_pid(pid);
     if (!process)
         return ESRCH;
@@ -43,8 +24,9 @@ KResultOr<pid_t> Process::sys$getsid(pid_t pid)
     return process->sid().value();
 }
 
-KResultOr<pid_t> Process::sys$setsid()
+KResultOr<FlatPtr> Process::sys$setsid()
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(proc);
     InterruptDisabler disabler;
     bool found_process_with_same_pgid_as_my_pid = false;
@@ -58,24 +40,25 @@ KResultOr<pid_t> Process::sys$setsid()
     m_pg = ProcessGroup::create(ProcessGroupID(pid().value()));
     m_tty = nullptr;
     ProtectedDataMutationScope scope { *this };
-    m_sid = pid().value();
+    m_protected_values.sid = pid().value();
     return sid().value();
 }
 
-KResultOr<pid_t> Process::sys$getpgid(pid_t pid)
+KResultOr<FlatPtr> Process::sys$getpgid(pid_t pid)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(proc);
     if (pid == 0)
         return pgid().value();
-    ScopedSpinLock lock(g_processes_lock); // FIXME: Use a ProcessHandle
     auto process = Process::from_pid(pid);
     if (!process)
         return ESRCH;
     return process->pgid().value();
 }
 
-KResultOr<pid_t> Process::sys$getpgrp()
+KResultOr<FlatPtr> Process::sys$getpgrp()
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(stdio);
     return pgid().value();
 }
@@ -83,7 +66,6 @@ KResultOr<pid_t> Process::sys$getpgrp()
 SessionID Process::get_sid_from_pgid(ProcessGroupID pgid)
 {
     // FIXME: This xor sys$setsid() uses the wrong locking mechanism.
-    ScopedSpinLock lock(g_processes_lock);
 
     SessionID sid { -1 };
     Process::for_each_in_pgrp(pgid, [&](auto& process) {
@@ -94,10 +76,10 @@ SessionID Process::get_sid_from_pgid(ProcessGroupID pgid)
     return sid;
 }
 
-KResultOr<int> Process::sys$setpgid(pid_t specified_pid, pid_t specified_pgid)
+KResultOr<FlatPtr> Process::sys$setpgid(pid_t specified_pid, pid_t specified_pgid)
 {
+    VERIFY_PROCESS_BIG_LOCK_ACQUIRED(this)
     REQUIRE_PROMISE(proc);
-    ScopedSpinLock lock(g_processes_lock); // FIXME: Use a ProcessHandle
     ProcessID pid = specified_pid ? ProcessID(specified_pid) : this->pid();
     if (specified_pgid < 0) {
         // The value of the pgid argument is less than 0, or is not a value supported by the implementation.
@@ -136,6 +118,9 @@ KResultOr<int> Process::sys$setpgid(pid_t specified_pid, pid_t specified_pgid)
     }
     // FIXME: There are more EPERM conditions to check for here..
     process->m_pg = ProcessGroup::find_or_create(new_pgid);
+    if (!process->m_pg) {
+        return ENOMEM;
+    }
     return 0;
 }
 

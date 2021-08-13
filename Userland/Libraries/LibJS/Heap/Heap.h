@@ -1,42 +1,25 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/HashTable.h>
+#include <AK/IntrusiveList.h>
 #include <AK/Noncopyable.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <LibCore/Forward.h>
 #include <LibJS/Forward.h>
-#include <LibJS/Heap/Allocator.h>
+#include <LibJS/Heap/BlockAllocator.h>
+#include <LibJS/Heap/Cell.h>
+#include <LibJS/Heap/CellAllocator.h>
 #include <LibJS/Heap/Handle.h>
-#include <LibJS/Runtime/Cell.h>
 #include <LibJS/Runtime/Object.h>
+#include <LibJS/Runtime/WeakContainer.h>
 
 namespace JS {
 
@@ -62,7 +45,7 @@ public:
         auto* memory = allocate_cell(sizeof(T));
         new (memory) T(forward<Args>(args)...);
         auto* cell = static_cast<T*>(memory);
-        constexpr bool is_object = IsBaseOf<Object, T>::value;
+        constexpr bool is_object = IsBaseOf<Object, T>;
         if constexpr (is_object)
             static_cast<Object*>(cell)->disable_transitions();
         cell->initialize(global_object);
@@ -89,8 +72,13 @@ public:
     void did_create_marked_value_list(Badge<MarkedValueList>, MarkedValueList&);
     void did_destroy_marked_value_list(Badge<MarkedValueList>, MarkedValueList&);
 
+    void did_create_weak_container(Badge<WeakContainer>, WeakContainer&);
+    void did_destroy_weak_container(Badge<WeakContainer>, WeakContainer&);
+
     void defer_gc(Badge<DeferGC>);
     void undefer_gc(Badge<DeferGC>);
+
+    BlockAllocator& block_allocator() { return m_block_allocator; }
 
 private:
     Cell* allocate_cell(size_t);
@@ -100,7 +88,7 @@ private:
     void mark_live_cells(const HashTable<Cell*>& live_cells);
     void sweep_dead_cells(bool print_report, const Core::ElapsedTimer&);
 
-    Allocator& allocator_for_size(size_t);
+    CellAllocator& allocator_for_size(size_t);
 
     template<typename Callback>
     void for_each_block(Callback callback)
@@ -112,16 +100,21 @@ private:
     }
 
     size_t m_max_allocations_between_gc { 10000 };
-    size_t m_allocations_since_last_gc { false };
+    size_t m_allocations_since_last_gc { 0 };
 
     bool m_should_collect_on_every_allocation { false };
 
     VM& m_vm;
 
-    Vector<NonnullOwnPtr<Allocator>> m_allocators;
-    HashTable<HandleImpl*> m_handles;
+    Vector<NonnullOwnPtr<CellAllocator>> m_allocators;
 
-    HashTable<MarkedValueList*> m_marked_value_lists;
+    HandleImpl::List m_handles;
+
+    MarkedValueList::List m_marked_value_lists;
+
+    WeakContainer::List m_weak_containers;
+
+    BlockAllocator m_block_allocator;
 
     size_t m_gc_deferrals { 0 };
     bool m_should_gc_when_deferral_ends { false };

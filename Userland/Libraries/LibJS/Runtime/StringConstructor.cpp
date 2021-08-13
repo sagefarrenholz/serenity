@@ -1,41 +1,24 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/StringBuilder.h>
+#include <AK/Utf16View.h>
 #include <AK/Utf32View.h>
+#include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/StringConstructor.h>
 #include <LibJS/Runtime/StringObject.h>
+#include <LibJS/Runtime/Utf16String.h>
 
 namespace JS {
 
 StringConstructor::StringConstructor(GlobalObject& global_object)
-    : NativeFunction(vm().names.String, *global_object.function_prototype())
+    : NativeFunction(vm().names.String.as_string(), *global_object.function_prototype())
 {
 }
 
@@ -43,18 +26,23 @@ void StringConstructor::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property(vm.names.prototype, global_object.string_prototype(), 0);
-    define_property(vm.names.length, Value(1), Attribute::Configurable);
+
+    // 22.1.2.3 String.prototype, https://tc39.es/ecma262/#sec-string.prototype
+    define_direct_property(vm.names.prototype, global_object.string_prototype(), 0);
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
     define_native_function(vm.names.raw, raw, 1, attr);
     define_native_function(vm.names.fromCharCode, from_char_code, 1, attr);
+    define_native_function(vm.names.fromCodePoint, from_code_point, 1, attr);
+
+    define_direct_property(vm.names.length, Value(1), Attribute::Configurable);
 }
 
 StringConstructor::~StringConstructor()
 {
 }
 
+// 22.1.1.1 String ( value ), https://tc39.es/ecma262/#sec-string-constructor-string-value
 Value StringConstructor::call()
 {
     if (!vm().argument_count())
@@ -67,69 +55,114 @@ Value StringConstructor::call()
     return string;
 }
 
-Value StringConstructor::construct(Function&)
+// 22.1.1.1 String ( value ), https://tc39.es/ecma262/#sec-string-constructor-string-value
+Value StringConstructor::construct(FunctionObject& new_target)
 {
-    PrimitiveString* primitive_string = nullptr;
-    if (!vm().argument_count())
-        primitive_string = js_string(vm(), "");
+    auto& vm = global_object().vm();
+
+    PrimitiveString* primitive_string;
+    if (!vm.argument_count())
+        primitive_string = js_string(vm, "");
     else
-        primitive_string = vm().argument(0).to_primitive_string(global_object());
+        primitive_string = vm.argument(0).to_primitive_string(global_object());
     if (!primitive_string)
         return {};
-    return StringObject::create(global_object(), *primitive_string);
+    auto* prototype = get_prototype_from_constructor(global_object(), new_target, &GlobalObject::string_prototype);
+    if (vm.exception())
+        return {};
+    return StringObject::create(global_object(), *primitive_string, *prototype);
 }
 
+// 22.1.2.4 String.raw ( template, ...substitutions ), https://tc39.es/ecma262/#sec-string.raw
 JS_DEFINE_NATIVE_FUNCTION(StringConstructor::raw)
 {
-    auto* template_object = vm.argument(0).to_object(global_object);
+    auto* cooked = vm.argument(0).to_object(global_object);
     if (vm.exception())
         return {};
 
-    auto raw = template_object->get(vm.names.raw);
+    auto raw_value = cooked->get(vm.names.raw);
     if (vm.exception())
         return {};
-    if (raw.is_empty() || raw.is_nullish()) {
-        vm.throw_exception<TypeError>(global_object, ErrorType::StringRawCannotConvert, raw.is_null() ? "null" : "undefined");
+
+    auto* raw = raw_value.to_object(global_object);
+    if (vm.exception())
         return {};
-    }
-    if (!raw.is_array())
+
+    auto literal_segments = length_of_array_like(global_object, *raw);
+    if (vm.exception())
+        return {};
+
+    if (literal_segments == 0)
         return js_string(vm, "");
 
-    auto* array = static_cast<Array*>(raw.to_object(global_object));
-    auto& raw_array_elements = array->indexed_properties();
-    StringBuilder builder;
+    const auto number_of_substituions = vm.argument_count() - 1;
 
-    for (size_t i = 0; i < raw_array_elements.array_like_size(); ++i) {
-        auto result = raw_array_elements.get(array, i);
+    StringBuilder builder;
+    for (size_t i = 0; i < literal_segments; ++i) {
+        auto next_key = String::number(i);
+        auto next_segment_value = raw->get(next_key);
         if (vm.exception())
             return {};
-        if (!result.has_value())
-            continue;
-        builder.append(result.value().value.to_string(global_object));
+        auto next_segment = next_segment_value.to_string(global_object);
         if (vm.exception())
             return {};
-        if (i + 1 < vm.argument_count() && i < raw_array_elements.array_like_size() - 1) {
-            builder.append(vm.argument(i + 1).to_string(global_object));
+
+        builder.append(next_segment);
+
+        if (i + 1 == literal_segments)
+            break;
+
+        if (i < number_of_substituions) {
+            auto next = vm.argument(i + 1);
+            auto next_sub = next.to_string(global_object);
             if (vm.exception())
                 return {};
+            builder.append(next_sub);
         }
     }
-
     return js_string(vm, builder.build());
 }
 
+// 22.1.2.1 String.fromCharCode ( ...codeUnits ), https://tc39.es/ecma262/#sec-string.fromcharcode
 JS_DEFINE_NATIVE_FUNCTION(StringConstructor::from_char_code)
 {
-    StringBuilder builder;
+    Vector<u16> string;
+    string.ensure_capacity(vm.argument_count());
+
     for (size_t i = 0; i < vm.argument_count(); ++i) {
-        auto char_code = vm.argument(i).to_i32(global_object);
+        auto code_unit = vm.argument(i).to_u16(global_object);
         if (vm.exception())
             return {};
-        auto truncated = char_code & 0xffff;
-        // FIXME: We need an Utf16View :^)
-        builder.append(Utf32View((u32*)&truncated, 1));
+        string.append(code_unit);
     }
-    return js_string(vm, builder.build());
+
+    return js_string(vm, Utf16String(move(string)));
+}
+
+// 22.1.2.2 String.fromCodePoint ( ...codePoints ), https://tc39.es/ecma262/#sec-string.fromcodepoint
+JS_DEFINE_NATIVE_FUNCTION(StringConstructor::from_code_point)
+{
+    Vector<u16> string;
+    string.ensure_capacity(vm.argument_count()); // This will be an under-estimate if any code point is > 0xffff.
+
+    for (size_t i = 0; i < vm.argument_count(); ++i) {
+        auto next_code_point = vm.argument(i).to_number(global_object);
+        if (vm.exception())
+            return {};
+        if (!next_code_point.is_integral_number()) {
+            vm.throw_exception<RangeError>(global_object, ErrorType::InvalidCodePoint, next_code_point.to_string_without_side_effects());
+            return {};
+        }
+        auto code_point = next_code_point.to_i32(global_object);
+        if (code_point < 0 || code_point > 0x10FFFF) {
+            vm.throw_exception<RangeError>(global_object, ErrorType::InvalidCodePoint, next_code_point.to_string_without_side_effects());
+            return {};
+        }
+
+        AK::code_point_to_utf16(string, static_cast<u32>(code_point));
+    }
+
+    return js_string(vm, Utf16String(move(string)));
 }
 
 }

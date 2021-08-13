@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibVT/Line.h>
@@ -37,23 +17,113 @@ Line::~Line()
 {
 }
 
-void Line::set_length(size_t new_length)
+void Line::rewrap(size_t new_length, Line* next_line, CursorPosition* cursor, bool cursor_is_on_next_line)
 {
     size_t old_length = length();
     if (old_length == new_length)
         return;
+
+    // Drop the empty cells
+    if (m_terminated_at.has_value() && m_cells.size() > m_terminated_at.value())
+        m_cells.remove(m_terminated_at.value(), m_cells.size() - m_terminated_at.value());
+
+    if (!next_line)
+        return m_cells.resize(new_length);
+
+    if (old_length < new_length)
+        take_cells_from_next_line(new_length, next_line, cursor_is_on_next_line, cursor);
+    else
+        push_cells_into_next_line(new_length, next_line, cursor_is_on_next_line, cursor);
+}
+
+void Line::set_length(size_t new_length)
+{
     m_cells.resize(new_length);
 }
 
-void Line::clear(const Attribute& attribute)
+void Line::push_cells_into_next_line(size_t new_length, Line* next_line, bool cursor_is_on_next_line, CursorPosition* cursor)
 {
-    if (m_dirty) {
-        for (auto& cell : m_cells) {
-            cell = Cell { .code_point = ' ', .attribute = attribute };
-        }
+    if (is_empty())
         return;
+
+    if (length() <= new_length)
+        return;
+
+    // Push as many cells as _wouldn't_ fit into the next line.
+    auto cells_to_preserve = !next_line->m_terminated_at.has_value() && next_line->is_empty() ? 0 : m_terminated_at.value_or(0);
+    auto preserved_cells = max(new_length, cells_to_preserve);
+    auto cells_to_push_into_next_line = length() - preserved_cells;
+    if (!cells_to_push_into_next_line)
+        return;
+
+    if (next_line->m_terminated_at.has_value())
+        next_line->m_terminated_at = next_line->m_terminated_at.value() + cells_to_push_into_next_line;
+
+    if (m_terminated_at.has_value() && cells_to_preserve == 0) {
+        m_terminated_at.clear();
+        if (!next_line->m_terminated_at.has_value())
+            next_line->m_terminated_at = cells_to_push_into_next_line;
     }
-    for (auto& cell : m_cells) {
+
+    if (cursor) {
+        if (cursor_is_on_next_line) {
+            cursor->column += cells_to_push_into_next_line;
+        } else if (cursor->column >= preserved_cells) {
+            cursor->row++;
+            cursor->column = cursor->column - preserved_cells;
+        }
+    }
+
+    next_line->m_cells.prepend(m_cells.span().slice_from_end(cells_to_push_into_next_line).data(), cells_to_push_into_next_line);
+    m_cells.remove(m_cells.size() - cells_to_push_into_next_line, cells_to_push_into_next_line);
+    if (m_terminated_at.has_value())
+        m_terminated_at = m_terminated_at.value() - cells_to_push_into_next_line;
+}
+
+void Line::take_cells_from_next_line(size_t new_length, Line* next_line, bool cursor_is_on_next_line, CursorPosition* cursor)
+{
+    // Take as many cells as would fit from the next line
+    if (m_terminated_at.has_value())
+        return;
+
+    if (length() >= new_length)
+        return;
+
+    auto cells_to_grab_from_next_line = min(new_length - length(), next_line->length());
+    auto clear_next_line = false;
+    if (next_line->m_terminated_at.has_value()) {
+        if (cells_to_grab_from_next_line == *next_line->m_terminated_at) {
+            m_terminated_at = length() + *next_line->m_terminated_at;
+            next_line->m_terminated_at.clear();
+            clear_next_line = true;
+        } else {
+            next_line->m_terminated_at = next_line->m_terminated_at.value() - cells_to_grab_from_next_line;
+        }
+    }
+
+    if (cells_to_grab_from_next_line) {
+        if (cursor && cursor_is_on_next_line) {
+            if (cursor->column <= cells_to_grab_from_next_line) {
+                cursor->row--;
+                cursor->column += m_cells.size();
+            } else {
+                cursor->column -= cells_to_grab_from_next_line;
+            }
+        }
+        m_cells.append(next_line->m_cells.data(), cells_to_grab_from_next_line);
+        next_line->m_cells.remove(0, cells_to_grab_from_next_line);
+    }
+
+    if (clear_next_line)
+        next_line->m_cells.clear();
+}
+
+void Line::clear_range(size_t first_column, size_t last_column, const Attribute& attribute)
+{
+    VERIFY(first_column <= last_column);
+    VERIFY(last_column < m_cells.size());
+    for (size_t i = first_column; i <= last_column; ++i) {
+        auto& cell = m_cells[i];
         if (!m_dirty)
             m_dirty = cell.code_point != ' ' || cell.attribute != attribute;
         cell = Cell { .code_point = ' ', .attribute = attribute };

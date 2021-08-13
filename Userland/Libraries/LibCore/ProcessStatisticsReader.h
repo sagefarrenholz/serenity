@@ -1,32 +1,11 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2018-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <AK/HashMap.h>
 #include <AK/String.h>
 #include <LibCore/File.h>
 #include <unistd.h>
@@ -36,8 +15,8 @@ namespace Core {
 struct ThreadStatistics {
     pid_t tid;
     unsigned times_scheduled;
-    unsigned ticks_user;
-    unsigned ticks_kernel;
+    u64 time_user;
+    u64 time_kernel;
     unsigned syscall_count;
     unsigned inode_faults;
     unsigned zero_faults;
@@ -65,6 +44,7 @@ struct ProcessStatistics {
     gid_t gid;
     pid_t ppid;
     unsigned nfds;
+    bool kernel;
     String name;
     String executable;
     String tty;
@@ -84,10 +64,16 @@ struct ProcessStatistics {
     String username;
 };
 
+struct AllProcessesStatistics {
+    Vector<ProcessStatistics> processes;
+    u64 total_time_scheduled;
+    u64 total_time_scheduled_kernel;
+};
+
 class ProcessStatisticsReader {
 public:
-    static Optional<HashMap<pid_t, Core::ProcessStatistics>> get_all(RefPtr<Core::File>&);
-    static Optional<HashMap<pid_t, Core::ProcessStatistics>> get_all();
+    static Optional<AllProcessesStatistics> get_all(RefPtr<Core::File>&);
+    static Optional<AllProcessesStatistics> get_all();
 
 private:
     static String username_from_uid(uid_t);

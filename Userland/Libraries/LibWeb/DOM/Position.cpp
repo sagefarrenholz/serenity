@@ -1,31 +1,14 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, Max Wipfli <mail@maxwipfli.ch>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Utf8View.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/Position.h>
+#include <LibWeb/DOM/Text.h>
 
 namespace Web::DOM {
 
@@ -44,6 +27,58 @@ String Position::to_string() const
     if (!node())
         return String::formatted("DOM::Position(nullptr, {})", offset());
     return String::formatted("DOM::Position({} ({})), {})", node()->node_name(), node(), offset());
+}
+
+bool Position::increment_offset()
+{
+    if (!is<DOM::Text>(*m_node))
+        return false;
+
+    auto& node = verify_cast<DOM::Text>(*m_node);
+    auto text = Utf8View(node.data());
+
+    for (auto iterator = text.begin(); !iterator.done(); ++iterator) {
+        if (text.byte_offset_of(iterator) >= m_offset) {
+            // NOTE: If the current offset is inside a multi-byte code point, it will be moved to the start of the next code point.
+            m_offset = text.byte_offset_of(++iterator);
+            return true;
+        }
+    }
+    // NOTE: Already at end of current node.
+    return false;
+}
+
+bool Position::decrement_offset()
+{
+    if (m_offset == 0 || !is<DOM::Text>(*m_node))
+        return false;
+
+    auto& node = verify_cast<DOM::Text>(*m_node);
+    auto text = Utf8View(node.data());
+
+    size_t last_smaller_offset = 0;
+
+    for (auto iterator = text.begin(); !iterator.done(); ++iterator) {
+        auto byte_offset = text.byte_offset_of(iterator);
+        if (byte_offset >= m_offset) {
+            break;
+        }
+        last_smaller_offset = text.byte_offset_of(iterator);
+    }
+
+    // NOTE: If the current offset is inside a multi-byte code point, it will be moved to the start of that code point.
+    m_offset = last_smaller_offset;
+    return true;
+}
+
+bool Position::offset_is_at_end_of_node() const
+{
+    if (!is<DOM::Text>(*m_node))
+        return false;
+
+    auto& node = verify_cast<DOM::Text>(*m_node);
+    auto text = node.data();
+    return m_offset == text.length();
 }
 
 }

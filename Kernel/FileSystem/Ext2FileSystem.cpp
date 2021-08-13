@@ -1,27 +1,8 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/HashMap.h>
@@ -39,14 +20,14 @@
 
 namespace Kernel {
 
-static const size_t max_link_count = 65535;
-static const size_t max_block_size = 4096;
-static const ssize_t max_inline_symlink_length = 60;
+static constexpr size_t max_block_size = 4096;
+static constexpr size_t max_inline_symlink_length = 60;
 
 struct Ext2FSDirectoryEntry {
     String name;
     InodeIndex inode_index { 0 };
     u8 file_type { 0 };
+    u16 record_length { 0 };
 };
 
 static u8 to_ext2_file_type(mode_t mode)
@@ -75,11 +56,11 @@ static unsigned divide_rounded_up(unsigned a, unsigned b)
 
 NonnullRefPtr<Ext2FS> Ext2FS::create(FileDescription& file_description)
 {
-    return adopt(*new Ext2FS(file_description));
+    return adopt_ref(*new Ext2FS(file_description));
 }
 
 Ext2FS::Ext2FS(FileDescription& file_description)
-    : BlockBasedFS(file_description)
+    : BlockBasedFileSystem(file_description)
 {
 }
 
@@ -89,7 +70,7 @@ Ext2FS::~Ext2FS()
 
 bool Ext2FS::flush_super_block()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     VERIFY((sizeof(ext2_super_block) % logical_block_size()) == 0);
     auto super_block_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&m_super_block);
     bool success = raw_write_blocks(2, (sizeof(ext2_super_block) / logical_block_size()), super_block_buffer);
@@ -107,7 +88,8 @@ const ext2_group_desc& Ext2FS::group_descriptor(GroupIndex group_index) const
 
 bool Ext2FS::initialize()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
+
     VERIFY((sizeof(ext2_super_block) % logical_block_size()) == 0);
     auto super_block_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&m_super_block);
     bool success = raw_read_blocks(2, (sizeof(ext2_super_block) / logical_block_size()), super_block_buffer);
@@ -132,6 +114,12 @@ bool Ext2FS::initialize()
     }
 
     set_block_size(EXT2_BLOCK_SIZE(&super_block));
+    set_fragment_size(EXT2_FRAG_SIZE(&super_block));
+
+    // Note: This depends on the block size being available.
+    auto baseclass_result = BlockBasedFileSystem::initialize();
+    if (!baseclass_result)
+        return baseclass_result;
 
     VERIFY(block_size() <= (int)max_block_size);
 
@@ -142,16 +130,15 @@ bool Ext2FS::initialize()
         return false;
     }
 
-    unsigned blocks_to_read = ceil_div(m_block_group_count * sizeof(ext2_group_desc), block_size());
+    auto blocks_to_read = ceil_div(m_block_group_count * sizeof(ext2_group_desc), block_size());
     BlockIndex first_block_of_bgdt = block_size() == 1024 ? 2 : 1;
-    m_cached_group_descriptor_table = KBuffer::try_create_with_size(block_size() * blocks_to_read, Region::Access::Read | Region::Access::Write, "Ext2FS: Block group descriptors");
+    m_cached_group_descriptor_table = KBuffer::try_create_with_size(block_size() * blocks_to_read, Memory::Region::Access::ReadWrite, "Ext2FS: Block group descriptors");
     if (!m_cached_group_descriptor_table) {
         dbgln("Ext2FS: Failed to allocate memory for group descriptor table");
         return false;
     }
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(m_cached_group_descriptor_table->data());
-    auto result = read_blocks(first_block_of_bgdt, blocks_to_read, buffer);
-    if (result.is_error()) {
+    if (auto result = read_blocks(first_block_of_bgdt, blocks_to_read, buffer); result.is_error()) {
         // FIXME: Propagate the error
         dbgln("Ext2FS: initialize had error: {}", result.error());
         return false;
@@ -164,17 +151,18 @@ bool Ext2FS::initialize()
         }
     }
 
+    m_root_inode = static_ptr_cast<Ext2FSInode>(get_inode({ fsid(), EXT2_ROOT_INO }));
+    if (!m_root_inode) {
+        dbgln("Ext2FS: failed to acquire root inode");
+        return false;
+    }
+
     return true;
 }
 
-const char* Ext2FS::class_name() const
+Ext2FSInode& Ext2FS::root_inode()
 {
-    return "Ext2FS";
-}
-
-NonnullRefPtr<Inode> Ext2FS::root_inode() const
-{
-    return *get_inode({ fsid(), EXT2_ROOT_INO });
+    return *m_root_inode;
 }
 
 bool Ext2FS::find_block_containing_inode(InodeIndex inode, BlockIndex& block_index, unsigned& offset) const
@@ -189,9 +177,9 @@ bool Ext2FS::find_block_containing_inode(InodeIndex inode, BlockIndex& block_ind
 
     auto& bgd = group_descriptor(group_index_from_inode(inode));
 
-    offset = ((inode.value() - 1) % inodes_per_group()) * inode_size();
-    block_index = bgd.bg_inode_table + (offset >> EXT2_BLOCK_SIZE_BITS(&super_block));
-    offset &= block_size() - 1;
+    u64 full_offset = ((inode.value() - 1) % inodes_per_group()) * inode_size();
+    block_index = bgd.bg_inode_table + (full_offset >> EXT2_BLOCK_SIZE_BITS(&super_block));
+    offset = full_offset & (block_size() - 1);
 
     return true;
 }
@@ -229,32 +217,32 @@ Ext2FS::BlockListShape Ext2FS::compute_block_list_shape(unsigned blocks) const
     return shape;
 }
 
-KResult Ext2FSInode::write_indirect_block(BlockBasedFS::BlockIndex block, Span<BlockBasedFS::BlockIndex> blocks_indexes)
+KResult Ext2FSInode::write_indirect_block(BlockBasedFileSystem::BlockIndex block, Span<BlockBasedFileSystem::BlockIndex> blocks_indices)
 {
     const auto entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
-    VERIFY(blocks_indexes.size() <= entries_per_block);
+    VERIFY(blocks_indices.size() <= entries_per_block);
 
     auto block_contents = ByteBuffer::create_uninitialized(fs().block_size());
     OutputMemoryStream stream { block_contents };
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(stream.data());
 
-    VERIFY(blocks_indexes.size() <= EXT2_ADDR_PER_BLOCK(&fs().super_block()));
-    for (unsigned i = 0; i < blocks_indexes.size(); ++i)
-        stream << static_cast<u32>(blocks_indexes[i].value());
+    VERIFY(blocks_indices.size() <= EXT2_ADDR_PER_BLOCK(&fs().super_block()));
+    for (unsigned i = 0; i < blocks_indices.size(); ++i)
+        stream << static_cast<u32>(blocks_indices[i].value());
     stream.fill_to_end(0);
 
     return fs().write_block(block, buffer, stream.size());
 }
 
-KResult Ext2FSInode::grow_doubly_indirect_block(BlockBasedFS::BlockIndex block, size_t old_blocks_length, Span<BlockBasedFS::BlockIndex> blocks_indexes, Vector<Ext2FS::BlockIndex>& new_meta_blocks, unsigned& meta_blocks)
+KResult Ext2FSInode::grow_doubly_indirect_block(BlockBasedFileSystem::BlockIndex block, size_t old_blocks_length, Span<BlockBasedFileSystem::BlockIndex> blocks_indices, Vector<Ext2FS::BlockIndex>& new_meta_blocks, unsigned& meta_blocks)
 {
     const auto entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
     const auto entries_per_doubly_indirect_block = entries_per_block * entries_per_block;
     const auto old_indirect_blocks_length = divide_rounded_up(old_blocks_length, entries_per_block);
-    const auto new_indirect_blocks_length = divide_rounded_up(blocks_indexes.size(), entries_per_block);
-    VERIFY(blocks_indexes.size() > 0);
-    VERIFY(blocks_indexes.size() > old_blocks_length);
-    VERIFY(blocks_indexes.size() <= entries_per_doubly_indirect_block);
+    const auto new_indirect_blocks_length = divide_rounded_up(blocks_indices.size(), entries_per_block);
+    VERIFY(blocks_indices.size() > 0);
+    VERIFY(blocks_indices.size() > old_blocks_length);
+    VERIFY(blocks_indices.size() <= entries_per_doubly_indirect_block);
 
     auto block_contents = ByteBuffer::create_uninitialized(fs().block_size());
     auto* block_as_pointers = (unsigned*)block_contents.data();
@@ -262,8 +250,7 @@ KResult Ext2FSInode::grow_doubly_indirect_block(BlockBasedFS::BlockIndex block, 
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(stream.data());
 
     if (old_blocks_length > 0) {
-        auto result = fs().read_block(block, &buffer, fs().block_size());
-        if (result.is_error())
+        if (auto result = fs().read_block(block, &buffer, fs().block_size()); result.is_error())
             return result;
     }
 
@@ -281,8 +268,7 @@ KResult Ext2FSInode::grow_doubly_indirect_block(BlockBasedFS::BlockIndex block, 
     // Write out the indirect blocks.
     for (unsigned i = old_blocks_length / entries_per_block; i < new_indirect_blocks_length; i++) {
         const auto offset_block = i * entries_per_block;
-        auto result = write_indirect_block(block_as_pointers[i], blocks_indexes.slice(offset_block, min(blocks_indexes.size() - offset_block, entries_per_block)));
-        if (result.is_error())
+        if (auto result = write_indirect_block(block_as_pointers[i], blocks_indices.slice(offset_block, min(blocks_indices.size() - offset_block, entries_per_block))); result.is_error())
             return result;
     }
 
@@ -290,7 +276,7 @@ KResult Ext2FSInode::grow_doubly_indirect_block(BlockBasedFS::BlockIndex block, 
     return fs().write_block(block, buffer, stream.size());
 }
 
-KResult Ext2FSInode::shrink_doubly_indirect_block(BlockBasedFS::BlockIndex block, size_t old_blocks_length, size_t new_blocks_length, unsigned& meta_blocks)
+KResult Ext2FSInode::shrink_doubly_indirect_block(BlockBasedFileSystem::BlockIndex block, size_t old_blocks_length, size_t new_blocks_length, unsigned& meta_blocks)
 {
     const auto entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
     const auto entries_per_doubly_indirect_block = entries_per_block * entries_per_block;
@@ -303,15 +289,13 @@ KResult Ext2FSInode::shrink_doubly_indirect_block(BlockBasedFS::BlockIndex block
     auto block_contents = ByteBuffer::create_uninitialized(fs().block_size());
     auto* block_as_pointers = (unsigned*)block_contents.data();
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(reinterpret_cast<u8*>(block_as_pointers));
-    auto result = fs().read_block(block, &buffer, fs().block_size());
-    if (result.is_error())
+    if (auto result = fs().read_block(block, &buffer, fs().block_size()); result.is_error())
         return result;
 
     // Free the unused indirect blocks.
     for (unsigned i = new_indirect_blocks_length; i < old_indirect_blocks_length; i++) {
         dbgln_if(EXT2_BLOCKLIST_DEBUG, "Ext2FSInode[{}]::shrink_doubly_indirect_block(): Freeing indirect block {} at index {}", identifier(), block_as_pointers[i], i);
-        auto result = fs().set_block_allocation_state(block_as_pointers[i], false);
-        if (result.is_error())
+        if (auto result = fs().set_block_allocation_state(block_as_pointers[i], false); result.is_error())
             return result;
         meta_blocks--;
     }
@@ -319,8 +303,7 @@ KResult Ext2FSInode::shrink_doubly_indirect_block(BlockBasedFS::BlockIndex block
     // Free the doubly indirect block if no longer needed.
     if (new_blocks_length == 0) {
         dbgln_if(EXT2_BLOCKLIST_DEBUG, "Ext2FSInode[{}]::shrink_doubly_indirect_block(): Freeing doubly indirect block {}", identifier(), block);
-        auto result = fs().set_block_allocation_state(block, false);
-        if (result.is_error())
+        if (auto result = fs().set_block_allocation_state(block, false); result.is_error())
             return result;
         meta_blocks--;
     }
@@ -328,16 +311,16 @@ KResult Ext2FSInode::shrink_doubly_indirect_block(BlockBasedFS::BlockIndex block
     return KSuccess;
 }
 
-KResult Ext2FSInode::grow_triply_indirect_block(BlockBasedFS::BlockIndex block, size_t old_blocks_length, Span<BlockBasedFS::BlockIndex> blocks_indexes, Vector<Ext2FS::BlockIndex>& new_meta_blocks, unsigned& meta_blocks)
+KResult Ext2FSInode::grow_triply_indirect_block(BlockBasedFileSystem::BlockIndex block, size_t old_blocks_length, Span<BlockBasedFileSystem::BlockIndex> blocks_indices, Vector<Ext2FS::BlockIndex>& new_meta_blocks, unsigned& meta_blocks)
 {
     const auto entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
     const auto entries_per_doubly_indirect_block = entries_per_block * entries_per_block;
     const auto entries_per_triply_indirect_block = entries_per_block * entries_per_block;
     const auto old_doubly_indirect_blocks_length = divide_rounded_up(old_blocks_length, entries_per_doubly_indirect_block);
-    const auto new_doubly_indirect_blocks_length = divide_rounded_up(blocks_indexes.size(), entries_per_doubly_indirect_block);
-    VERIFY(blocks_indexes.size() > 0);
-    VERIFY(blocks_indexes.size() > old_blocks_length);
-    VERIFY(blocks_indexes.size() <= entries_per_triply_indirect_block);
+    const auto new_doubly_indirect_blocks_length = divide_rounded_up(blocks_indices.size(), entries_per_doubly_indirect_block);
+    VERIFY(blocks_indices.size() > 0);
+    VERIFY(blocks_indices.size() > old_blocks_length);
+    VERIFY(blocks_indices.size() <= entries_per_triply_indirect_block);
 
     auto block_contents = ByteBuffer::create_uninitialized(fs().block_size());
     auto* block_as_pointers = (unsigned*)block_contents.data();
@@ -345,8 +328,7 @@ KResult Ext2FSInode::grow_triply_indirect_block(BlockBasedFS::BlockIndex block, 
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(stream.data());
 
     if (old_blocks_length > 0) {
-        auto result = fs().read_block(block, &buffer, fs().block_size());
-        if (result.is_error())
+        if (auto result = fs().read_block(block, &buffer, fs().block_size()); result.is_error())
             return result;
     }
 
@@ -365,9 +347,8 @@ KResult Ext2FSInode::grow_triply_indirect_block(BlockBasedFS::BlockIndex block, 
     for (unsigned i = old_blocks_length / entries_per_doubly_indirect_block; i < new_doubly_indirect_blocks_length; i++) {
         const auto processed_blocks = i * entries_per_doubly_indirect_block;
         const auto old_doubly_indirect_blocks_length = min(old_blocks_length > processed_blocks ? old_blocks_length - processed_blocks : 0, entries_per_doubly_indirect_block);
-        const auto new_doubly_indirect_blocks_length = min(blocks_indexes.size() > processed_blocks ? blocks_indexes.size() - processed_blocks : 0, entries_per_doubly_indirect_block);
-        auto result = grow_doubly_indirect_block(block_as_pointers[i], old_doubly_indirect_blocks_length, blocks_indexes.slice(processed_blocks, new_doubly_indirect_blocks_length), new_meta_blocks, meta_blocks);
-        if (result.is_error())
+        const auto new_doubly_indirect_blocks_length = min(blocks_indices.size() > processed_blocks ? blocks_indices.size() - processed_blocks : 0, entries_per_doubly_indirect_block);
+        if (auto result = grow_doubly_indirect_block(block_as_pointers[i], old_doubly_indirect_blocks_length, blocks_indices.slice(processed_blocks, new_doubly_indirect_blocks_length), new_meta_blocks, meta_blocks); result.is_error())
             return result;
     }
 
@@ -375,7 +356,7 @@ KResult Ext2FSInode::grow_triply_indirect_block(BlockBasedFS::BlockIndex block, 
     return fs().write_block(block, buffer, stream.size());
 }
 
-KResult Ext2FSInode::shrink_triply_indirect_block(BlockBasedFS::BlockIndex block, size_t old_blocks_length, size_t new_blocks_length, unsigned& meta_blocks)
+KResult Ext2FSInode::shrink_triply_indirect_block(BlockBasedFileSystem::BlockIndex block, size_t old_blocks_length, size_t new_blocks_length, unsigned& meta_blocks)
 {
     const auto entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
     const auto entries_per_doubly_indirect_block = entries_per_block * entries_per_block;
@@ -389,8 +370,7 @@ KResult Ext2FSInode::shrink_triply_indirect_block(BlockBasedFS::BlockIndex block
     auto block_contents = ByteBuffer::create_uninitialized(fs().block_size());
     auto* block_as_pointers = (unsigned*)block_contents.data();
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(reinterpret_cast<u8*>(block_as_pointers));
-    auto result = fs().read_block(block, &buffer, fs().block_size());
-    if (result.is_error())
+    if (auto result = fs().read_block(block, &buffer, fs().block_size()); result.is_error())
         return result;
 
     // Shrink the doubly indirect blocks.
@@ -399,16 +379,14 @@ KResult Ext2FSInode::shrink_triply_indirect_block(BlockBasedFS::BlockIndex block
         const auto old_doubly_indirect_blocks_length = min(old_blocks_length > processed_blocks ? old_blocks_length - processed_blocks : 0, entries_per_doubly_indirect_block);
         const auto new_doubly_indirect_blocks_length = min(new_blocks_length > processed_blocks ? new_blocks_length - processed_blocks : 0, entries_per_doubly_indirect_block);
         dbgln_if(EXT2_BLOCKLIST_DEBUG, "Ext2FSInode[{}]::shrink_triply_indirect_block(): Shrinking doubly indirect block {} at index {}", identifier(), block_as_pointers[i], i);
-        auto result = shrink_doubly_indirect_block(block_as_pointers[i], old_doubly_indirect_blocks_length, new_doubly_indirect_blocks_length, meta_blocks);
-        if (result.is_error())
+        if (auto result = shrink_doubly_indirect_block(block_as_pointers[i], old_doubly_indirect_blocks_length, new_doubly_indirect_blocks_length, meta_blocks); result.is_error())
             return result;
     }
 
     // Free the triply indirect block if no longer needed.
     if (new_blocks_length == 0) {
         dbgln_if(EXT2_BLOCKLIST_DEBUG, "Ext2FSInode[{}]::shrink_triply_indirect_block(): Freeing triply indirect block {}", identifier(), block);
-        auto result = fs().set_block_allocation_state(block, false);
-        if (result.is_error())
+        if (auto result = fs().set_block_allocation_state(block, false); result.is_error())
             return result;
         meta_blocks--;
     }
@@ -418,7 +396,7 @@ KResult Ext2FSInode::shrink_triply_indirect_block(BlockBasedFS::BlockIndex block
 
 KResult Ext2FSInode::flush_block_list()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
 
     if (m_block_list.is_empty()) {
         m_raw_inode.i_blocks = 0;
@@ -451,11 +429,20 @@ KResult Ext2FSInode::flush_block_list()
     bool inode_dirty = false;
     VERIFY(new_shape.direct_blocks <= EXT2_NDIR_BLOCKS);
     for (unsigned i = 0; i < new_shape.direct_blocks; ++i) {
-        if (BlockBasedFS::BlockIndex(m_raw_inode.i_block[i]) != m_block_list[output_block_index])
+        if (BlockBasedFileSystem::BlockIndex(m_raw_inode.i_block[i]) != m_block_list[output_block_index])
             inode_dirty = true;
         m_raw_inode.i_block[i] = m_block_list[output_block_index].value();
         ++output_block_index;
         --remaining_blocks;
+    }
+    // e2fsck considers all blocks reachable through any of the pointers in
+    // m_raw_inode.i_block as part of this inode regardless of the value in
+    // m_raw_inode.i_size. When it finds more blocks than the amount that
+    // is indicated by i_size or i_blocks it offers to repair the filesystem
+    // by changing those values. That will actually cause further corruption.
+    // So we must zero all pointers to blocks that are now unused.
+    for (unsigned i = new_shape.direct_blocks; i < EXT2_NDIR_BLOCKS; ++i) {
+        m_raw_inode.i_block[i] = 0;
     }
     if (inode_dirty) {
         if constexpr (EXT2_DEBUG) {
@@ -478,15 +465,14 @@ KResult Ext2FSInode::flush_block_list()
                 old_shape.meta_blocks++;
             }
 
-            auto result = write_indirect_block(m_raw_inode.i_block[EXT2_IND_BLOCK], m_block_list.span().slice(output_block_index, new_shape.indirect_blocks));
-            if (result.is_error())
+            if (auto result = write_indirect_block(m_raw_inode.i_block[EXT2_IND_BLOCK], m_block_list.span().slice(output_block_index, new_shape.indirect_blocks)); result.is_error())
                 return result;
         } else if ((new_shape.indirect_blocks == 0) && (old_shape.indirect_blocks != 0)) {
             dbgln_if(EXT2_BLOCKLIST_DEBUG, "Ext2FSInode[{}]::flush_block_list(): Freeing indirect block: {}", identifier(), m_raw_inode.i_block[EXT2_IND_BLOCK]);
-            auto result = fs().set_block_allocation_state(m_raw_inode.i_block[EXT2_IND_BLOCK], false);
-            if (result.is_error())
+            if (auto result = fs().set_block_allocation_state(m_raw_inode.i_block[EXT2_IND_BLOCK], false); result.is_error())
                 return result;
             old_shape.meta_blocks--;
+            m_raw_inode.i_block[EXT2_IND_BLOCK] = 0;
         }
     }
 
@@ -503,13 +489,13 @@ KResult Ext2FSInode::flush_block_list()
                 set_metadata_dirty(true);
                 old_shape.meta_blocks++;
             }
-            auto result = grow_doubly_indirect_block(m_raw_inode.i_block[EXT2_DIND_BLOCK], old_shape.doubly_indirect_blocks, m_block_list.span().slice(output_block_index, new_shape.doubly_indirect_blocks), new_meta_blocks, old_shape.meta_blocks);
-            if (result.is_error())
+            if (auto result = grow_doubly_indirect_block(m_raw_inode.i_block[EXT2_DIND_BLOCK], old_shape.doubly_indirect_blocks, m_block_list.span().slice(output_block_index, new_shape.doubly_indirect_blocks), new_meta_blocks, old_shape.meta_blocks); result.is_error())
                 return result;
         } else {
-            auto result = shrink_doubly_indirect_block(m_raw_inode.i_block[EXT2_DIND_BLOCK], old_shape.doubly_indirect_blocks, new_shape.doubly_indirect_blocks, old_shape.meta_blocks);
-            if (result.is_error())
+            if (auto result = shrink_doubly_indirect_block(m_raw_inode.i_block[EXT2_DIND_BLOCK], old_shape.doubly_indirect_blocks, new_shape.doubly_indirect_blocks, old_shape.meta_blocks); result.is_error())
                 return result;
+            if (new_shape.doubly_indirect_blocks == 0)
+                m_raw_inode.i_block[EXT2_DIND_BLOCK] = 0;
         }
     }
 
@@ -526,13 +512,13 @@ KResult Ext2FSInode::flush_block_list()
                 set_metadata_dirty(true);
                 old_shape.meta_blocks++;
             }
-            auto result = grow_triply_indirect_block(m_raw_inode.i_block[EXT2_TIND_BLOCK], old_shape.triply_indirect_blocks, m_block_list.span().slice(output_block_index, new_shape.triply_indirect_blocks), new_meta_blocks, old_shape.meta_blocks);
-            if (result.is_error())
+            if (auto result = grow_triply_indirect_block(m_raw_inode.i_block[EXT2_TIND_BLOCK], old_shape.triply_indirect_blocks, m_block_list.span().slice(output_block_index, new_shape.triply_indirect_blocks), new_meta_blocks, old_shape.meta_blocks); result.is_error())
                 return result;
         } else {
-            auto result = shrink_triply_indirect_block(m_raw_inode.i_block[EXT2_TIND_BLOCK], old_shape.triply_indirect_blocks, new_shape.triply_indirect_blocks, old_shape.meta_blocks);
-            if (result.is_error())
+            if (auto result = shrink_triply_indirect_block(m_raw_inode.i_block[EXT2_TIND_BLOCK], old_shape.triply_indirect_blocks, new_shape.triply_indirect_blocks, old_shape.meta_blocks); result.is_error())
                 return result;
+            if (new_shape.triply_indirect_blocks == 0)
+                m_raw_inode.i_block[EXT2_TIND_BLOCK] = 0;
         }
     }
 
@@ -628,8 +614,7 @@ Vector<Ext2FS::BlockIndex> Ext2FSInode::compute_block_list_impl_internal(const e
         auto array_storage = ByteBuffer::create_uninitialized(read_size);
         auto* array = (u32*)array_storage.data();
         auto buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)array);
-        auto result = fs().read_block(array_block_index, &buffer, read_size, 0);
-        if (result.is_error()) {
+        if (auto result = fs().read_block(array_block_index, &buffer, read_size, 0); result.is_error()) {
             // FIXME: Stop here and propagate this error.
             dbgln("Ext2FSInode[{}]::compute_block_list_impl_internal(): Error: {}", identifier(), result.error());
         }
@@ -666,7 +651,7 @@ Vector<Ext2FS::BlockIndex> Ext2FSInode::compute_block_list_impl_internal(const e
 
 void Ext2FS::free_inode(Ext2FSInode& inode)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     VERIFY(inode.m_raw_inode.i_links_count == 0);
     dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::free_inode(): Inode {} has no more links, time to delete!", fsid(), inode.index());
 
@@ -674,8 +659,7 @@ void Ext2FS::free_inode(Ext2FSInode& inode)
     for (auto block_index : inode.compute_block_list_with_meta_blocks()) {
         VERIFY(block_index <= super_block().s_blocks_count);
         if (block_index.value()) {
-            auto result = set_block_allocation_state(block_index, false);
-            if (result.is_error()) {
+            if (auto result = set_block_allocation_state(block_index, false); result.is_error()) {
                 dbgln("Ext2FS[{}]::free_inode(): Failed to deallocate block {} for inode {}", fsid(), block_index, inode.index());
             }
         }
@@ -685,7 +669,7 @@ void Ext2FS::free_inode(Ext2FSInode& inode)
     if (inode.is_directory()) {
         auto& bgd = const_cast<ext2_group_desc&>(group_descriptor(group_index_from_inode(inode.index())));
         --bgd.bg_used_dirs_count;
-        dbgln("Ext2FS[{}]::free_inode(): Decremented bg_used_dirs_count to {} for inode {}", fsid(), bgd.bg_used_dirs_count, inode.index());
+        dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::free_inode(): Decremented bg_used_dirs_count to {} for inode {}", fsid(), bgd.bg_used_dirs_count, inode.index());
         m_block_group_descriptors_dirty = true;
     }
 
@@ -695,63 +679,69 @@ void Ext2FS::free_inode(Ext2FSInode& inode)
     write_ext2_inode(inode.index(), inode.m_raw_inode);
 
     // Mark the inode as free.
-    auto result = set_inode_allocation_state(inode.index(), false);
-    if (result.is_error())
+    if (auto result = set_inode_allocation_state(inode.index(), false); result.is_error())
         dbgln("Ext2FS[{}]::free_inode(): Failed to free inode {}: {}", fsid(), inode.index(), result.error());
 }
 
 void Ext2FS::flush_block_group_descriptor_table()
 {
-    LOCKER(m_lock);
-    unsigned blocks_to_write = ceil_div(m_block_group_count * sizeof(ext2_group_desc), block_size());
-    unsigned first_block_of_bgdt = block_size() == 1024 ? 2 : 1;
+    MutexLocker locker(m_lock);
+    auto blocks_to_write = ceil_div(m_block_group_count * sizeof(ext2_group_desc), block_size());
+    auto first_block_of_bgdt = block_size() == 1024 ? 2 : 1;
     auto buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)block_group_descriptors());
-    auto result = write_blocks(first_block_of_bgdt, blocks_to_write, buffer);
-    if (result.is_error())
+    if (auto result = write_blocks(first_block_of_bgdt, blocks_to_write, buffer); result.is_error())
         dbgln("Ext2FS[{}]::flush_block_group_descriptor_table(): Failed to write blocks: {}", fsid(), result.error());
 }
 
 void Ext2FS::flush_writes()
 {
-    LOCKER(m_lock);
-    if (m_super_block_dirty) {
-        flush_super_block();
-        m_super_block_dirty = false;
-    }
-    if (m_block_group_descriptors_dirty) {
-        flush_block_group_descriptor_table();
-        m_block_group_descriptors_dirty = false;
-    }
-    for (auto& cached_bitmap : m_cached_bitmaps) {
-        if (cached_bitmap->dirty) {
-            auto buffer = UserOrKernelBuffer::for_kernel_buffer(cached_bitmap->buffer.data());
-            auto result = write_block(cached_bitmap->bitmap_block_index, buffer, block_size());
-            if (result.is_error()) {
-                dbgln("Ext2FS[{}]::flush_writes(): Failed to write blocks: {}", fsid(), result.error());
-            }
-            cached_bitmap->dirty = false;
-            dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::flush_writes(): Flushed bitmap block {}", fsid(), cached_bitmap->bitmap_block_index);
+    {
+        MutexLocker locker(m_lock);
+        if (m_super_block_dirty) {
+            flush_super_block();
+            m_super_block_dirty = false;
         }
+        if (m_block_group_descriptors_dirty) {
+            flush_block_group_descriptor_table();
+            m_block_group_descriptors_dirty = false;
+        }
+        for (auto& cached_bitmap : m_cached_bitmaps) {
+            if (cached_bitmap->dirty) {
+                auto buffer = UserOrKernelBuffer::for_kernel_buffer(cached_bitmap->buffer->data());
+                if (auto result = write_block(cached_bitmap->bitmap_block_index, buffer, block_size()); result.is_error()) {
+                    dbgln("Ext2FS[{}]::flush_writes(): Failed to write blocks: {}", fsid(), result.error());
+                }
+                cached_bitmap->dirty = false;
+                dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::flush_writes(): Flushed bitmap block {}", fsid(), cached_bitmap->bitmap_block_index);
+            }
+        }
+
+        // Uncache Inodes that are only kept alive by the index-to-inode lookup cache.
+        // We don't uncache Inodes that are being watched by at least one InodeWatcher.
+
+        // FIXME: It would be better to keep a capped number of Inodes around.
+        //        The problem is that they are quite heavy objects, and use a lot of heap memory
+        //        for their (child name lookup) and (block list) caches.
+        Vector<InodeIndex> unused_inodes;
+        for (auto& it : m_inode_cache) {
+            // NOTE: If we're asked to look up an inode by number (via get_inode) and it turns out
+            //       to not exist, we remember the fact that it doesn't exist by caching a nullptr.
+            //       This seems like a reasonable time to uncache ideas about unknown inodes, so do that.
+            if (!it.value) {
+                unused_inodes.append(it.key);
+                continue;
+            }
+            if (it.value->ref_count() != 1)
+                continue;
+            if (it.value->has_watchers())
+                continue;
+            unused_inodes.append(it.key);
+        }
+        for (auto index : unused_inodes)
+            uncache_inode(index);
     }
 
-    BlockBasedFS::flush_writes();
-
-    // Uncache Inodes that are only kept alive by the index-to-inode lookup cache.
-    // We don't uncache Inodes that are being watched by at least one InodeWatcher.
-
-    // FIXME: It would be better to keep a capped number of Inodes around.
-    //        The problem is that they are quite heavy objects, and use a lot of heap memory
-    //        for their (child name lookup) and (block list) caches.
-    Vector<InodeIndex> unused_inodes;
-    for (auto& it : m_inode_cache) {
-        if (it.value->ref_count() != 1)
-            continue;
-        if (it.value->has_watchers())
-            continue;
-        unused_inodes.append(it.key);
-    }
-    for (auto index : unused_inodes)
-        uncache_inode(index);
+    BlockBasedFileSystem::flush_writes();
 }
 
 Ext2FSInode::Ext2FSInode(Ext2FS& fs, InodeIndex index)
@@ -774,7 +764,7 @@ u64 Ext2FSInode::size() const
 
 InodeMetadata Ext2FSInode::metadata() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     InodeMetadata metadata;
     metadata.inode = identifier();
     metadata.size = size();
@@ -801,7 +791,7 @@ InodeMetadata Ext2FSInode::metadata() const
 
 void Ext2FSInode::flush_metadata()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::flush_metadata(): Flushing inode", identifier());
     fs().write_ext2_inode(index(), m_raw_inode);
     if (is_directory()) {
@@ -816,7 +806,7 @@ void Ext2FSInode::flush_metadata()
 
 RefPtr<Inode> Ext2FS::get_inode(InodeIdentifier inode) const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     VERIFY(inode.fsid() == fsid());
 
     {
@@ -839,10 +829,9 @@ RefPtr<Inode> Ext2FS::get_inode(InodeIdentifier inode) const
     if (!find_block_containing_inode(inode.index(), block_index, offset))
         return {};
 
-    auto new_inode = adopt(*new Ext2FSInode(const_cast<Ext2FS&>(*this), inode.index()));
+    auto new_inode = adopt_ref(*new Ext2FSInode(const_cast<Ext2FS&>(*this), inode.index()));
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(reinterpret_cast<u8*>(&new_inode->m_raw_inode));
-    auto result = read_block(block_index, &buffer, sizeof(ext2_inode), offset);
-    if (result.is_error()) {
+    if (auto result = read_block(block_index, &buffer, sizeof(ext2_inode), offset); result.is_error()) {
         // FIXME: Propagate the actual error.
         return nullptr;
     }
@@ -850,20 +839,23 @@ RefPtr<Inode> Ext2FS::get_inode(InodeIdentifier inode) const
     return new_inode;
 }
 
-ssize_t Ext2FSInode::read_bytes(off_t offset, ssize_t count, UserOrKernelBuffer& buffer, FileDescription* description) const
+KResultOr<size_t> Ext2FSInode::read_bytes(off_t offset, size_t count, UserOrKernelBuffer& buffer, FileDescription* description) const
 {
-    Locker inode_locker(m_lock);
+    MutexLocker inode_locker(m_inode_lock);
     VERIFY(offset >= 0);
     if (m_raw_inode.i_size == 0)
+        return 0;
+
+    if (static_cast<u64>(offset) >= size())
         return 0;
 
     // Symbolic links shorter than 60 characters are store inline inside the i_block array.
     // This avoids wasting an entire block on short links. (Most links are short.)
     if (is_symlink() && size() < max_inline_symlink_length) {
         VERIFY(offset == 0);
-        ssize_t nread = min((off_t)size() - offset, static_cast<off_t>(count));
-        if (!buffer.write(((const u8*)m_raw_inode.i_block) + offset, (size_t)nread))
-            return -EFAULT;
+        size_t nread = min((off_t)size() - offset, static_cast<off_t>(count));
+        if (!buffer.write(((const u8*)m_raw_inode.i_block) + offset, nread))
+            return EFAULT;
         return nread;
     }
 
@@ -872,35 +864,39 @@ ssize_t Ext2FSInode::read_bytes(off_t offset, ssize_t count, UserOrKernelBuffer&
 
     if (m_block_list.is_empty()) {
         dmesgln("Ext2FSInode[{}]::read_bytes(): Empty block list", identifier());
-        return -EIO;
+        return EIO;
     }
 
     bool allow_cache = !description || !description->is_direct();
 
     const int block_size = fs().block_size();
 
-    BlockBasedFS::BlockIndex first_block_logical_index = offset / block_size;
-    BlockBasedFS::BlockIndex last_block_logical_index = (offset + count) / block_size;
+    BlockBasedFileSystem::BlockIndex first_block_logical_index = offset / block_size;
+    BlockBasedFileSystem::BlockIndex last_block_logical_index = (offset + count) / block_size;
     if (last_block_logical_index >= m_block_list.size())
         last_block_logical_index = m_block_list.size() - 1;
 
     int offset_into_first_block = offset % block_size;
 
-    ssize_t nread = 0;
+    size_t nread = 0;
     auto remaining_count = min((off_t)count, (off_t)size() - offset);
 
     dbgln_if(EXT2_VERY_DEBUG, "Ext2FSInode[{}]::read_bytes(): Reading up to {} bytes, {} bytes into inode to {}", identifier(), count, offset, buffer.user_or_kernel_ptr());
 
     for (auto bi = first_block_logical_index; remaining_count && bi <= last_block_logical_index; bi = bi.value() + 1) {
         auto block_index = m_block_list[bi.value()];
-        VERIFY(block_index.value());
         size_t offset_into_block = (bi == first_block_logical_index) ? offset_into_first_block : 0;
-        size_t num_bytes_to_copy = min((off_t)block_size - offset_into_block, remaining_count);
+        size_t num_bytes_to_copy = min((size_t)block_size - offset_into_block, (size_t)remaining_count);
         auto buffer_offset = buffer.offset(nread);
-        int err = fs().read_block(block_index, &buffer_offset, num_bytes_to_copy, offset_into_block, allow_cache);
-        if (err < 0) {
-            dmesgln("Ext2FSInode[{}]::read_bytes(): Failed to read block {} (index {})", identifier(), block_index.value(), bi);
-            return err;
+        if (block_index.value() == 0) {
+            // This is a hole, act as if it's filled with zeroes.
+            if (!buffer_offset.memset(0, num_bytes_to_copy))
+                return EFAULT;
+        } else {
+            if (auto result = fs().read_block(block_index, &buffer_offset, num_bytes_to_copy, offset_into_block, allow_cache); result.is_error()) {
+                dmesgln("Ext2FSInode[{}]::read_bytes(): Failed to read block {} (index {})", identifier(), block_index.value(), bi);
+                return result.error();
+            }
         }
         remaining_count -= num_bytes_to_copy;
         nread += num_bytes_to_copy;
@@ -940,7 +936,8 @@ KResult Ext2FSInode::resize(u64 new_size)
         auto blocks_or_error = fs().allocate_blocks(fs().group_index_from_inode(index()), blocks_needed_after - blocks_needed_before);
         if (blocks_or_error.is_error())
             return blocks_or_error.error();
-        m_block_list.append(blocks_or_error.release_value());
+        if (!m_block_list.try_extend(blocks_or_error.release_value()))
+            return ENOMEM;
     } else if (blocks_needed_after < blocks_needed_before) {
         if constexpr (EXT2_VERY_DEBUG) {
             dbgln("Ext2FSInode[{}]::resize(): Shrinking inode, old block list is {} entries:", identifier(), m_block_list.size());
@@ -951,8 +948,7 @@ KResult Ext2FSInode::resize(u64 new_size)
         while (m_block_list.size() != blocks_needed_after) {
             auto block_index = m_block_list.take_last();
             if (block_index.value()) {
-                auto result = fs().set_block_allocation_state(block_index, false);
-                if (result.is_error()) {
+                if (auto result = fs().set_block_allocation_state(block_index, false); result.is_error()) {
                     dbgln("Ext2FSInode[{}]::resize(): Failed to free block {}: {}", identifier(), block_index, result.error());
                     return result;
                 }
@@ -960,8 +956,7 @@ KResult Ext2FSInode::resize(u64 new_size)
         }
     }
 
-    auto result = flush_block_list();
-    if (result.is_error())
+    if (auto result = flush_block_list(); result.is_error())
         return result;
 
     m_raw_inode.i_size = new_size;
@@ -977,27 +972,28 @@ KResult Ext2FSInode::resize(u64 new_size)
         auto clear_from = old_size;
         u8 zero_buffer[PAGE_SIZE] {};
         while (bytes_to_clear) {
-            auto nwritten = write_bytes(clear_from, min(static_cast<u64>(sizeof(zero_buffer)), bytes_to_clear), UserOrKernelBuffer::for_kernel_buffer(zero_buffer), nullptr);
-            if (nwritten < 0)
-                return KResult((ErrnoCode)-nwritten);
-            VERIFY(nwritten != 0);
-            bytes_to_clear -= nwritten;
-            clear_from += nwritten;
+            auto result = write_bytes(clear_from, min(static_cast<u64>(sizeof(zero_buffer)), bytes_to_clear), UserOrKernelBuffer::for_kernel_buffer(zero_buffer), nullptr);
+            if (result.is_error())
+                return result.error();
+            VERIFY(result.value() != 0);
+            bytes_to_clear -= result.value();
+            clear_from += result.value();
         }
     }
 
     return KSuccess;
 }
 
-ssize_t Ext2FSInode::write_bytes(off_t offset, ssize_t count, const UserOrKernelBuffer& data, FileDescription* description)
+KResultOr<size_t> Ext2FSInode::write_bytes(off_t offset, size_t count, const UserOrKernelBuffer& data, FileDescription* description)
 {
     VERIFY(offset >= 0);
-    VERIFY(count >= 0);
 
-    Locker inode_locker(m_lock);
+    if (count == 0)
+        return 0;
 
-    auto result = prepare_to_write_data();
-    if (result.is_error())
+    MutexLocker inode_locker(m_inode_lock);
+
+    if (auto result = prepare_to_write_data(); result.is_error())
         return result;
 
     if (is_symlink()) {
@@ -1005,7 +1001,7 @@ ssize_t Ext2FSInode::write_bytes(off_t offset, ssize_t count, const UserOrKernel
         if (max((size_t)(offset + count), (size_t)m_raw_inode.i_size) < max_inline_symlink_length) {
             dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::write_bytes(): Poking into i_block array for inline symlink '{}' ({} bytes)", identifier(), data.copy_into_string(count), count);
             if (!data.read(((u8*)m_raw_inode.i_block) + offset, (size_t)count))
-                return -EFAULT;
+                return EFAULT;
             if ((size_t)(offset + count) > (size_t)m_raw_inode.i_size)
                 m_raw_inode.i_size = offset + count;
             set_metadata_dirty(true);
@@ -1018,42 +1014,42 @@ ssize_t Ext2FSInode::write_bytes(off_t offset, ssize_t count, const UserOrKernel
     const auto block_size = fs().block_size();
     auto new_size = max(static_cast<u64>(offset) + count, size());
 
-    auto resize_result = resize(new_size);
-    if (resize_result.is_error())
-        return resize_result;
+    if (auto result = resize(new_size); result.is_error())
+        return result;
 
     if (m_block_list.is_empty())
         m_block_list = compute_block_list();
 
     if (m_block_list.is_empty()) {
         dbgln("Ext2FSInode[{}]::write_bytes(): Empty block list", identifier());
-        return -EIO;
+        return EIO;
     }
 
-    BlockBasedFS::BlockIndex first_block_logical_index = offset / block_size;
-    BlockBasedFS::BlockIndex last_block_logical_index = (offset + count) / block_size;
+    BlockBasedFileSystem::BlockIndex first_block_logical_index = offset / block_size;
+    BlockBasedFileSystem::BlockIndex last_block_logical_index = (offset + count) / block_size;
     if (last_block_logical_index >= m_block_list.size())
         last_block_logical_index = m_block_list.size() - 1;
 
     size_t offset_into_first_block = offset % block_size;
 
-    ssize_t nwritten = 0;
+    size_t nwritten = 0;
     auto remaining_count = min((off_t)count, (off_t)new_size - offset);
 
     dbgln_if(EXT2_VERY_DEBUG, "Ext2FSInode[{}]::write_bytes(): Writing {} bytes, {} bytes into inode from {}", identifier(), count, offset, data.user_or_kernel_ptr());
 
     for (auto bi = first_block_logical_index; remaining_count && bi <= last_block_logical_index; bi = bi.value() + 1) {
         size_t offset_into_block = (bi == first_block_logical_index) ? offset_into_first_block : 0;
-        size_t num_bytes_to_copy = min((off_t)block_size - offset_into_block, remaining_count);
+        size_t num_bytes_to_copy = min((size_t)block_size - offset_into_block, (size_t)remaining_count);
         dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::write_bytes(): Writing block {} (offset_into_block: {})", identifier(), m_block_list[bi.value()], offset_into_block);
-        result = fs().write_block(m_block_list[bi.value()], data.offset(nwritten), num_bytes_to_copy, offset_into_block, allow_cache);
-        if (result.is_error()) {
+        if (auto result = fs().write_block(m_block_list[bi.value()], data.offset(nwritten), num_bytes_to_copy, offset_into_block, allow_cache); result.is_error()) {
             dbgln("Ext2FSInode[{}]::write_bytes(): Failed to write block {} (index {})", identifier(), m_block_list[bi.value()], bi);
             return result;
         }
         remaining_count -= num_bytes_to_copy;
         nwritten += num_bytes_to_copy;
     }
+
+    did_modify_contents();
 
     dbgln_if(EXT2_VERY_DEBUG, "Ext2FSInode[{}]::write_bytes(): After write, i_size={}, i_blocks={} ({} blocks in list)", identifier(), size(), m_raw_inode.i_blocks, m_block_list.size());
     return nwritten;
@@ -1088,81 +1084,99 @@ Ext2FS::FeaturesReadOnly Ext2FS::get_features_readonly() const
     return Ext2FS::FeaturesReadOnly::None;
 }
 
-KResult Ext2FSInode::traverse_as_directory(Function<bool(const FS::DirectoryEntryView&)> callback) const
+KResult Ext2FSInode::traverse_as_directory(Function<bool(FileSystem::DirectoryEntryView const&)> callback) const
 {
-    LOCKER(m_lock);
     VERIFY(is_directory());
 
-    auto buffer_or = read_entire();
-    if (buffer_or.is_error())
-        return buffer_or.error();
+    u8 buffer[max_block_size];
+    auto buf = UserOrKernelBuffer::for_kernel_buffer(buffer);
 
-    auto& buffer = *buffer_or.value();
-    auto* entry = reinterpret_cast<ext2_dir_entry_2*>(buffer.data());
+    auto block_size = fs().block_size();
+    auto file_size = size();
 
-    while (entry < buffer.end_pointer()) {
-        if (entry->inode != 0) {
-            dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::traverse_as_directory(): inode {}, name_len: {}, rec_len: {}, file_type: {}, name: {}", identifier(), entry->inode, entry->name_len, entry->rec_len, entry->file_type, StringView(entry->name, entry->name_len));
-            if (!callback({ { entry->name, entry->name_len }, { fsid(), entry->inode }, entry->file_type }))
-                break;
+    // Directory entries are guaranteed not to span multiple blocks,
+    // so we can iterate over blocks separately.
+
+    for (u64 offset = 0; offset < file_size; offset += block_size) {
+        if (auto result = read_bytes(offset, block_size, buf, nullptr); result.is_error())
+            return result.error();
+
+        auto* entry = reinterpret_cast<ext2_dir_entry_2*>(buffer);
+        auto* entries_end = reinterpret_cast<ext2_dir_entry_2*>(buffer + block_size);
+        while (entry < entries_end) {
+            if (entry->inode != 0) {
+                dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::traverse_as_directory(): inode {}, name_len: {}, rec_len: {}, file_type: {}, name: {}", identifier(), entry->inode, entry->name_len, entry->rec_len, entry->file_type, StringView(entry->name, entry->name_len));
+                if (!callback({ { entry->name, entry->name_len }, { fsid(), entry->inode }, entry->file_type }))
+                    return KSuccess;
+            }
+            entry = (ext2_dir_entry_2*)((char*)entry + entry->rec_len);
         }
-        entry = (ext2_dir_entry_2*)((char*)entry + entry->rec_len);
     }
 
     return KSuccess;
 }
 
-KResult Ext2FSInode::write_directory(const Vector<Ext2FSDirectoryEntry>& entries)
+KResult Ext2FSInode::write_directory(Vector<Ext2FSDirectoryEntry>& entries)
 {
-    LOCKER(m_lock);
-
-    int directory_size = 0;
-    for (auto& entry : entries)
-        directory_size += EXT2_DIR_REC_LEN(entry.name.length());
-
+    MutexLocker locker(m_inode_lock);
     auto block_size = fs().block_size();
 
-    int blocks_needed = ceil_div(static_cast<size_t>(directory_size), block_size);
-    int occupied_size = blocks_needed * block_size;
-
-    dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::write_directory(): New directory contents to write (size {}, occupied {}):", identifier(), directory_size, occupied_size);
-
-    auto directory_data = ByteBuffer::create_uninitialized(occupied_size);
-    OutputMemoryStream stream { directory_data };
-
+    // Calculate directory size and record length of entries so that
+    // the following constraints are met:
+    // - All used blocks must be entirely filled.
+    // - Entries are aligned on a 4-byte boundary.
+    // - No entry may span multiple blocks.
+    size_t directory_size = 0;
+    size_t space_in_block = block_size;
     for (size_t i = 0; i < entries.size(); ++i) {
         auto& entry = entries[i];
+        entry.record_length = EXT2_DIR_REC_LEN(entry.name.length());
+        space_in_block -= entry.record_length;
+        if (i + 1 < entries.size()) {
+            if (EXT2_DIR_REC_LEN(entries[i + 1].name.length()) > space_in_block) {
+                entry.record_length += space_in_block;
+                space_in_block = block_size;
+            }
+        } else {
+            entry.record_length += space_in_block;
+        }
+        directory_size += entry.record_length;
+    }
 
-        int record_length = EXT2_DIR_REC_LEN(entry.name.length());
-        if (i == entries.size() - 1)
-            record_length += occupied_size - directory_size;
+    dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::write_directory(): New directory contents to write (size {}):", identifier(), directory_size);
 
-        dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::write_directory(): Writing inode: {}, name_len: {}, rec_len: {}, file_type: {}, name: {}", identifier(), entry.inode_index, u16(entry.name.length()), u16(record_length), u8(entry.file_type), entry.name);
+    auto directory_data = ByteBuffer::create_uninitialized(directory_size);
+    OutputMemoryStream stream { directory_data };
+
+    for (auto& entry : entries) {
+        dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::write_directory(): Writing inode: {}, name_len: {}, rec_len: {}, file_type: {}, name: {}", identifier(), entry.inode_index, u16(entry.name.length()), u16(entry.record_length), u8(entry.file_type), entry.name);
 
         stream << u32(entry.inode_index.value());
-        stream << u16(record_length);
+        stream << u16(entry.record_length);
         stream << u8(entry.name.length());
         stream << u8(entry.file_type);
         stream << entry.name.bytes();
-
-        int padding = record_length - entry.name.length() - 8;
+        int padding = entry.record_length - entry.name.length() - 8;
         for (int j = 0; j < padding; ++j)
             stream << u8(0);
     }
 
-    stream.fill_to_end(0);
+    VERIFY(stream.is_end());
+
+    if (auto result = resize(stream.size()); result.is_error())
+        return result;
 
     auto buffer = UserOrKernelBuffer::for_kernel_buffer(stream.data());
-    ssize_t nwritten = write_bytes(0, stream.size(), buffer, nullptr);
-    if (nwritten < 0)
-        return KResult((ErrnoCode)-nwritten);
+    auto result = write_bytes(0, stream.size(), buffer, nullptr);
+    if (result.is_error())
+        return result.error();
     set_metadata_dirty(true);
-    if (static_cast<size_t>(nwritten) != directory_data.size())
+    if (static_cast<size_t>(result.value()) != directory_data.size())
         return EIO;
     return KSuccess;
 }
 
-KResultOr<NonnullRefPtr<Inode>> Ext2FSInode::create_child(const String& name, mode_t mode, dev_t dev, uid_t uid, gid_t gid)
+KResultOr<NonnullRefPtr<Inode>> Ext2FSInode::create_child(StringView name, mode_t mode, dev_t dev, uid_t uid, gid_t gid)
 {
     if (::is_directory(mode))
         return fs().create_directory(*this, name, mode, uid, gid);
@@ -1171,7 +1185,7 @@ KResultOr<NonnullRefPtr<Inode>> Ext2FSInode::create_child(const String& name, mo
 
 KResult Ext2FSInode::add_child(Inode& child, const StringView& name, mode_t mode)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     VERIFY(is_directory());
 
     if (name.length() > EXT2_NAME_LEN)
@@ -1207,16 +1221,22 @@ KResult Ext2FSInode::add_child(Inode& child, const StringView& name, mode_t mode
     if (result.is_error())
         return result;
 
+    if (auto populate_result = populate_lookup_cache(); populate_result.is_error())
+        return populate_result;
+
     m_lookup_cache.set(name, child.index());
-    did_add_child(child.identifier());
+    did_add_child(child.identifier(), name);
     return KSuccess;
 }
 
 KResult Ext2FSInode::remove_child(const StringView& name)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::remove_child(): Removing '{}'", identifier(), name);
     VERIFY(is_directory());
+
+    if (auto populate_result = populate_lookup_cache(); populate_result.is_error())
+        return populate_result;
 
     auto it = m_lookup_cache.find(name);
     if (it == m_lookup_cache.end())
@@ -1245,25 +1265,25 @@ KResult Ext2FSInode::remove_child(const StringView& name)
     if (result.is_error())
         return result;
 
-    did_remove_child(child_id);
+    did_remove_child(child_id, name);
     return KSuccess;
 }
 
-unsigned Ext2FS::inodes_per_block() const
+u64 Ext2FS::inodes_per_block() const
 {
     return EXT2_INODES_PER_BLOCK(&super_block());
 }
 
-unsigned Ext2FS::inodes_per_group() const
+u64 Ext2FS::inodes_per_group() const
 {
     return EXT2_INODES_PER_GROUP(&super_block());
 }
 
-unsigned Ext2FS::inode_size() const
+u64 Ext2FS::inode_size() const
 {
     return EXT2_INODE_SIZE(&super_block());
 }
-unsigned Ext2FS::blocks_per_group() const
+u64 Ext2FS::blocks_per_group() const
 {
     return EXT2_BLOCKS_PER_GROUP(&super_block());
 }
@@ -1280,15 +1300,15 @@ bool Ext2FS::write_ext2_inode(InodeIndex inode, const ext2_inode& e2inode)
 
 auto Ext2FS::allocate_blocks(GroupIndex preferred_group_index, size_t count) -> KResultOr<Vector<BlockIndex>>
 {
-    LOCKER(m_lock);
     dbgln_if(EXT2_DEBUG, "Ext2FS: allocate_blocks(preferred group: {}, count {})", preferred_group_index, count);
     if (count == 0)
         return Vector<BlockIndex> {};
 
     Vector<BlockIndex> blocks;
-    dbgln_if(EXT2_DEBUG, "Ext2FS: allocate_blocks:");
-    blocks.ensure_capacity(count);
+    if (!blocks.try_ensure_capacity(count))
+        return ENOMEM;
 
+    MutexLocker locker(m_lock);
     auto group_index = preferred_group_index;
 
     if (!group_descriptor(preferred_group_index).bg_free_blocks_count) {
@@ -1296,7 +1316,6 @@ auto Ext2FS::allocate_blocks(GroupIndex preferred_group_index, size_t count) -> 
     }
 
     while (blocks.size() < count) {
-
         bool found_a_group = false;
         if (group_descriptor(group_index).bg_free_blocks_count) {
             found_a_group = true;
@@ -1329,8 +1348,7 @@ auto Ext2FS::allocate_blocks(GroupIndex preferred_group_index, size_t count) -> 
         dbgln_if(EXT2_DEBUG, "Ext2FS: allocating free region of size: {} [{}]", free_region_size, group_index);
         for (size_t i = 0; i < free_region_size; ++i) {
             BlockIndex block_index = (first_unset_bit_index.value() + i) + first_block_in_group.value();
-            auto result = set_block_allocation_state(block_index, true);
-            if (result.is_error()) {
+            if (auto result = set_block_allocation_state(block_index, true); result.is_error()) {
                 dbgln("Ext2FS: Failed to allocate block {} in allocate_blocks()", block_index);
                 return result;
             }
@@ -1346,7 +1364,7 @@ auto Ext2FS::allocate_blocks(GroupIndex preferred_group_index, size_t count) -> 
 KResultOr<InodeIndex> Ext2FS::allocate_inode(GroupIndex preferred_group)
 {
     dbgln_if(EXT2_DEBUG, "Ext2FS: allocate_inode(preferred_group: {})", preferred_group);
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
 
     // FIXME: We shouldn't refuse to allocate an inode if there is no group that can house the whole thing.
     //        In those cases we should just spread it across multiple groups.
@@ -1422,7 +1440,7 @@ auto Ext2FS::group_index_from_inode(InodeIndex inode) const -> GroupIndex
 
 KResultOr<bool> Ext2FS::get_inode_allocation_state(InodeIndex index) const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     if (index == 0)
         return EINVAL;
     auto group_index = group_index_from_inode(index);
@@ -1465,7 +1483,7 @@ KResult Ext2FS::update_bitmap_block(BlockIndex bitmap_block, size_t bit_index, b
 
 KResult Ext2FS::set_inode_allocation_state(InodeIndex inode_index, bool new_state)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     auto group_index = group_index_from_inode(inode_index);
     unsigned index_in_group = inode_index.value() - ((group_index.value() - 1) * inodes_per_group());
     unsigned bit_index = (index_in_group - 1) % inodes_per_group();
@@ -1487,21 +1505,26 @@ KResultOr<Ext2FS::CachedBitmap*> Ext2FS::get_bitmap_block(BlockIndex bitmap_bloc
             return cached_bitmap;
     }
 
-    auto block = KBuffer::create_with_size(block_size(), Region::Access::Read | Region::Access::Write, "Ext2FS: Cached bitmap block");
-    auto buffer = UserOrKernelBuffer::for_kernel_buffer(block.data());
-    auto result = read_block(bitmap_block_index, &buffer, block_size());
-    if (result.is_error()) {
+    auto block = KBuffer::try_create_with_size(block_size(), Memory::Region::Access::ReadWrite, "Ext2FS: Cached bitmap block");
+    if (!block)
+        return ENOMEM;
+    auto buffer = UserOrKernelBuffer::for_kernel_buffer(block->data());
+    if (auto result = read_block(bitmap_block_index, &buffer, block_size()); result.is_error()) {
         dbgln("Ext2FS: Failed to load bitmap block {}", bitmap_block_index);
         return result;
     }
-    m_cached_bitmaps.append(make<CachedBitmap>(bitmap_block_index, move(block)));
+    auto new_bitmap = adopt_own_if_nonnull(new (nothrow) CachedBitmap(bitmap_block_index, block.release_nonnull()));
+    if (!new_bitmap)
+        return ENOMEM;
+    if (!m_cached_bitmaps.try_append(move(new_bitmap)))
+        return ENOMEM;
     return m_cached_bitmaps.last();
 }
 
 KResult Ext2FS::set_block_allocation_state(BlockIndex block_index, bool new_state)
 {
     VERIFY(block_index != 0);
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
 
     auto group_index = group_index_from_block_index(block_index);
     unsigned index_in_group = (block_index.value() - first_block_index().value()) - ((group_index.value() - 1) * blocks_per_group());
@@ -1514,7 +1537,7 @@ KResult Ext2FS::set_block_allocation_state(BlockIndex block_index, bool new_stat
 
 KResult Ext2FS::create_directory(Ext2FSInode& parent_inode, const String& name, mode_t mode, uid_t uid, gid_t gid)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     VERIFY(is_directory(mode));
 
     auto inode_or_error = create_inode(parent_inode, name, mode, 0, uid, gid);
@@ -1529,12 +1552,10 @@ KResult Ext2FS::create_directory(Ext2FSInode& parent_inode, const String& name, 
     entries.empend(".", inode->index(), static_cast<u8>(EXT2_FT_DIR));
     entries.empend("..", parent_inode.index(), static_cast<u8>(EXT2_FT_DIR));
 
-    auto result = static_cast<Ext2FSInode&>(*inode).write_directory(entries);
-    if (result.is_error())
+    if (auto result = static_cast<Ext2FSInode&>(*inode).write_directory(entries); result.is_error())
         return result;
 
-    result = parent_inode.increment_link_count();
-    if (result.is_error())
+    if (auto result = parent_inode.increment_link_count(); result.is_error())
         return result;
 
     auto& bgd = const_cast<ext2_group_desc&>(group_descriptor(group_index_from_inode(inode->identifier().index())));
@@ -1584,17 +1605,16 @@ KResultOr<NonnullRefPtr<Inode>> Ext2FS::create_inode(Ext2FSInode& parent_inode, 
     VERIFY(new_inode);
 
     dbgln_if(EXT2_DEBUG, "Ext2FS: Adding inode '{}' (mode {:o}) to parent directory {}", name, mode, parent_inode.index());
-    auto result = parent_inode.add_child(*new_inode, name, mode);
-    if (result.is_error())
+    if (auto result = parent_inode.add_child(*new_inode, name, mode); result.is_error())
         return result;
     return new_inode.release_nonnull();
 }
 
-bool Ext2FSInode::populate_lookup_cache() const
+KResult Ext2FSInode::populate_lookup_cache() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (!m_lookup_cache.is_empty())
-        return true;
+        return KSuccess;
     HashMap<String, InodeIndex> children;
 
     KResult result = traverse_as_directory([&children](auto& entry) {
@@ -1603,26 +1623,31 @@ bool Ext2FSInode::populate_lookup_cache() const
     });
 
     if (!result.is_success())
-        return false;
+        return result;
 
-    if (!m_lookup_cache.is_empty())
-        return false;
+    VERIFY(m_lookup_cache.is_empty());
     m_lookup_cache = move(children);
-    return true;
+    return KSuccess;
 }
 
 RefPtr<Inode> Ext2FSInode::lookup(StringView name)
 {
     VERIFY(is_directory());
     dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]:lookup(): Looking up '{}'", identifier(), name);
-    if (!populate_lookup_cache())
+    if (populate_lookup_cache().is_error())
         return {};
-    LOCKER(m_lock);
-    auto it = m_lookup_cache.find(name.hash(), [&](auto& entry) { return entry.key == name; });
-    if (it != m_lookup_cache.end())
-        return fs().get_inode({ fsid(), (*it).value });
-    dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]:lookup(): '{}' not found", identifier(), name);
-    return {};
+
+    InodeIndex inode_index;
+    {
+        MutexLocker locker(m_inode_lock);
+        auto it = m_lookup_cache.find(name.hash(), [&](auto& entry) { return entry.key == name; });
+        if (it == m_lookup_cache.end()) {
+            dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]:lookup(): '{}' not found", identifier(), name);
+            return {};
+        }
+        inode_index = it->value;
+    }
+    return fs().get_inode({ fsid(), inode_index });
 }
 
 void Ext2FSInode::one_ref_left()
@@ -1630,41 +1655,42 @@ void Ext2FSInode::one_ref_left()
     // FIXME: I would like to not live forever, but uncached Ext2FS is fucking painful right now.
 }
 
-int Ext2FSInode::set_atime(time_t t)
+KResult Ext2FSInode::set_atime(time_t t)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
-        return -EROFS;
+        return EROFS;
     m_raw_inode.i_atime = t;
     set_metadata_dirty(true);
-    return 0;
+    return KSuccess;
 }
 
-int Ext2FSInode::set_ctime(time_t t)
+KResult Ext2FSInode::set_ctime(time_t t)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
-        return -EROFS;
+        return EROFS;
     m_raw_inode.i_ctime = t;
     set_metadata_dirty(true);
-    return 0;
+    return KSuccess;
 }
 
-int Ext2FSInode::set_mtime(time_t t)
+KResult Ext2FSInode::set_mtime(time_t t)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
-        return -EROFS;
+        return EROFS;
     m_raw_inode.i_mtime = t;
     set_metadata_dirty(true);
-    return 0;
+    return KSuccess;
 }
 
 KResult Ext2FSInode::increment_link_count()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
         return EROFS;
+    constexpr size_t max_link_count = 65535;
     if (m_raw_inode.i_links_count == max_link_count)
         return EMLINK;
     ++m_raw_inode.i_links_count;
@@ -1674,34 +1700,31 @@ KResult Ext2FSInode::increment_link_count()
 
 KResult Ext2FSInode::decrement_link_count()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
         return EROFS;
     VERIFY(m_raw_inode.i_links_count);
+
     --m_raw_inode.i_links_count;
+    set_metadata_dirty(true);
+    if (m_raw_inode.i_links_count == 0)
+        did_delete_self();
+
     if (ref_count() == 1 && m_raw_inode.i_links_count == 0)
         fs().uncache_inode(index());
-    set_metadata_dirty(true);
+
     return KSuccess;
 }
 
 void Ext2FS::uncache_inode(InodeIndex index)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     m_inode_cache.remove(index);
-}
-
-KResultOr<size_t> Ext2FSInode::directory_entry_count() const
-{
-    VERIFY(is_directory());
-    LOCKER(m_lock);
-    populate_lookup_cache();
-    return m_lookup_cache.size();
 }
 
 KResult Ext2FSInode::chmod(mode_t mode)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (m_raw_inode.i_mode == mode)
         return KSuccess;
     m_raw_inode.i_mode = mode;
@@ -1711,7 +1734,7 @@ KResult Ext2FSInode::chmod(mode_t mode)
 
 KResult Ext2FSInode::chown(uid_t uid, gid_t gid)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (m_raw_inode.i_uid == uid && m_raw_inode.i_gid == gid)
         return KSuccess;
     m_raw_inode.i_uid = uid;
@@ -1722,11 +1745,10 @@ KResult Ext2FSInode::chown(uid_t uid, gid_t gid)
 
 KResult Ext2FSInode::truncate(u64 size)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
     if (static_cast<u64>(m_raw_inode.i_size) == size)
         return KSuccess;
-    auto result = resize(size);
-    if (result.is_error())
+    if (auto result = resize(size); result.is_error())
         return result;
     set_metadata_dirty(true);
     return KSuccess;
@@ -1734,7 +1756,7 @@ KResult Ext2FSInode::truncate(u64 size)
 
 KResultOr<int> Ext2FSInode::get_block_address(int index)
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_inode_lock);
 
     if (m_block_list.is_empty())
         m_block_list = compute_block_list();
@@ -1747,31 +1769,31 @@ KResultOr<int> Ext2FSInode::get_block_address(int index)
 
 unsigned Ext2FS::total_block_count() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     return super_block().s_blocks_count;
 }
 
 unsigned Ext2FS::free_block_count() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     return super_block().s_free_blocks_count;
 }
 
 unsigned Ext2FS::total_inode_count() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     return super_block().s_inodes_count;
 }
 
 unsigned Ext2FS::free_inode_count() const
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
     return super_block().s_free_inodes_count;
 }
 
-KResult Ext2FS::prepare_to_unmount() const
+KResult Ext2FS::prepare_to_unmount()
 {
-    LOCKER(m_lock);
+    MutexLocker locker(m_lock);
 
     for (auto& it : m_inode_cache) {
         if (it.value->ref_count() > 1)
@@ -1779,7 +1801,7 @@ KResult Ext2FS::prepare_to_unmount() const
     }
 
     m_inode_cache.clear();
+    m_root_inode = nullptr;
     return KSuccess;
 }
-
 }

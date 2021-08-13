@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibCore/Timer.h>
@@ -33,11 +13,11 @@ Timer::Timer(Object* parent)
 {
 }
 
-Timer::Timer(int interval, Function<void()>&& timeout_handler, Object* parent)
+Timer::Timer(int interval_ms, Function<void()>&& timeout_handler, Object* parent)
     : Object(parent)
     , on_timeout(move(timeout_handler))
 {
-    start(interval);
+    start(interval_ms);
 }
 
 Timer::~Timer()
@@ -46,28 +26,28 @@ Timer::~Timer()
 
 void Timer::start()
 {
-    start(m_interval);
+    start(m_interval_ms);
 }
 
-void Timer::start(int interval)
+void Timer::start(int interval_ms)
 {
     if (m_active)
         return;
-    m_interval = interval;
-    start_timer(interval);
+    m_interval_ms = interval_ms;
+    start_timer(interval_ms);
     m_active = true;
 }
 
 void Timer::restart()
 {
-    restart(m_interval);
+    restart(m_interval_ms);
 }
 
-void Timer::restart(int interval)
+void Timer::restart(int interval_ms)
 {
     if (m_active)
         stop();
-    start(interval);
+    start(interval_ms);
 }
 
 void Timer::stop()
@@ -85,7 +65,7 @@ void Timer::timer_event(TimerEvent&)
     else {
         if (m_interval_dirty) {
             stop();
-            start(m_interval);
+            start(m_interval_ms);
         }
     }
 

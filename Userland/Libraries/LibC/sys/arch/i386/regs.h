@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2020, Itamar S. <itamar8910@gmail.com>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -29,6 +9,7 @@
 #include <AK/Types.h>
 
 struct [[gnu::packed]] PtraceRegisters {
+#if ARCH(I386)
     u32 eax;
     u32 ecx;
     u32 edx;
@@ -39,10 +20,68 @@ struct [[gnu::packed]] PtraceRegisters {
     u32 edi;
     u32 eip;
     u32 eflags;
+#else
+    u64 rax;
+    u64 rcx;
+    u64 rdx;
+    u64 rbx;
+    u64 rsp;
+    u64 rbp;
+    u64 rsi;
+    u64 rdi;
+    u64 rip;
+    u64 r8;
+    u64 r9;
+    u64 r10;
+    u64 r11;
+    u64 r12;
+    u64 r13;
+    u64 r14;
+    u64 r15;
+    u64 rflags;
+#endif
     u32 cs;
     u32 ss;
     u32 ds;
     u32 es;
     u32 fs;
     u32 gs;
+
+#ifdef __cplusplus
+    FlatPtr ip() const
+    {
+#    if ARCH(I386)
+        return eip;
+#    else
+        return rip;
+#    endif
+    }
+
+    void set_ip(FlatPtr ip)
+    {
+#    if ARCH(I386)
+        eip = ip;
+#    else
+        rip = ip;
+#    endif
+    }
+
+    FlatPtr bp() const
+    {
+#    if ARCH(I386)
+        return ebp;
+#    else
+        return rbp;
+#    endif
+    }
+
+    void set_bp(FlatPtr bp)
+    {
+#    if ARCH(I386)
+        ebp = bp;
+#    else
+        rbp = bp;
+#    endif
+    }
+#endif
 };

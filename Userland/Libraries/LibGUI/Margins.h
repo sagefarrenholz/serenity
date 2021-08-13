@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -66,4 +46,25 @@ private:
     int m_right { 0 };
     int m_bottom { 0 };
 };
+
 }
+
+#define REGISTER_MARGINS_PROPERTY(property_name, getter, setter)   \
+    register_property(                                             \
+        property_name, [this]() {                                  \
+            auto m = getter();                                     \
+            JsonObject margins_object;                             \
+            margins_object.set("left", m.left());                  \
+            margins_object.set("right", m.right());                \
+            margins_object.set("top", m.top());                    \
+            margins_object.set("bottom", m.bottom());              \
+            return margins_object; },                               \
+        [this](auto& value) {                                      \
+            if (!value.is_array() || value.as_array().size() != 4) \
+                return false;                                      \
+            int m[4];                                              \
+            for (size_t i = 0; i < 4; ++i)                         \
+                m[i] = value.as_array().at(i).to_i32();            \
+            setter({ m[0], m[1], m[2], m[3] });                    \
+            return true;                                           \
+        });

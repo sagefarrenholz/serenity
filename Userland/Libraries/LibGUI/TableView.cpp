@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <AK/StringBuilder.h>
@@ -31,9 +11,7 @@
 #include <LibGUI/Model.h>
 #include <LibGUI/ModelEditingDelegate.h>
 #include <LibGUI/Painter.h>
-#include <LibGUI/ScrollBar.h>
 #include <LibGUI/TableView.h>
-#include <LibGUI/TextBox.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Palette.h>
 
@@ -141,7 +119,8 @@ void TableView::paint_event(PaintEvent& event)
                         } else if (m_hovered_index.is_valid() && cell_index.row() == m_hovered_index.row()) {
                             painter.blit_brightened(cell_rect.location(), *bitmap, bitmap->rect());
                         } else {
-                            painter.blit(cell_rect.location(), *bitmap, bitmap->rect());
+                            auto opacity = cell_index.data(ModelRole::IconOpacity).as_float_or(1.0f);
+                            painter.blit(cell_rect.location(), *bitmap, bitmap->rect(), opacity);
                         }
                     }
                 } else {
@@ -193,14 +172,18 @@ void TableView::keydown_event(KeyEvent& event)
     if (event.is_accepted())
         return;
 
-    auto is_delete = event.key() == Key_Delete || event.key() == Key_Backspace;
-    if (is_editable() && edit_triggers() & EditTrigger::AnyKeyPressed && (event.code_point() != 0 || is_delete)) {
+    auto is_delete = event.key() == Key_Delete;
+    auto is_backspace = event.key() == Key_Backspace;
+    auto is_clear = is_delete || is_backspace;
+    if (is_editable() && edit_triggers() & EditTrigger::AnyKeyPressed && (event.code_point() != 0 || is_clear)) {
         begin_editing(cursor_index());
         if (m_editing_delegate) {
             if (is_delete)
-                m_editing_delegate->set_value(event.key() == Key_Delete ? String {} : String::empty());
+                m_editing_delegate->set_value(String {});
+            else if (is_backspace)
+                m_editing_delegate->set_value(String::empty());
             else
-                m_editing_delegate->set_value(event.text());
+                m_editing_delegate->set_value(event.text(), ModelEditingDelegate::SelectionBehavior::DoNotSelect);
         }
     }
 }
@@ -237,7 +220,7 @@ void TableView::move_cursor(CursorMovement movement, SelectionUpdate selection_u
         int items_per_page = visible_content_rect().height() / row_height();
         auto old_index = selection().first();
         auto new_index = model.index(max(0, old_index.row() - items_per_page), old_index.column());
-        if (model.is_valid(new_index))
+        if (model.is_within_range(new_index))
             set_cursor(new_index, selection_update);
         break;
     }
@@ -245,7 +228,7 @@ void TableView::move_cursor(CursorMovement movement, SelectionUpdate selection_u
         int items_per_page = visible_content_rect().height() / row_height();
         auto old_index = selection().first();
         auto new_index = model.index(min(model.row_count() - 1, old_index.row() + items_per_page), old_index.column());
-        if (model.is_valid(new_index))
+        if (model.is_within_range(new_index))
             set_cursor(new_index, selection_update);
         break;
     }

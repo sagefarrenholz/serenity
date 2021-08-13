@@ -1,12 +1,13 @@
-endpoint LaunchServer = 101
-{
-    Greet() => ()
-    OpenURL(URL url, String handler_name) => (bool response)
-    GetHandlersForURL(URL url) => (Vector<String> handlers)
-    GetHandlersWithDetailsForURL(URL url) => (Vector<String> handlers_details)
+#include <AK/URL.h>
 
-    AddAllowedURL(URL url) => ()
-    AddAllowedHandlerWithAnyURL(String handler_name) => ()
-    AddAllowedHandlerWithOnlySpecificURLs(String handler_name, Vector<URL> urls) => ()
-    SealAllowlist() => ()
+endpoint LaunchServer
+{
+    open_url(URL url, String handler_name) => (bool response)
+    get_handlers_for_url(URL url) => (Vector<String> handlers)
+    get_handlers_with_details_for_url(URL url) => (Vector<String> handlers_details)
+
+    add_allowed_url(URL url) => ()
+    add_allowed_handler_with_any_url(String handler_name) => ()
+    add_allowed_handler_with_only_specific_urls(String handler_name, Vector<URL> urls) => ()
+    seal_allowlist() => ()
 }

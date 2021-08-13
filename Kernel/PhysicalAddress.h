@@ -1,27 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
@@ -29,26 +9,38 @@
 #include <AK/Format.h>
 #include <AK/Types.h>
 
+typedef u64 PhysicalPtr;
+typedef u64 PhysicalSize;
+
 class PhysicalAddress {
 public:
+    ALWAYS_INLINE static PhysicalPtr physical_page_base(PhysicalPtr page_address) { return page_address & ~(PhysicalPtr)0xfff; }
+    ALWAYS_INLINE static size_t physical_page_index(PhysicalPtr page_address)
+    {
+        auto page_index = page_address >> 12;
+        if constexpr (sizeof(size_t) < sizeof(PhysicalPtr))
+            VERIFY(!(page_index & ~(PhysicalPtr)((size_t)-1)));
+        return (size_t)(page_index);
+    }
+
     PhysicalAddress() = default;
-    explicit PhysicalAddress(FlatPtr address)
+    explicit PhysicalAddress(PhysicalPtr address)
         : m_address(address)
     {
     }
 
-    [[nodiscard]] PhysicalAddress offset(FlatPtr o) const { return PhysicalAddress(m_address + o); }
-    [[nodiscard]] FlatPtr get() const { return m_address; }
-    void set(FlatPtr address) { m_address = address; }
-    void mask(FlatPtr m) { m_address &= m; }
+    [[nodiscard]] PhysicalAddress offset(PhysicalPtr o) const { return PhysicalAddress(m_address + o); }
+    [[nodiscard]] PhysicalPtr get() const { return m_address; }
+    void set(PhysicalPtr address) { m_address = address; }
+    void mask(PhysicalPtr m) { m_address &= m; }
 
     [[nodiscard]] bool is_null() const { return m_address == 0; }
 
     [[nodiscard]] u8* as_ptr() { return reinterpret_cast<u8*>(m_address); }
     [[nodiscard]] const u8* as_ptr() const { return reinterpret_cast<const u8*>(m_address); }
 
-    [[nodiscard]] PhysicalAddress page_base() const { return PhysicalAddress(m_address & 0xfffff000); }
-    [[nodiscard]] FlatPtr offset_in_page() const { return PhysicalAddress(m_address & 0xfff).get(); }
+    [[nodiscard]] PhysicalAddress page_base() const { return PhysicalAddress(physical_page_base(m_address)); }
+    [[nodiscard]] PhysicalPtr offset_in_page() const { return PhysicalAddress(m_address & 0xfff).get(); }
 
     bool operator==(const PhysicalAddress& other) const { return m_address == other.m_address; }
     bool operator!=(const PhysicalAddress& other) const { return m_address != other.m_address; }
@@ -58,13 +50,16 @@ public:
     bool operator<=(const PhysicalAddress& other) const { return m_address <= other.m_address; }
 
 private:
-    FlatPtr m_address { 0 };
+    PhysicalPtr m_address { 0 };
 };
 
 template<>
 struct AK::Formatter<PhysicalAddress> : AK::Formatter<FormatString> {
     void format(FormatBuilder& builder, PhysicalAddress value)
     {
-        return AK::Formatter<FormatString>::format(builder, "P{}", value.as_ptr());
+        if constexpr (sizeof(PhysicalPtr) == sizeof(u64))
+            return AK::Formatter<FormatString>::format(builder, "P{:016x}", value.get());
+        else
+            return AK::Formatter<FormatString>::format(builder, "P{}", value.as_ptr());
     }
 };

@@ -1,35 +1,17 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
- * All rights reserved.
+ * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
+#include <AK/WeakPtr.h>
+#include <AK/Weakable.h>
 #include <LibJS/Forward.h>
-#include <LibJS/Runtime/Cell.h>
+#include <LibJS/Heap/Cell.h>
 #include <LibJS/Runtime/PropertyAttributes.h>
 #include <LibJS/Runtime/StringOrSymbol.h>
 #include <LibJS/Runtime/Value.h>
@@ -51,7 +33,9 @@ struct TransitionKey {
     }
 };
 
-class Shape final : public Cell {
+class Shape final
+    : public Cell
+    , public Weakable<Shape> {
 public:
     virtual ~Shape() override;
 
@@ -74,6 +58,7 @@ public:
     Shape* create_prototype_transition(Object* new_prototype);
 
     void add_property_without_transition(const StringOrSymbol&, PropertyAttributes);
+    void add_property_without_transition(PropertyName const&, PropertyAttributes);
 
     bool is_unique() const { return m_unique; }
     Shape* create_unique_clone() const;
@@ -104,6 +89,7 @@ private:
     virtual const char* class_name() const override { return "Shape"; }
     virtual void visit_edges(Visitor&) override;
 
+    Shape* get_or_prune_cached_forward_transition(TransitionKey const&);
     void ensure_property_table() const;
 
     PropertyAttributes m_attributes { 0 };
@@ -114,7 +100,7 @@ private:
 
     mutable OwnPtr<HashMap<StringOrSymbol, PropertyMetadata>> m_property_table;
 
-    HashMap<TransitionKey, Shape*> m_forward_transitions;
+    HashMap<TransitionKey, WeakPtr<Shape>> m_forward_transitions;
     Shape* m_previous { nullptr };
     StringOrSymbol m_property_name;
     Object* m_prototype { nullptr };

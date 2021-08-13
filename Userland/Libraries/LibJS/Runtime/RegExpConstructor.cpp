@@ -1,27 +1,7 @@
 /*
- * Copyright (c) 2020, Matthew Olsson <matthewcolsson@gmail.com>
- * All rights reserved.
+ * Copyright (c) 2020, Matthew Olsson <mattco@serenityos.org>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Runtime/Error.h>
@@ -32,7 +12,7 @@
 namespace JS {
 
 RegExpConstructor::RegExpConstructor(GlobalObject& global_object)
-    : NativeFunction(vm().names.RegExp, *global_object.function_prototype())
+    : NativeFunction(vm().names.RegExp.as_string(), *global_object.function_prototype())
 {
 }
 
@@ -40,35 +20,92 @@ void RegExpConstructor::initialize(GlobalObject& global_object)
 {
     auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property(vm.names.prototype, global_object.regexp_prototype(), 0);
-    define_property(vm.names.length, Value(2), Attribute::Configurable);
+
+    // 22.2.4.1 RegExp.prototype, https://tc39.es/ecma262/#sec-regexp.prototype
+    define_direct_property(vm.names.prototype, global_object.regexp_prototype(), 0);
+
+    define_native_accessor(*vm.well_known_symbol_species(), symbol_species_getter, {}, Attribute::Configurable);
+
+    define_direct_property(vm.names.length, Value(2), Attribute::Configurable);
 }
 
 RegExpConstructor::~RegExpConstructor()
 {
 }
 
+// 22.2.3.1 RegExp ( pattern, flags ), https://tc39.es/ecma262/#sec-regexp-pattern-flags
 Value RegExpConstructor::call()
 {
+    auto& vm = this->vm();
+    auto& global_object = this->global_object();
+
+    auto pattern = vm.argument(0);
+    auto flags = vm.argument(1);
+
+    bool pattern_is_regexp = pattern.is_regexp(global_object);
+    if (vm.exception())
+        return {};
+
+    if (pattern_is_regexp && flags.is_undefined()) {
+        auto pattern_constructor = pattern.as_object().get(vm.names.constructor);
+        if (vm.exception())
+            return {};
+
+        if (same_value(this, pattern_constructor))
+            return pattern;
+    }
+
     return construct(*this);
 }
 
-Value RegExpConstructor::construct(Function&)
+// 22.2.3.1 RegExp ( pattern, flags ), https://tc39.es/ecma262/#sec-regexp-pattern-flags
+Value RegExpConstructor::construct(FunctionObject&)
 {
     auto& vm = this->vm();
-    String pattern = "";
-    String flags = "";
-    if (!vm.argument(0).is_undefined()) {
-        pattern = vm.argument(0).to_string(global_object());
+    auto& global_object = this->global_object();
+
+    auto pattern = vm.argument(0);
+    auto flags = vm.argument(1);
+
+    bool pattern_is_regexp = pattern.is_regexp(global_object);
+    if (vm.exception())
+        return {};
+
+    Value pattern_value;
+    Value flags_value;
+
+    if (pattern.is_object() && is<RegExpObject>(pattern.as_object())) {
+        auto& regexp_pattern = static_cast<RegExpObject&>(pattern.as_object());
+        pattern_value = js_string(vm, regexp_pattern.pattern());
+
+        if (flags.is_undefined())
+            flags_value = js_string(vm, regexp_pattern.flags());
+        else
+            flags_value = flags;
+    } else if (pattern_is_regexp) {
+        pattern_value = pattern.as_object().get(vm.names.source);
         if (vm.exception())
             return {};
+
+        if (flags.is_undefined()) {
+            flags_value = pattern.as_object().get(vm.names.flags);
+            if (vm.exception())
+                return {};
+        } else {
+            flags_value = flags;
+        }
+    } else {
+        pattern_value = pattern;
+        flags_value = flags;
     }
-    if (!vm.argument(1).is_undefined()) {
-        flags = vm.argument(1).to_string(global_object());
-        if (vm.exception())
-            return {};
-    }
-    return RegExpObject::create(global_object(), pattern, flags);
+
+    return regexp_create(global_object, pattern_value, flags_value);
+}
+
+// 22.2.4.2 get RegExp [ @@species ], https://tc39.es/ecma262/#sec-get-regexp-@@species
+JS_DEFINE_NATIVE_GETTER(RegExpConstructor::symbol_species_getter)
+{
+    return vm.this_value(global_object);
 }
 
 }
